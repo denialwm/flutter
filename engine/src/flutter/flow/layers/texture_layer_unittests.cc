@@ -112,6 +112,10 @@ TEST_F(TextureLayerDiffTest, TextureInRetainedLayer) {
 
   damage = DiffLayerTree(tree2, tree1);
   EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 100, 100));
+
+  // Autonomous texture frames reuse the exact same LayerTree instance.
+  damage = DiffLayerTree(tree2, tree2);
+  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 100, 100));
 }
 
 TEST_F(TextureLayerTest, OpacityInheritance) {
