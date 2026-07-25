@@ -19,7 +19,7 @@ std::optional<DlRect> FrameDamage::ComputeClipRect(
     DiffContext context(layer_tree.frame_size(), layer_tree.paint_region_map(),
                         prev_layer_tree_ ? prev_layer_tree_->paint_region_map()
                                          : empty_paint_region_map,
-                        has_raster_cache, impeller_enabled);
+                        has_raster_cache, impeller_enabled, dirty_texture_ids_);
     context.PushCullRect(DlRect::MakeSize(layer_tree.frame_size()));
     {
       DiffContext::AutoSubtreeRestore subtree(&context);

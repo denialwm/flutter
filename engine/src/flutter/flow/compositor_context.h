@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_set>
 
 #include "flutter/common/graphics/texture.h"
 #include "flutter/common/macros.h"
@@ -54,6 +55,14 @@ class FrameDamage {
     prev_layer_tree_ = prev_layer_tree;
   }
 
+  // Limits autonomous reused-tree damage to the external textures that
+  // actually requested the frame. A null pointer preserves normal Flutter
+  // diffing, where every TextureLayer remains conservatively dirty.
+  void SetDirtyTextureIds(
+      const std::unordered_set<int64_t>* dirty_texture_ids) {
+    dirty_texture_ids_ = dirty_texture_ids;
+  }
+
   // Adds additional damage (accumulated for double / triple buffering).
   // This is area that will be repainted alongside any changed part.
   void AddAdditionalDamage(const DlIRect& damage) {
@@ -97,6 +106,7 @@ class FrameDamage {
   DlIRect additional_damage_;
   std::optional<Damage> damage_;
   const LayerTree* prev_layer_tree_ = nullptr;
+  const std::unordered_set<int64_t>* dirty_texture_ids_ = nullptr;
   int vertical_clip_alignment_ = 1;
   int horizontal_clip_alignment_ = 1;
   bool ignore_damage_ = false;

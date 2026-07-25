@@ -13,13 +13,15 @@ DiffContext::DiffContext(DlISize frame_size,
                          PaintRegionMap& this_frame_paint_region_map,
                          const PaintRegionMap& last_frame_paint_region_map,
                          bool has_raster_cache,
-                         bool impeller_enabled)
+                         bool impeller_enabled,
+                         const std::unordered_set<int64_t>* dirty_texture_ids)
     : rects_(std::make_shared<std::vector<DlRect>>()),
       frame_size_(frame_size),
       this_frame_paint_region_map_(this_frame_paint_region_map),
       last_frame_paint_region_map_(last_frame_paint_region_map),
       has_raster_cache_(has_raster_cache),
-      impeller_enabled_(impeller_enabled) {}
+      impeller_enabled_(impeller_enabled),
+      dirty_texture_ids_(dirty_texture_ids) {}
 
 void DiffContext::BeginSubtree() {
   state_stack_.push_back(state_);

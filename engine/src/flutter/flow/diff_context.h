@@ -5,9 +5,11 @@
 #ifndef FLUTTER_FLOW_DIFF_CONTEXT_H_
 #define FLUTTER_FLOW_DIFF_CONTEXT_H_
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <optional>
+#include <unordered_set>
 #include <vector>
 #include "display_list/utils/dl_matrix_clip_tracker.h"
 #include "flutter/flow/paint_region.h"
@@ -40,11 +42,13 @@ using PaintRegionMap = std::map<uint64_t, PaintRegion>;
 // Tracks state during tree diffing process and computes resulting damage
 class DiffContext {
  public:
-  explicit DiffContext(DlISize frame_size,
-                       PaintRegionMap& this_frame_paint_region_map,
-                       const PaintRegionMap& last_frame_paint_region_map,
-                       bool has_raster_cache,
-                       bool impeller_enabled);
+  explicit DiffContext(
+      DlISize frame_size,
+      PaintRegionMap& this_frame_paint_region_map,
+      const PaintRegionMap& last_frame_paint_region_map,
+      bool has_raster_cache,
+      bool impeller_enabled,
+      const std::unordered_set<int64_t>* dirty_texture_ids = nullptr);
 
   // Starts a new subtree.
   void BeginSubtree();
@@ -164,6 +168,13 @@ class DiffContext {
 
   bool impeller_enabled() const { return impeller_enabled_; }
 
+  // Returns true when normal diffing must conservatively repaint every
+  // texture, or when an autonomous texture frame explicitly marked this ID.
+  bool IsTextureDirty(int64_t texture_id) const {
+    return dirty_texture_ids_ == nullptr ||
+           dirty_texture_ids_->find(texture_id) != dirty_texture_ids_->end();
+  }
+
   class Statistics {
    public:
     // Picture replaced by different picture
@@ -248,6 +259,7 @@ class DiffContext {
   const PaintRegionMap& last_frame_paint_region_map_;
   bool has_raster_cache_;
   bool impeller_enabled_;
+  const std::unordered_set<int64_t>* dirty_texture_ids_;
 
   void AddDamage(const DlRect& rect);
 
