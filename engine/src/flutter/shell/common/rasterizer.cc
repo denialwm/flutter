@@ -240,13 +240,12 @@ void Rasterizer::DrawLastLayerTrees(
   for (auto& [view_id, view_record] : view_records_) {
     if (view_record.last_successful_task) {
       view_record.last_successful_task->is_reused_layer_tree = true;
-      if (!dirty_texture_ids.empty()) {
-        view_record.last_successful_task->dirty_texture_ids = dirty_texture_ids;
-      }
+      view_record.last_successful_task->dirty_texture_ids = dirty_texture_ids;
       tasks.push_back(std::move(view_record.last_successful_task));
     }
   }
   if (tasks.empty()) {
+    pending_texture_ids_ = std::move(dirty_texture_ids);
     return;
   }
 
@@ -276,6 +275,14 @@ DrawStatus Rasterizer::Draw(const std::shared_ptr<FramePipeline>& pipeline) {
   DoDrawResult draw_result;
   FramePipeline::Consumer consumer = [&draw_result,
                                       this](std::unique_ptr<FrameItem> item) {
+    auto dirty_texture_ids = std::move(pending_texture_ids_);
+    pending_texture_ids_.clear();
+    for (auto& task : item->layer_tree_tasks) {
+      // An engaged empty set is meaningful: this framework frame changed no
+      // external texture. A null set retains Flutter's conservative fallback
+      // for callers outside Denial's explicit frame transaction.
+      task->dirty_texture_ids = dirty_texture_ids;
+    }
     draw_result = DoDraw(std::move(item->frame_timings_recorder),
                          std::move(item->layer_tree_tasks));
   };
@@ -321,12 +328,6 @@ DrawStatus Rasterizer::Draw(const std::shared_ptr<FramePipeline>& pipeline) {
     }
     default:
       break;
-  }
-
-  if (!should_resubmit_frame && draw_result.status == DoDrawStatus::kDone) {
-    // A successfully framework-produced layer tree conservatively diffs every
-    // TextureLayer, so it also consumes texture marks received before it.
-    pending_texture_ids_.clear();
   }
 
   return ToDrawStatus(draw_result.status);

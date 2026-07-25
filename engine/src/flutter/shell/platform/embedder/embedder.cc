@@ -3694,6 +3694,34 @@ FlutterEngineResult FlutterEngineScheduleFrame(FLUTTER_API_SYMBOL(FlutterEngine)
                                   "Could not schedule frame.");
 }
 
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineScheduleFrameForExternalTextures(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const int64_t* texture_identifiers,
+    size_t texture_count) {
+  if (engine == nullptr || texture_identifiers == nullptr ||
+      texture_count == 0) {
+    return LOG_EMBEDDER_ERROR(
+        kInvalidArguments,
+        "Invalid Denial external-texture frame transaction.");
+  }
+  std::vector<int64_t> textures;
+  textures.reserve(texture_count);
+  for (size_t index = 0; index < texture_count; index++) {
+    if (texture_identifiers[index] == 0) {
+      return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                                "Invalid texture identifier.");
+    }
+    textures.push_back(texture_identifiers[index]);
+  }
+  return reinterpret_cast<flutter::EmbedderEngine*>(engine)
+                 ->ScheduleFrameForExternalTextures(std::move(textures))
+             ? kSuccess
+             : LOG_EMBEDDER_ERROR(
+                   kInternalInconsistency,
+                   "Could not schedule Denial external-texture frame.");
+}
+
 FlutterEngineResult FlutterEngineSetNextFrameCallback(
     FLUTTER_API_SYMBOL(FlutterEngine) engine,
     VoidCallback callback,

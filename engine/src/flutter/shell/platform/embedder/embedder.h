@@ -3588,6 +3588,27 @@ FlutterEngineResult FlutterEngineScheduleFrame(FLUTTER_API_SYMBOL(FlutterEngine)
                                                    engine);
 
 //------------------------------------------------------------------------------
+/// @brief      Records a set of updated external textures and schedules one
+///             frame which reuses the previous layer tree unless the Flutter
+///             framework has independently requested a rebuild.
+///
+///             This Denial extension copies `texture_identifiers`
+///             synchronously. It exists so the compositor can collect all
+///             texture updates and authorize one frame from its KMS clock.
+///
+/// @param[in]  engine               A running engine instance.
+/// @param[in]  texture_identifiers  Non-null array of non-zero texture IDs.
+/// @param[in]  texture_count        Number of IDs; must be greater than zero.
+///
+/// @return the result of the call made to the engine.
+///
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineScheduleFrameForExternalTextures(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const int64_t* texture_identifiers,
+    size_t texture_count);
+
+//------------------------------------------------------------------------------
 /// @brief      Schedule a callback to be called after the next frame is drawn.
 ///             This must be called from the platform thread. The callback is
 ///             executed only once from the raster thread; embedders must

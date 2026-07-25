@@ -344,6 +344,15 @@ bool EmbedderEngine::ScheduleFrame() {
   return true;
 }
 
+bool EmbedderEngine::ScheduleFrameForExternalTextures(
+    std::vector<int64_t> texture_identifiers) {
+  if (!IsValid() || texture_identifiers.empty()) {
+    return false;
+  }
+  shell_->ScheduleFrameForExternalTextures(std::move(texture_identifiers));
+  return true;
+}
+
 Shell& EmbedderEngine::GetShell() {
   FML_DCHECK(shell_);
   return *shell_.get();

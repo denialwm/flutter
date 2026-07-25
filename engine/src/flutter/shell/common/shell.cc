@@ -1305,19 +1305,29 @@ void Shell::OnPlatformViewUnregisterTexture(int64_t texture_id) {
 
 // |PlatformView::Delegate|
 void Shell::OnPlatformViewMarkTextureFrameAvailable(int64_t texture_id) {
+  ScheduleFrameForExternalTextures({texture_id});
+}
+
+void Shell::ScheduleFrameForExternalTextures(
+    std::vector<int64_t> texture_identifiers) {
   FML_DCHECK(is_set_up_);
   FML_DCHECK(task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread());
+  FML_DCHECK(!texture_identifiers.empty());
 
-  // Tell the rasterizer that one of its textures has a new frame available.
+  // Publish the complete transaction to the raster runner in one ordered task.
   task_runners_.GetRasterTaskRunner()->PostTask(
-      [rasterizer = rasterizer_->GetWeakPtr(), texture_id]() {
+      [rasterizer = rasterizer_->GetWeakPtr(),
+       texture_identifiers = std::move(texture_identifiers)]() {
         if (!rasterizer) {
           return;
         }
-        rasterizer->MarkTextureFrameAvailable(texture_id);
+        for (int64_t texture_id : texture_identifiers) {
+          rasterizer->MarkTextureFrameAvailable(texture_id);
+        }
       });
 
-  // Schedule a new frame without having to rebuild the layer tree.
+  // Request exactly one raster transaction. Animator coalescing preserves a
+  // framework-requested layer-tree rebuild if one is already pending.
   fml::TaskRunner::RunNowOrPostTask(task_runners_.GetUITaskRunner(),
                                     [engine = engine_->GetWeakPtr()]() {
                                       if (engine) {
