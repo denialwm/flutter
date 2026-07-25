@@ -17,6 +17,7 @@
 
 #include "third_party/skia/include/core/SkSurface.h"
 #include "third_party/skia/include/gpu/ganesh/GrDirectContext.h"
+#include "third_party/skia/include/gpu/ganesh/gl/GrGLInterface.h"
 
 namespace flutter {
 
@@ -66,6 +67,7 @@ class GPUSurfaceGLSkia : public Surface {
 
   GPUSurfaceGLDelegate* delegate_;
   sk_sp<GrDirectContext> context_;
+  sk_sp<const GrGLInterface> gl_interface_;
   sk_sp<SkSurface> onscreen_surface_;
   /// FBO backing the current `onscreen_surface_`.
   uint32_t fbo_id_ = 0;
