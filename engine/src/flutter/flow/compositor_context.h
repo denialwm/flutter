@@ -146,7 +146,8 @@ class CompositorContext {
 
     virtual RasterStatus Raster(LayerTree& layer_tree,
                                 bool ignore_raster_cache,
-                                FrameDamage* frame_damage);
+                                FrameDamage* frame_damage,
+                                bool force_full_repaint = false);
 
    private:
     void PaintLayerTreeSkia(flutter::LayerTree& layer_tree,

@@ -761,6 +761,7 @@ class Rasterizer final : public SnapshotDelegate,
       flutter::LayerTree& layer_tree,
       const flutter::LayerTree* previous_layer_tree,
       const std::unordered_set<int64_t>* dirty_texture_ids,
+      bool force_full_repaint,
       float device_pixel_ratio,
       std::optional<fml::TimePoint> presentation_time);
 

@@ -700,10 +700,10 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
     const LayerTree* previous_layer_tree =
         is_reused_layer_tree ? layer_tree.get() : GetLastLayerTree(view_id);
 
-    DrawSurfaceStatus status =
-        DrawToSurfaceUnsafe(view_id, *layer_tree, previous_layer_tree,
-                            dirty_texture_ids ? &*dirty_texture_ids : nullptr,
-                            device_pixel_ratio, presentation_time);
+    DrawSurfaceStatus status = DrawToSurfaceUnsafe(
+        view_id, *layer_tree, previous_layer_tree,
+        dirty_texture_ids ? &*dirty_texture_ids : nullptr, is_reused_layer_tree,
+        device_pixel_ratio, presentation_time);
     FML_DCHECK(status != DrawSurfaceStatus::kDiscarded);
 
     auto& view_record = EnsureViewRecord(task->view_id);
@@ -748,6 +748,7 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     flutter::LayerTree& layer_tree,
     const flutter::LayerTree* previous_layer_tree,
     const std::unordered_set<int64_t>* dirty_texture_ids,
+    bool force_full_repaint,
     float device_pixel_ratio,
     std::optional<fml::TimePoint> presentation_time) {
   FML_DCHECK(surface_);
@@ -823,7 +824,8 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     RasterStatus frame_status =
         compositor_frame->Raster(layer_tree,           // layer tree
                                  ignore_raster_cache,  // ignore raster cache
-                                 damage.get()          // frame damage
+                                 damage.get(),         // frame damage
+                                 force_full_repaint    // raster policy
         );
     if (frame_status == RasterStatus::kSkipAndRetry) {
       return DrawSurfaceStatus::kRetry;
