@@ -52,8 +52,12 @@ sk_sp<GrDirectContext> GPUSurfaceGLSkia::MakeGLContext(
     return nullptr;
   }
 
-  const auto options =
+  auto options =
       MakeDefaultContextOptions(ContextType::kRender, GrBackendApi::kOpenGL);
+  // Denial supplies real stencil attachments on its embedder-owned targets.
+  // Let Ganesh use them for GPU stencil and dynamic MSAA instead of falling
+  // back to CPU-rasterized A8 clip masks.
+  options.fAvoidStencilBuffers = false;
 
   auto context = GrDirectContexts::MakeGL(delegate->GetGLInterface(), options);
 
