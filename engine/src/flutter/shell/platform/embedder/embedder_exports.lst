@@ -6,6 +6,7 @@
 
 {
   global:
+    DenialFlutter*;
     Flutter*;
     __Flutter*;
     kFlutter*;

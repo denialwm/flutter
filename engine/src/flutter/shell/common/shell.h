@@ -9,6 +9,7 @@
 #include <mutex>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include "flutter/assets/directory_asset_bundle.h"
 #include "flutter/common/graphics/texture.h"
@@ -219,6 +220,19 @@ class Shell final : public PlatformView::Delegate,
   ///
   void RunEngine(RunConfiguration run_configuration,
                  const std::function<void(Engine::RunStatus)>& result_callback);
+
+  //----------------------------------------------------------------------------
+  /// @brief      Records one compositor-owned texture transaction and asks the
+  ///             animator to raster it without forcing a Dart layer-tree
+  ///             rebuild.
+  ///
+  ///             Calls made before an already-pending framework frame are
+  ///             coalesced into that frame. The texture identifiers are copied
+  ///             into one raster-runner task before the UI-runner request is
+  ///             posted.
+  ///
+  void ScheduleFrameForExternalTextures(
+      std::vector<int64_t> texture_identifiers);
 
   //------------------------------------------------------------------------------
   /// @return     The settings used to launch this shell.

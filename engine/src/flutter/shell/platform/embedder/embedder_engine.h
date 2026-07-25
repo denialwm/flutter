@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 #include "flutter/fml/macros.h"
 #include "flutter/shell/common/shell.h"
@@ -87,6 +88,9 @@ class EmbedderEngine {
       const std::function<void(FlutterNativeThreadType)>& closure) const;
 
   bool ScheduleFrame();
+
+  bool ScheduleFrameForExternalTextures(
+      std::vector<int64_t> texture_identifiers);
 
   Shell& GetShell();
 
