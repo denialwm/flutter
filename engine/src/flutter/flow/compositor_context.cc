@@ -114,7 +114,8 @@ CompositorContext::ScopedFrame::~ScopedFrame() {
 RasterStatus CompositorContext::ScopedFrame::Raster(
     flutter::LayerTree& layer_tree,
     bool ignore_raster_cache,
-    FrameDamage* frame_damage) {
+    FrameDamage* frame_damage,
+    bool force_full_repaint) {
   TRACE_EVENT0("flutter", "CompositorContext::ScopedFrame::Raster");
 
   std::optional<DlRect> clip_rect;
@@ -122,8 +123,11 @@ RasterStatus CompositorContext::ScopedFrame::Raster(
     clip_rect = frame_damage->ComputeClipRect(layer_tree, !ignore_raster_cache,
                                               !gr_context_);
 
-    if (aiks_context_ &&
-        !ShouldPerformPartialRepaint(clip_rect, layer_tree.frame_size())) {
+    if (force_full_repaint) {
+      clip_rect = std::nullopt;
+      frame_damage->Reset();
+    } else if (aiks_context_ && !ShouldPerformPartialRepaint(
+                                    clip_rect, layer_tree.frame_size())) {
       clip_rect = std::nullopt;
       frame_damage->Reset();
     }
