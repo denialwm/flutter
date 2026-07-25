@@ -5,6 +5,7 @@
 #ifndef FLUTTER_FLOW_TESTING_DIFF_CONTEXT_TEST_H_
 #define FLUTTER_FLOW_TESTING_DIFF_CONTEXT_TEST_H_
 
+#include <unordered_set>
 #include <utility>
 
 #include "flutter/display_list/geometry/dl_geometry_types.h"
@@ -39,13 +40,15 @@ class DiffContextTest : public LayerTest {
  public:
   DiffContextTest();
 
-  Damage DiffLayerTree(MockLayerTree& layer_tree,
-                       const MockLayerTree& old_layer_tree,
-                       const DlIRect& additional_damage = DlIRect(),
-                       int horizontal_clip_alignment = 0,
-                       int vertical_alignment = 0,
-                       bool use_raster_cache = true,
-                       bool impeller_enabled = false);
+  Damage DiffLayerTree(
+      MockLayerTree& layer_tree,
+      const MockLayerTree& old_layer_tree,
+      const DlIRect& additional_damage = DlIRect(),
+      int horizontal_clip_alignment = 0,
+      int vertical_alignment = 0,
+      bool use_raster_cache = true,
+      bool impeller_enabled = false,
+      const std::unordered_set<int64_t>* dirty_texture_ids = nullptr);
 
   // Create display list consisting of filled rect with given color; Being able
   // to specify different color is useful to test deep comparison of pictures

@@ -200,6 +200,19 @@ std::shared_ptr<flutter::TextureRegistry> Rasterizer::GetTextureRegistry() {
   return compositor_context_->texture_registry();
 }
 
+void Rasterizer::MarkTextureFrameAvailable(int64_t texture_id) {
+  auto registry = GetTextureRegistry();
+  if (!registry) {
+    return;
+  }
+  auto texture = registry->GetTexture(texture_id);
+  if (!texture) {
+    return;
+  }
+  texture->MarkNewFrameAvailable();
+  pending_texture_ids_.insert(texture_id);
+}
+
 GrDirectContext* Rasterizer::GetGrContext() {
   return surface_ ? surface_->GetContext() : nullptr;
 }
@@ -222,9 +235,14 @@ void Rasterizer::DrawLastLayerTrees(
     return;
   }
   std::vector<std::unique_ptr<LayerTreeTask>> tasks;
+  auto dirty_texture_ids = std::move(pending_texture_ids_);
+  pending_texture_ids_.clear();
   for (auto& [view_id, view_record] : view_records_) {
     if (view_record.last_successful_task) {
       view_record.last_successful_task->is_reused_layer_tree = true;
+      if (!dirty_texture_ids.empty()) {
+        view_record.last_successful_task->dirty_texture_ids = dirty_texture_ids;
+      }
       tasks.push_back(std::move(view_record.last_successful_task));
     }
   }
@@ -303,6 +321,12 @@ DrawStatus Rasterizer::Draw(const std::shared_ptr<FramePipeline>& pipeline) {
     }
     default:
       break;
+  }
+
+  if (!should_resubmit_frame && draw_result.status == DoDrawStatus::kDone) {
+    // A successfully framework-produced layer tree conservatively diffs every
+    // TextureLayer, so it also consumes texture marks received before it.
+    pending_texture_ids_.clear();
   }
 
   return ToDrawStatus(draw_result.status);
@@ -670,6 +694,7 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
   for (std::unique_ptr<LayerTreeTask>& task : tasks) {
     int64_t view_id = task->view_id;
     bool is_reused_layer_tree = task->is_reused_layer_tree;
+    auto dirty_texture_ids = std::move(task->dirty_texture_ids);
     std::unique_ptr<LayerTree> layer_tree = std::move(task->layer_tree);
     float device_pixel_ratio = task->device_pixel_ratio;
     const LayerTree* previous_layer_tree =
@@ -677,6 +702,7 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
 
     DrawSurfaceStatus status =
         DrawToSurfaceUnsafe(view_id, *layer_tree, previous_layer_tree,
+                            dirty_texture_ids ? &*dirty_texture_ids : nullptr,
                             device_pixel_ratio, presentation_time);
     FML_DCHECK(status != DrawSurfaceStatus::kDiscarded);
 
@@ -689,6 +715,7 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
       auto retry_task = std::make_unique<LayerTreeTask>(
           view_id, std::move(layer_tree), device_pixel_ratio);
       retry_task->is_reused_layer_tree = is_reused_layer_tree;
+      retry_task->dirty_texture_ids = std::move(dirty_texture_ids);
       resubmitted_tasks.push_back(std::move(retry_task));
     }
   }
@@ -720,6 +747,7 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     int64_t view_id,
     flutter::LayerTree& layer_tree,
     const flutter::LayerTree* previous_layer_tree,
+    const std::unordered_set<int64_t>* dirty_texture_ids,
     float device_pixel_ratio,
     std::optional<fml::TimePoint> presentation_time) {
   FML_DCHECK(surface_);
@@ -779,6 +807,7 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
       auto existing_damage = frame->framebuffer_info().existing_damage;
       if (existing_damage.has_value() && !force_full_repaint) {
         damage->SetPreviousLayerTree(previous_layer_tree);
+        damage->SetDirtyTextureIds(dirty_texture_ids);
         damage->AddAdditionalDamage(existing_damage.value());
         damage->SetClipAlignment(
             frame->framebuffer_info().horizontal_clip_alignment,

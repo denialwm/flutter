@@ -7,6 +7,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <unordered_set>
 
 #include "flutter/common/graphics/texture.h"
 #include "flutter/flow/compositor_context.h"
@@ -87,6 +89,9 @@ struct LayerTreeTask {
   /// an autonomous external-texture redraw. While such a task is in flight it
   /// is also the previous tree against which frame damage must be computed.
   bool is_reused_layer_tree = false;
+  /// Texture IDs that requested this autonomous redraw. A missing value keeps
+  /// Flutter's conservative behavior and damages every TextureLayer.
+  std::optional<std::unordered_set<int64_t>> dirty_texture_ids;
 
  private:
   FML_DISALLOW_COPY_AND_ASSIGN(LayerTreeTask);

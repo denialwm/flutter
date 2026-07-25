@@ -12,18 +12,20 @@ namespace testing {
 
 DiffContextTest::DiffContextTest() {}
 
-Damage DiffContextTest::DiffLayerTree(MockLayerTree& layer_tree,
-                                      const MockLayerTree& old_layer_tree,
-                                      const DlIRect& additional_damage,
-                                      int horizontal_clip_alignment,
-                                      int vertical_clip_alignment,
-                                      bool use_raster_cache,
-                                      bool impeller_enabled) {
+Damage DiffContextTest::DiffLayerTree(
+    MockLayerTree& layer_tree,
+    const MockLayerTree& old_layer_tree,
+    const DlIRect& additional_damage,
+    int horizontal_clip_alignment,
+    int vertical_clip_alignment,
+    bool use_raster_cache,
+    bool impeller_enabled,
+    const std::unordered_set<int64_t>* dirty_texture_ids) {
   FML_CHECK(layer_tree.size() == old_layer_tree.size());
 
   DiffContext dc(layer_tree.size(), layer_tree.paint_region_map(),
                  old_layer_tree.paint_region_map(), use_raster_cache,
-                 impeller_enabled);
+                 impeller_enabled, dirty_texture_ids);
   dc.PushCullRect(DlRect::MakeSize(layer_tree.size()));
   layer_tree.root()->Diff(&dc, old_layer_tree.root());
   return dc.ComputeDamage(additional_damage, horizontal_clip_alignment,

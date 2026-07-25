@@ -1314,19 +1314,7 @@ void Shell::OnPlatformViewMarkTextureFrameAvailable(int64_t texture_id) {
         if (!rasterizer) {
           return;
         }
-        auto registry = rasterizer->GetTextureRegistry();
-
-        if (!registry) {
-          return;
-        }
-
-        auto texture = registry->GetTexture(texture_id);
-
-        if (!texture) {
-          return;
-        }
-
-        texture->MarkNewFrameAvailable();
+        rasterizer->MarkTextureFrameAvailable(texture_id);
       });
 
   // Schedule a new frame without having to rebuild the layer tree.

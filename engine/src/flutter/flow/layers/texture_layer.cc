@@ -24,6 +24,12 @@ void TextureLayer::Diff(DiffContext* context, const Layer* old_layer) {
   if (!context->IsSubtreeDirty()) {
     FML_DCHECK(old_layer);
     auto prev = old_layer->as_texture_layer();
+    if (!context->IsTextureDirty(texture_id_)) {
+      context->MarkSubtreeHasTextureLayer();
+      context->AddExistingPaintRegion(context->GetOldLayerPaintRegion(prev));
+      context->SetLayerPaintRegion(this, context->CurrentSubtreeRegion());
+      return;
+    }
     // TODO(knopp) It would be nice to be able to determine that a texture is
     // dirty
     context->MarkSubtreeDirty(context->GetOldLayerPaintRegion(prev));

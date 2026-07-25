@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "flutter/common/settings.h"
 #include "flutter/common/task_runners.h"
@@ -309,6 +310,10 @@ class Rasterizer final : public SnapshotDelegate,
   GrDirectContext* GetGrContext() override;
 
   std::shared_ptr<flutter::TextureRegistry> GetTextureRegistry() override;
+
+  // Marks an external texture and remembers its ID for the next autonomous
+  // reused-layer-tree damage calculation.
+  void MarkTextureFrameAvailable(int64_t texture_id);
 
   //----------------------------------------------------------------------------
   /// @brief      Takes the next item from the layer tree pipeline and executes
@@ -755,6 +760,7 @@ class Rasterizer final : public SnapshotDelegate,
       int64_t view_id,
       flutter::LayerTree& layer_tree,
       const flutter::LayerTree* previous_layer_tree,
+      const std::unordered_set<int64_t>* dirty_texture_ids,
       float device_pixel_ratio,
       std::optional<fml::TimePoint> presentation_time);
 
@@ -773,6 +779,7 @@ class Rasterizer final : public SnapshotDelegate,
   std::unique_ptr<SnapshotSurfaceProducer> snapshot_surface_producer_;
   std::unique_ptr<flutter::CompositorContext> compositor_context_;
   std::unordered_map<int64_t, ViewRecord> view_records_;
+  std::unordered_set<int64_t> pending_texture_ids_;
   fml::closure next_frame_callback_;
   bool user_override_resource_cache_bytes_ = false;
   std::optional<size_t> max_cache_bytes_;
