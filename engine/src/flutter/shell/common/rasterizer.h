@@ -754,6 +754,7 @@ class Rasterizer final : public SnapshotDelegate,
   DrawSurfaceStatus DrawToSurfaceUnsafe(
       int64_t view_id,
       flutter::LayerTree& layer_tree,
+      const flutter::LayerTree* previous_layer_tree,
       float device_pixel_ratio,
       std::optional<fml::TimePoint> presentation_time);
 

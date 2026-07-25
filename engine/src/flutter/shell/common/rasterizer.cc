@@ -224,6 +224,7 @@ void Rasterizer::DrawLastLayerTrees(
   std::vector<std::unique_ptr<LayerTreeTask>> tasks;
   for (auto& [view_id, view_record] : view_records_) {
     if (view_record.last_successful_task) {
+      view_record.last_successful_task->is_reused_layer_tree = true;
       tasks.push_back(std::move(view_record.last_successful_task));
     }
   }
@@ -668,11 +669,15 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
   std::vector<std::unique_ptr<LayerTreeTask>> resubmitted_tasks;
   for (std::unique_ptr<LayerTreeTask>& task : tasks) {
     int64_t view_id = task->view_id;
+    bool is_reused_layer_tree = task->is_reused_layer_tree;
     std::unique_ptr<LayerTree> layer_tree = std::move(task->layer_tree);
     float device_pixel_ratio = task->device_pixel_ratio;
+    const LayerTree* previous_layer_tree =
+        is_reused_layer_tree ? layer_tree.get() : GetLastLayerTree(view_id);
 
-    DrawSurfaceStatus status = DrawToSurfaceUnsafe(
-        view_id, *layer_tree, device_pixel_ratio, presentation_time);
+    DrawSurfaceStatus status =
+        DrawToSurfaceUnsafe(view_id, *layer_tree, previous_layer_tree,
+                            device_pixel_ratio, presentation_time);
     FML_DCHECK(status != DrawSurfaceStatus::kDiscarded);
 
     auto& view_record = EnsureViewRecord(task->view_id);
@@ -681,8 +686,10 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
       view_record.last_successful_task = std::make_unique<LayerTreeTask>(
           view_id, std::move(layer_tree), device_pixel_ratio);
     } else if (status == DrawSurfaceStatus::kRetry) {
-      resubmitted_tasks.push_back(std::make_unique<LayerTreeTask>(
-          view_id, std::move(layer_tree), device_pixel_ratio));
+      auto retry_task = std::make_unique<LayerTreeTask>(
+          view_id, std::move(layer_tree), device_pixel_ratio);
+      retry_task->is_reused_layer_tree = is_reused_layer_tree;
+      resubmitted_tasks.push_back(std::move(retry_task));
     }
   }
   // TODO(dkwingsmt): Pass in raster cache(s) for all views.
@@ -712,6 +719,7 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
 DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     int64_t view_id,
     flutter::LayerTree& layer_tree,
+    const flutter::LayerTree* previous_layer_tree,
     float device_pixel_ratio,
     std::optional<fml::TimePoint> presentation_time) {
   FML_DCHECK(surface_);
@@ -770,7 +778,7 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
       damage = std::make_unique<FrameDamage>();
       auto existing_damage = frame->framebuffer_info().existing_damage;
       if (existing_damage.has_value() && !force_full_repaint) {
-        damage->SetPreviousLayerTree(GetLastLayerTree(view_id));
+        damage->SetPreviousLayerTree(previous_layer_tree);
         damage->AddAdditionalDamage(existing_damage.value());
         damage->SetClipAlignment(
             frame->framebuffer_info().horizontal_clip_alignment,

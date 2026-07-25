@@ -83,6 +83,10 @@ struct LayerTreeTask {
   std::unique_ptr<LayerTree> layer_tree;
   /// The pixel ratio of the target view.
   float device_pixel_ratio;
+  /// Whether this task was taken from Rasterizer's last-successful cache for
+  /// an autonomous external-texture redraw. While such a task is in flight it
+  /// is also the previous tree against which frame damage must be computed.
+  bool is_reused_layer_tree = false;
 
  private:
   FML_DISALLOW_COPY_AND_ASSIGN(LayerTreeTask);
