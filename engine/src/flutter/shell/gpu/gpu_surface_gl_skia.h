@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <memory>
+#include <unordered_map>
 
 #include "flutter/common/graphics/gl_context_switch.h"
 #include "flutter/flow/embedded_views.h"
@@ -59,6 +60,9 @@ class GPUSurfaceGLSkia : public Surface {
  private:
   bool CreateOrUpdateSurfaces(const DlISize& size);
 
+  bool SelectOrCreateOnscreenSurface(const DlISize& size,
+                                     const GLFBOInfo& fbo_info);
+
   sk_sp<SkSurface> AcquireRenderSurface(
       const DlISize& untransformed_size,
       const DlMatrix& root_surface_transformation);
@@ -69,6 +73,10 @@ class GPUSurfaceGLSkia : public Surface {
   sk_sp<GrDirectContext> context_;
   sk_sp<const GrGLInterface> gl_interface_;
   sk_sp<SkSurface> onscreen_surface_;
+  // Denial's embedder FBOs form a stable pool for the lifetime of this
+  // surface. Keep their SkSurface wrappers alive so rotating the scanout
+  // target does not repeatedly destroy and recreate stencil/DMSAA resources.
+  std::unordered_map<uint32_t, sk_sp<SkSurface>> onscreen_surfaces_;
   /// FBO backing the current `onscreen_surface_`.
   uint32_t fbo_id_ = 0;
   // The current FBO's existing damage, as tracked by the GPU surface, delegates

@@ -121,6 +121,7 @@ GPUSurfaceGLSkia::~GPUSurfaceGLSkia() {
   }
 
   onscreen_surface_ = nullptr;
+  onscreen_surfaces_.clear();
   fbo_id_ = 0;
   if (context_owner_) {
     context_->releaseResourcesAndAbandonContext();
@@ -262,6 +263,30 @@ static sk_sp<SkSurface> WrapOnscreenSurface(GrDirectContext* context,
   );
 }
 
+bool GPUSurfaceGLSkia::SelectOrCreateOnscreenSurface(
+    const DlISize& size,
+    const GLFBOInfo& fbo_info) {
+  auto surface_it = onscreen_surfaces_.find(fbo_info.fbo_id);
+  if (surface_it == onscreen_surfaces_.end()) {
+    auto surface =
+        WrapOnscreenSurface(context_.get(),   // GL context
+                            size,             // root surface size
+                            fbo_info.fbo_id,  // window FBO ID
+                            gl_interface_.get());
+    if (!surface) {
+      FML_LOG(ERROR) << "Could not wrap onscreen surface.";
+      return false;
+    }
+    surface_it =
+        onscreen_surfaces_.emplace(fbo_info.fbo_id, std::move(surface)).first;
+  }
+
+  onscreen_surface_ = surface_it->second;
+  fbo_id_ = fbo_info.fbo_id;
+  existing_damage_ = fbo_info.existing_damage;
+  return true;
+}
+
 bool GPUSurfaceGLSkia::CreateOrUpdateSurfaces(const DlISize& size) {
   if (onscreen_surface_ != nullptr &&
       size.width == onscreen_surface_->width() &&
@@ -275,6 +300,7 @@ bool GPUSurfaceGLSkia::CreateOrUpdateSurfaces(const DlISize& size) {
 
   // Either way, we need to get rid of previous surface.
   onscreen_surface_ = nullptr;
+  onscreen_surfaces_.clear();
   fbo_id_ = 0;
 
   if (size.IsEmpty()) {
@@ -282,28 +308,10 @@ bool GPUSurfaceGLSkia::CreateOrUpdateSurfaces(const DlISize& size) {
     return false;
   }
 
-  sk_sp<SkSurface> onscreen_surface;
-
   GLFrameInfo frame_info = {static_cast<uint32_t>(size.width),
                             static_cast<uint32_t>(size.height)};
   const GLFBOInfo fbo_info = delegate_->GLContextFBO(frame_info);
-  onscreen_surface = WrapOnscreenSurface(context_.get(),   // GL context
-                                         size,             // root surface size
-                                         fbo_info.fbo_id,  // window FBO ID
-                                         gl_interface_.get());
-
-  if (onscreen_surface == nullptr) {
-    // If the onscreen surface could not be wrapped. There is absolutely no
-    // point in moving forward.
-    FML_LOG(ERROR) << "Could not wrap onscreen surface.";
-    return false;
-  }
-
-  onscreen_surface_ = std::move(onscreen_surface);
-  fbo_id_ = fbo_info.fbo_id;
-  existing_damage_ = fbo_info.existing_damage;
-
-  return true;
+  return SelectOrCreateOnscreenSurface(size, fbo_info);
 }
 
 // |Surface|
@@ -397,22 +405,12 @@ bool GPUSurfaceGLSkia::PresentSurface(const SurfaceFrame& frame) {
     GLFrameInfo frame_info = {static_cast<uint32_t>(current_size.width),
                               static_cast<uint32_t>(current_size.height)};
 
-    // The FBO has changed, ask the delegate for the new FBO and do a surface
-    // re-wrap.
+    // The FBO has changed. Select its existing wrapper, or create one the
+    // first time this pool entry is returned.
     const GLFBOInfo fbo_info = delegate_->GLContextFBO(frame_info);
-    auto new_onscreen_surface =
-        WrapOnscreenSurface(context_.get(),   // GL context
-                            current_size,     // root surface size
-                            fbo_info.fbo_id,  // window FBO ID
-                            gl_interface_.get());
-
-    if (!new_onscreen_surface) {
+    if (!SelectOrCreateOnscreenSurface(current_size, fbo_info)) {
       return false;
     }
-
-    onscreen_surface_ = std::move(new_onscreen_surface);
-    fbo_id_ = fbo_info.fbo_id;
-    existing_damage_ = fbo_info.existing_damage;
   }
 
   return true;
