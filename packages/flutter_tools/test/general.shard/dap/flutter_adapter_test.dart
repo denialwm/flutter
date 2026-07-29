@@ -29,6 +29,28 @@ void main() {
   final flutterRoot = platform.isWindows ? r'C:\fake\flutter' : '/fake/flutter';
 
   group('flutter adapter', () {
+    test('recognizes only the Denial raw-embedder tool', () {
+      expect(isDenialRawEmbedderTool('denial-flutter'), isTrue);
+      expect(isDenialRawEmbedderTool('/usr/bin/denial-flutter'), isTrue);
+      expect(isDenialRawEmbedderTool('/custom/flutter'), isFalse);
+      expect(isDenialRawEmbedderTool(null), isFalse);
+    });
+
+    test('disables debugger control for a Denial raw-embedder attach', () async {
+      final adapter = FakeFlutterDebugAdapter(
+        fileSystem: MemoryFileSystem.test(style: fsStyle),
+        platform: platform,
+      );
+      final args = FlutterAttachRequestArguments(cwd: '.', customTool: '/usr/bin/denial-flutter');
+
+      await adapter.configurationDoneRequest(FakeRequest(), null, () {});
+      final responseCompleter = Completer<void>();
+      await adapter.attachRequest(FakeRequest(), args, responseCompleter.complete);
+      await responseCompleter.future;
+
+      expect(adapter.enableDebugger, isFalse);
+    });
+
     final expectedFlutterExecutable = platform.isWindows
         ? r'C:\fake\flutter\bin\flutter.bat'
         : '/fake/flutter/bin/flutter';
