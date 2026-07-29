@@ -82,7 +82,7 @@ class GPUSurfaceGLSkia : public Surface {
   // The current FBO's existing damage, as tracked by the GPU surface, delegates
   // still have an option of overriding this damage with their own in
   // `GLContextFrameBufferInfo`.
-  std::optional<DlIRect> existing_damage_ = std::nullopt;
+  std::optional<DlRegion> existing_damage_ = std::nullopt;
   bool context_owner_ = false;
   // TODO(38466): Refactor GPU surface APIs take into account the fact that an
   // external view embedder may want to render to the root surface. This is a

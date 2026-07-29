@@ -566,7 +566,7 @@ TEST_F(ContainerLayerDiffTest, PictureLayerInsertion) {
   t1.root()->Add(t1_c2);
 
   auto damage = DiffLayerTree(t1, MockLayerTree());
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 150, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(0, 0, 150, 50));
 
   // Add in the middle
 
@@ -582,7 +582,7 @@ TEST_F(ContainerLayerDiffTest, PictureLayerInsertion) {
   t2.root()->Add(t2_c2);
 
   damage = DiffLayerTree(t2, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(200, 0, 250, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(200, 0, 250, 50));
 
   // Add in the beginning
 
@@ -591,7 +591,7 @@ TEST_F(ContainerLayerDiffTest, PictureLayerInsertion) {
   t2.root()->Add(t2_c1);
   t2.root()->Add(t2_c2);
   damage = DiffLayerTree(t2, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(200, 0, 250, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(200, 0, 250, 50));
 
   // Add at the end
 
@@ -600,7 +600,7 @@ TEST_F(ContainerLayerDiffTest, PictureLayerInsertion) {
   t2.root()->Add(t2_c2);
   t2.root()->Add(CreateDisplayListLayer(pic3));
   damage = DiffLayerTree(t2, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(200, 0, 250, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(200, 0, 250, 50));
 }
 
 // Insert picture layer amongst other picture layers
@@ -614,7 +614,7 @@ TEST_F(ContainerLayerDiffTest, PictureInsertion) {
   t1.root()->Add(CreateDisplayListLayer(pic2));
 
   auto damage = DiffLayerTree(t1, MockLayerTree());
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 150, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(0, 0, 150, 50));
 
   MockLayerTree t2;
   t2.root()->Add(CreateDisplayListLayer(pic3));
@@ -622,7 +622,7 @@ TEST_F(ContainerLayerDiffTest, PictureInsertion) {
   t2.root()->Add(CreateDisplayListLayer(pic2));
 
   damage = DiffLayerTree(t2, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(200, 0, 250, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(200, 0, 250, 50));
 
   MockLayerTree t3;
   t3.root()->Add(CreateDisplayListLayer(pic1));
@@ -630,7 +630,7 @@ TEST_F(ContainerLayerDiffTest, PictureInsertion) {
   t3.root()->Add(CreateDisplayListLayer(pic2));
 
   damage = DiffLayerTree(t3, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(200, 0, 250, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(200, 0, 250, 50));
 
   MockLayerTree t4;
   t4.root()->Add(CreateDisplayListLayer(pic1));
@@ -638,7 +638,7 @@ TEST_F(ContainerLayerDiffTest, PictureInsertion) {
   t4.root()->Add(CreateDisplayListLayer(pic3));
 
   damage = DiffLayerTree(t4, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(200, 0, 250, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(200, 0, 250, 50));
 }
 
 TEST_F(ContainerLayerDiffTest, LayerDeletion) {
@@ -656,46 +656,46 @@ TEST_F(ContainerLayerDiffTest, LayerDeletion) {
   t1.root()->Add(c3);
 
   auto damage = DiffLayerTree(t1, MockLayerTree());
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 250, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(0, 0, 250, 50));
 
   MockLayerTree t2;
   t2.root()->Add(c2);
   t2.root()->Add(c3);
 
   damage = DiffLayerTree(t2, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 50, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(0, 0, 50, 50));
 
   MockLayerTree t3;
   t3.root()->Add(c1);
   t3.root()->Add(c3);
 
   damage = DiffLayerTree(t3, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(100, 0, 150, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(100, 0, 150, 50));
 
   MockLayerTree t4;
   t4.root()->Add(c1);
   t4.root()->Add(c2);
 
   damage = DiffLayerTree(t4, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(200, 0, 250, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(200, 0, 250, 50));
 
   MockLayerTree t5;
   t5.root()->Add(c1);
 
   damage = DiffLayerTree(t5, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(100, 0, 250, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(100, 0, 250, 50));
 
   MockLayerTree t6;
   t6.root()->Add(c2);
 
   damage = DiffLayerTree(t6, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 250, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(0, 0, 250, 50));
 
   MockLayerTree t7;
   t7.root()->Add(c3);
 
   damage = DiffLayerTree(t7, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 150, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(0, 0, 150, 50));
 }
 
 TEST_F(ContainerLayerDiffTest, ReplaceLayer) {
@@ -717,7 +717,7 @@ TEST_F(ContainerLayerDiffTest, ReplaceLayer) {
   t1.root()->Add(c3);
 
   auto damage = DiffLayerTree(t1, MockLayerTree());
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 250, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(0, 0, 250, 50));
 
   MockLayerTree t2;
   t2.root()->Add(c1);
@@ -725,7 +725,7 @@ TEST_F(ContainerLayerDiffTest, ReplaceLayer) {
   t2.root()->Add(c3);
 
   damage = DiffLayerTree(t2, t1);
-  EXPECT_TRUE(damage.frame_damage.IsEmpty());
+  EXPECT_TRUE(damage.frame_damage.bounds().IsEmpty());
 
   MockLayerTree t3;
   t3.root()->Add(CreateContainerLayer({std::make_shared<MockLayer>(path1a)}));
@@ -733,7 +733,7 @@ TEST_F(ContainerLayerDiffTest, ReplaceLayer) {
   t3.root()->Add(c3);
 
   damage = DiffLayerTree(t3, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 50, 150));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(0, 0, 50, 150));
 
   MockLayerTree t4;
   t4.root()->Add(c1);
@@ -741,7 +741,7 @@ TEST_F(ContainerLayerDiffTest, ReplaceLayer) {
   t4.root()->Add(c3);
 
   damage = DiffLayerTree(t4, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(100, 0, 150, 150));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(100, 0, 150, 150));
 
   MockLayerTree t5;
   t5.root()->Add(c1);
@@ -749,7 +749,7 @@ TEST_F(ContainerLayerDiffTest, ReplaceLayer) {
   t5.root()->Add(CreateContainerLayer(std::make_shared<MockLayer>(path3a)));
 
   damage = DiffLayerTree(t5, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(200, 0, 250, 150));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(200, 0, 250, 150));
 }
 
 }  // namespace testing

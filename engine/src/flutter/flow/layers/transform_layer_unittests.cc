@@ -438,7 +438,7 @@ TEST_F(TransformLayerLayerDiffTest, Transform) {
   t1.root()->Add(transform1);
 
   auto damage = DiffLayerTree(t1, MockLayerTree());
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(10, 10, 60, 60));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(10, 10, 60, 60));
 
   auto transform2 =
       std::make_shared<TransformLayer>(DlMatrix::MakeTranslation({20, 20}));
@@ -449,7 +449,7 @@ TEST_F(TransformLayerLayerDiffTest, Transform) {
   t2.root()->Add(transform2);
 
   damage = DiffLayerTree(t2, t1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(10, 10, 70, 70));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(10, 10, 70, 70));
 
   auto transform3 =
       std::make_shared<TransformLayer>(DlMatrix::MakeTranslation({20, 20}));
@@ -460,7 +460,7 @@ TEST_F(TransformLayerLayerDiffTest, Transform) {
   t3.root()->Add(transform3);
 
   damage = DiffLayerTree(t3, t2);
-  EXPECT_EQ(damage.frame_damage, DlIRect());
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect());
 }
 
 TEST_F(TransformLayerLayerDiffTest, TransformNested) {
@@ -491,7 +491,7 @@ TEST_F(TransformLayerLayerDiffTest, TransformNested) {
   l1.root()->Add(transform1);
 
   auto damage = DiffLayerTree(l1, MockLayerTree());
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(20, 20, 500, 500));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(20, 20, 500, 500));
 
   auto transform2 =
       std::make_shared<TransformLayer>(DlMatrix::MakeScale({2.0f, 2.0f, 1.0f}));
@@ -522,14 +522,15 @@ TEST_F(TransformLayerLayerDiffTest, TransformNested) {
 
   // transform2 has not transform1 assigned as old layer, so it should be
   // invalidated completely
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(20, 20, 500, 500));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(20, 20, 500, 500));
 
   // now diff the tree properly, the only difference being transform2_2 and
   // transform_2_1
   transform2->AssignOldLayer(transform1.get());
   damage = DiffLayerTree(l2, l1);
 
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(200, 200, 300, 302));
+  EXPECT_EQ(damage.frame_damage.bounds(),
+            DlIRect::MakeLTRB(200, 200, 300, 302));
 }
 
 }  // namespace testing

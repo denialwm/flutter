@@ -635,7 +635,7 @@ TEST_F(OpacityLayerDiffTest, FractionalTranslation) {
 
   auto damage = DiffLayerTree(tree1, MockLayerTree(), DlIRect(), 0, 0,
                               /*use_raster_cache=*/false);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(10, 10, 61, 61));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(10, 10, 61, 61));
 }
 
 TEST_F(OpacityLayerDiffTest, FractionalTranslationWithRasterCache) {
@@ -648,7 +648,7 @@ TEST_F(OpacityLayerDiffTest, FractionalTranslationWithRasterCache) {
 
   auto damage = DiffLayerTree(tree1, MockLayerTree(), DlIRect(), 0, 0,
                               /*use_raster_cache=*/true);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(11, 11, 61, 61));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(11, 11, 61, 61));
 }
 
 TEST_F(OpacityLayerTest, FullyOpaqueWithFractionalValues) {

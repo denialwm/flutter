@@ -429,7 +429,7 @@ TEST_F(BackdropLayerDiffTest, BackdropLayer) {
 
   // no clip, effect over entire surface
   auto damage = DiffLayerTree(l1, MockLayerTree(DlISize(100, 100)));
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeWH(100, 100));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeWH(100, 100));
 
   MockLayerTree l2(DlISize(100, 100));
 
@@ -440,7 +440,7 @@ TEST_F(BackdropLayerDiffTest, BackdropLayer) {
   l2.root()->Add(clip);
   damage = DiffLayerTree(l2, MockLayerTree(DlISize(100, 100)));
 
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 90, 90));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(0, 0, 90, 90));
 
   MockLayerTree l3;
   auto scale =
@@ -449,7 +449,7 @@ TEST_F(BackdropLayerDiffTest, BackdropLayer) {
   l3.root()->Add(scale);
 
   damage = DiffLayerTree(l3, MockLayerTree());
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 180, 180));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(0, 0, 180, 180));
 
   MockLayerTree l4;
   l4.root()->Add(scale);
@@ -458,7 +458,8 @@ TEST_F(BackdropLayerDiffTest, BackdropLayer) {
   auto path1 = DlPath::MakeRectLTRB(180, 180, 190, 190);
   l4.root()->Add(std::make_shared<MockLayer>(path1));
   damage = DiffLayerTree(l4, l3);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(180, 180, 190, 190));
+  EXPECT_EQ(damage.frame_damage.bounds(),
+            DlIRect::MakeLTRB(180, 180, 190, 190));
 
   MockLayerTree l5;
   l5.root()->Add(scale);
@@ -467,7 +468,7 @@ TEST_F(BackdropLayerDiffTest, BackdropLayer) {
   auto path2 = DlPath::MakeRectLTRB(179, 179, 189, 189);
   l5.root()->Add(std::make_shared<MockLayer>(path2));
   damage = DiffLayerTree(l5, l4);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(0, 0, 190, 190));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(0, 0, 190, 190));
 }
 
 TEST_F(BackdropLayerDiffTest, ReadbackOutsideOfPaintArea) {
@@ -483,7 +484,8 @@ TEST_F(BackdropLayerDiffTest, ReadbackOutsideOfPaintArea) {
   l1.root()->Add(clip);
   auto damage = DiffLayerTree(l1, MockLayerTree(DlISize(100, 100)));
 
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(60 - 50, 60 - 50, 80, 80));
+  EXPECT_EQ(damage.frame_damage.bounds(),
+            DlIRect::MakeLTRB(60 - 50, 60 - 50, 80, 80));
 
   MockLayerTree l2(DlISize(100, 100));
   // path inside readback area must trigger whole readback repaint + filter
@@ -492,7 +494,8 @@ TEST_F(BackdropLayerDiffTest, ReadbackOutsideOfPaintArea) {
   l2.root()->Add(clip);
   l2.root()->Add(std::make_shared<MockLayer>(path2));
   damage = DiffLayerTree(l2, l1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(60 - 50, 60 - 50, 80, 80));
+  EXPECT_EQ(damage.frame_damage.bounds(),
+            DlIRect::MakeLTRB(60 - 50, 60 - 50, 80, 80));
 }
 
 TEST_F(BackdropLayerDiffTest, BackdropLayerInvalidTransform) {
@@ -523,7 +526,7 @@ TEST_F(BackdropLayerDiffTest, BackdropLayerInvalidTransform) {
       std::make_shared<BackdropFilterLayer>(filter, DlBlendMode::kSrcOver));
 
   auto damage = DiffLayerTree(l1, MockLayerTree(DlISize(100, 100)));
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeWH(100, 100));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeWH(100, 100));
 }
 
 }  // namespace testing

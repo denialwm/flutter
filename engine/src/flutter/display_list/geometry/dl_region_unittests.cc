@@ -20,6 +20,30 @@ TEST(DisplayListRegion, EmptyRegion) {
   EXPECT_TRUE(region.getRects().empty());
 }
 
+TEST(DisplayListRegion, EmptyRectangleCreatesEmptyRegion) {
+  DlRegion region{DlIRect()};
+  EXPECT_TRUE(region.isEmpty());
+  EXPECT_TRUE(region.getRects().empty());
+}
+
+TEST(DisplayListRegion, EmptyRectanglesAreIgnored) {
+  const DlIRect non_empty = DlIRect::MakeLTRB(10, 10, 50, 50);
+  DlRegion region(std::vector<DlIRect>{
+      DlIRect(),
+      non_empty,
+      DlIRect::MakeLTRB(20, 20, 20, 40),
+  });
+  EXPECT_FALSE(region.isEmpty());
+  EXPECT_EQ(region.getRects(), std::vector<DlIRect>{non_empty});
+
+  DlRegion empty_region(std::vector<DlIRect>{
+      DlIRect(),
+      DlIRect::MakeLTRB(20, 20, 20, 40),
+  });
+  EXPECT_TRUE(empty_region.isEmpty());
+  EXPECT_TRUE(empty_region.getRects().empty());
+}
+
 TEST(DisplayListRegion, SingleRectangle) {
   DlRegion region({DlIRect::MakeLTRB(10, 10, 50, 50)});
   auto rects = region.getRects();

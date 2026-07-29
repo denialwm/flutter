@@ -98,7 +98,11 @@ DlRegion::DlRegion(const std::vector<DlIRect>& rects) {
   setRects(rects);
 }
 
-DlRegion::DlRegion(const DlIRect& rect) : bounds_(rect) {
+DlRegion::DlRegion(const DlIRect& rect) {
+  if (rect.IsEmpty()) {
+    return;
+  }
+  bounds_ = rect;
   Span span{rect.GetLeft(), rect.GetRight()};
   lines_.push_back(makeLine(rect.GetTop(), rect.GetBottom(), &span, &span + 1));
 }
@@ -252,12 +256,15 @@ void DlRegion::setRects(const std::vector<DlIRect>& unsorted_rects) {
   // setRects can only be called on empty regions.
   FML_DCHECK(lines_.empty());
 
-  size_t count = unsorted_rects.size();
-  std::vector<const DlIRect*> rects(count);
-  for (size_t i = 0; i < count; i++) {
-    rects[i] = &unsorted_rects[i];
-    bounds_ = bounds_.Union(unsorted_rects[i]);
+  std::vector<const DlIRect*> rects;
+  rects.reserve(unsorted_rects.size());
+  for (const DlIRect& rect : unsorted_rects) {
+    if (!rect.IsEmpty()) {
+      rects.push_back(&rect);
+      bounds_ = bounds_.Union(rect);
+    }
   }
+  const size_t count = rects.size();
   std::sort(rects.begin(), rects.end(), [](const DlIRect* a, const DlIRect* b) {
     if (a->GetTop() < b->GetTop()) {
       return true;
@@ -304,9 +311,6 @@ void DlRegion::setRects(const std::vector<DlIRect>& unsorted_rects) {
     // Next, insert any new rects we've reached into the active list
     while (next_rect < count) {
       const DlIRect* r = rects[next_rect];
-      if (r->IsEmpty()) {
-        continue;
-      }
       if (r->GetTop() > cur_y) {
         break;
       }

@@ -169,12 +169,13 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceMetalSkia::AcquireFrameFromCAMetalLayer(
         if (entry.first != texture) {
           // Accumulate damage for other framebuffers
           if (surface_frame.submit_info().frame_damage) {
-            entry.second = entry.second.Union(*surface_frame.submit_info().frame_damage);
+            entry.second =
+                DlRegion::MakeUnion(entry.second, *surface_frame.submit_info().frame_damage);
           }
         }
       }
       // Reset accumulated damage for current framebuffer
-      damage_[texture] = DlIRect();
+      damage_[texture] = DlRegion();
     }
 
     return true;
