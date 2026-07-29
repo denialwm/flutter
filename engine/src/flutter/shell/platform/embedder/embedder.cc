@@ -5,8 +5,10 @@
 #define FML_USED_ON_EMBEDDER
 #define RAPIDJSON_HAS_STDSTRING 1
 
+#include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <set>
 #include <string>
@@ -271,13 +273,44 @@ static FlutterRect DlIRectToFlutterRect(const flutter::DlIRect& dl_rect) {
   return flutter_rect;
 }
 
-// Auxiliary function used to translate rectangles of type FlutterRect to
-// SkIRect.
-static const flutter::DlIRect FlutterRectToDlIRect(FlutterRect flutter_rect) {
-  return flutter::DlIRect::MakeLTRB(static_cast<int32_t>(flutter_rect.left),
-                                    static_cast<int32_t>(flutter_rect.top),
-                                    static_cast<int32_t>(flutter_rect.right),
-                                    static_cast<int32_t>(flutter_rect.bottom));
+static std::vector<FlutterRect> DlRegionToFlutterRects(
+    const std::optional<flutter::DlRegion>& region) {
+  std::vector<FlutterRect> result;
+  if (!region) {
+    return result;
+  }
+  const std::vector<flutter::DlIRect> rects = region->getRects();
+  result.reserve(rects.size());
+  for (const flutter::DlIRect& rect : rects) {
+    result.push_back(DlIRectToFlutterRect(rect));
+  }
+  return result;
+}
+
+// Converts embedder damage conservatively. Floating point bounds are rounded
+// out so that fractional input can never omit a damaged pixel.
+static std::optional<flutter::DlIRect> FlutterRectToDlIRect(
+    FlutterRect flutter_rect) {
+  if (!std::isfinite(flutter_rect.left) || !std::isfinite(flutter_rect.top) ||
+      !std::isfinite(flutter_rect.right) ||
+      !std::isfinite(flutter_rect.bottom) ||
+      flutter_rect.left > flutter_rect.right ||
+      flutter_rect.top > flutter_rect.bottom) {
+    return std::nullopt;
+  }
+
+  const double left = std::floor(flutter_rect.left);
+  const double top = std::floor(flutter_rect.top);
+  const double right = std::ceil(flutter_rect.right);
+  const double bottom = std::ceil(flutter_rect.bottom);
+  constexpr double kMin = std::numeric_limits<int32_t>::min();
+  constexpr double kMax = std::numeric_limits<int32_t>::max();
+  if (left < kMin || top < kMin || right > kMax || bottom > kMax) {
+    return std::nullopt;
+  }
+  return flutter::DlIRect::MakeLTRB(
+      static_cast<int32_t>(left), static_cast<int32_t>(top),
+      static_cast<int32_t>(right), static_cast<int32_t>(bottom));
 }
 
 // We need GL_BGRA8_EXT for creating SkSurfaces from FlutterOpenGLSurfaces
@@ -328,33 +361,22 @@ InferOpenGLPlatformViewCreationCallback(
     if (present) {
       return present(user_data);
     } else {
-      // Format the frame and buffer damages accordingly. Note that, since the
-      // current compute damage algorithm only returns one rectangle for damage
-      // we are assuming the number of rectangles provided in frame and buffer
-      // damage are always 1. Once the function that computes damage implements
-      // support for multiple damage rectangles, GLPresentInfo should also
-      // contain the number of damage rectangles.
-
-      std::optional<FlutterRect> frame_damage_rect;
-      if (gl_present_info.frame_damage) {
-        frame_damage_rect =
-            DlIRectToFlutterRect(*(gl_present_info.frame_damage));
-      }
-      std::optional<FlutterRect> buffer_damage_rect;
-      if (gl_present_info.buffer_damage) {
-        buffer_damage_rect =
-            DlIRectToFlutterRect(*(gl_present_info.buffer_damage));
-      }
+      std::vector<FlutterRect> frame_damage_rects =
+          DlRegionToFlutterRects(gl_present_info.frame_damage);
+      std::vector<FlutterRect> buffer_damage_rects =
+          DlRegionToFlutterRects(gl_present_info.buffer_damage);
 
       FlutterDamage frame_damage{
           .struct_size = sizeof(FlutterDamage),
-          .num_rects = frame_damage_rect ? size_t{1} : size_t{0},
-          .damage = frame_damage_rect ? &frame_damage_rect.value() : nullptr,
+          .num_rects = frame_damage_rects.size(),
+          .damage =
+              frame_damage_rects.empty() ? nullptr : frame_damage_rects.data(),
       };
       FlutterDamage buffer_damage{
           .struct_size = sizeof(FlutterDamage),
-          .num_rects = buffer_damage_rect ? size_t{1} : size_t{0},
-          .damage = buffer_damage_rect ? &buffer_damage_rect.value() : nullptr,
+          .num_rects = buffer_damage_rects.size(),
+          .damage = buffer_damage_rects.empty() ? nullptr
+                                                : buffer_damage_rects.data(),
       };
 
       // Construct the present information concerning the frame being rendered.
@@ -397,26 +419,48 @@ InferOpenGLPlatformViewCreationCallback(
     }
 
     // Given the FBO's ID, get its existing damage.
-    FlutterDamage existing_damage;
+    FlutterDamage existing_damage = {
+        .struct_size = sizeof(FlutterDamage),
+        .num_rects = 0,
+        .damage = nullptr,
+    };
     populate_existing_damage(user_data, id, &existing_damage);
 
-    std::optional<flutter::DlIRect> existing_damage_rect = std::nullopt;
-
-    // Verify that at least one damage rectangle was provided.
-    if (existing_damage.num_rects <= 0 || existing_damage.damage == nullptr) {
-      FML_LOG(INFO) << "No damage was provided. Forcing full repaint.";
+    std::optional<flutter::DlRegion> existing_damage_region;
+    constexpr size_t kMaxDamageRectCount = 4096;
+    if (existing_damage.struct_size < sizeof(FlutterDamage) ||
+        existing_damage.num_rects > kMaxDamageRectCount ||
+        (existing_damage.num_rects > 0 && existing_damage.damage == nullptr)) {
+      FML_LOG(ERROR) << "Invalid existing damage. Forcing full repaint.";
     } else {
-      existing_damage_rect = flutter::DlIRect();
+      std::vector<flutter::DlIRect> rects;
+      rects.reserve(existing_damage.num_rects);
+      bool valid = true;
       for (size_t i = 0; i < existing_damage.num_rects; i++) {
-        existing_damage_rect = existing_damage_rect->Union(
-            FlutterRectToDlIRect(existing_damage.damage[i]));
+        std::optional<flutter::DlIRect> rect =
+            FlutterRectToDlIRect(existing_damage.damage[i]);
+        if (!rect) {
+          valid = false;
+          break;
+        }
+        if (!rect->IsEmpty()) {
+          rects.push_back(*rect);
+        }
+      }
+      if (valid) {
+        // An empty region is known-valid state and is distinct from nullopt,
+        // which means that the buffer contents are unknown.
+        existing_damage_region = flutter::DlRegion(rects);
+      } else {
+        FML_LOG(ERROR) << "Invalid existing damage rectangle. Forcing full "
+                          "repaint.";
       }
     }
 
     // Pass the information about this FBO to the rendering backend.
     return flutter::GLFBOInfo{
         .fbo_id = static_cast<uint32_t>(id),
-        .existing_damage = existing_damage_rect,
+        .existing_damage = existing_damage_region,
     };
   };
 

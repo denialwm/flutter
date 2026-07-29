@@ -355,17 +355,17 @@ TEST_F(DisplayListLayerDiffTest, SimpleDisplayList) {
   tree1.root()->Add(CreateDisplayListLayer(display_list));
 
   auto damage = DiffLayerTree(tree1, MockLayerTree());
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(10, 10, 60, 60));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(10, 10, 60, 60));
 
   MockLayerTree tree2;
   tree2.root()->Add(CreateDisplayListLayer(display_list));
 
   damage = DiffLayerTree(tree2, tree1);
-  EXPECT_TRUE(damage.frame_damage.IsEmpty());
+  EXPECT_TRUE(damage.frame_damage.bounds().IsEmpty());
 
   MockLayerTree tree3;
   damage = DiffLayerTree(tree3, tree2);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(10, 10, 60, 60));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(10, 10, 60, 60));
 }
 
 TEST_F(DisplayListLayerDiffTest, FractionalTranslation) {
@@ -376,7 +376,7 @@ TEST_F(DisplayListLayerDiffTest, FractionalTranslation) {
 
   auto damage = DiffLayerTree(tree1, MockLayerTree(), DlIRect(), 0, 0,
                               /*use_raster_cache=*/false);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(10, 10, 61, 61));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(10, 10, 61, 61));
 }
 
 TEST_F(DisplayListLayerDiffTest, FractionalTranslationWithRasterCache) {
@@ -387,7 +387,7 @@ TEST_F(DisplayListLayerDiffTest, FractionalTranslationWithRasterCache) {
 
   auto damage = DiffLayerTree(tree1, MockLayerTree(), DlIRect(), 0, 0,
                               /*use_raster_cache=*/true);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(11, 11, 61, 61));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(11, 11, 61, 61));
 }
 
 TEST_F(DisplayListLayerDiffTest, DisplayListCompare) {
@@ -397,7 +397,7 @@ TEST_F(DisplayListLayerDiffTest, DisplayListCompare) {
   tree1.root()->Add(CreateDisplayListLayer(display_list1));
 
   auto damage = DiffLayerTree(tree1, MockLayerTree());
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(10, 10, 60, 60));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(10, 10, 60, 60));
 
   MockLayerTree tree2;
   // same DL, same offset
@@ -406,7 +406,7 @@ TEST_F(DisplayListLayerDiffTest, DisplayListCompare) {
   tree2.root()->Add(CreateDisplayListLayer(display_list2));
 
   damage = DiffLayerTree(tree2, tree1);
-  EXPECT_EQ(damage.frame_damage, DlIRect());
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect());
 
   MockLayerTree tree3;
   auto display_list3 =
@@ -415,7 +415,7 @@ TEST_F(DisplayListLayerDiffTest, DisplayListCompare) {
   tree3.root()->Add(CreateDisplayListLayer(display_list3, DlPoint(10, 10)));
 
   damage = DiffLayerTree(tree3, tree2);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(10, 10, 70, 70));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(10, 10, 70, 70));
 
   MockLayerTree tree4;
   // different color
@@ -424,7 +424,7 @@ TEST_F(DisplayListLayerDiffTest, DisplayListCompare) {
   tree4.root()->Add(CreateDisplayListLayer(display_list4, DlPoint(10, 10)));
 
   damage = DiffLayerTree(tree4, tree3);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(20, 20, 70, 70));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(20, 20, 70, 70));
 }
 
 TEST_F(DisplayListLayerTest, DisplayListAccessCountDependsOnVisibility) {

@@ -136,7 +136,9 @@ SurfaceFrame::FramebufferInfo AndroidSurfaceGLSkia::GLContextFramebufferInfo()
   SurfaceFrame::FramebufferInfo res;
   res.supports_readback = true;
   res.supports_partial_repaint = onscreen_surface_->SupportsPartialRepaint();
-  res.existing_damage = onscreen_surface_->InitialDamage();
+  if (auto initial_damage = onscreen_surface_->InitialDamage()) {
+    res.existing_damage = DlRegion(*initial_damage);
+  }
   // Some devices (Pixel2 XL) needs EGL_KHR_partial_update rect aligned to 4,
   // otherwise there are glitches
   // (https://github.com/flutter/flutter/issues/97482#)
@@ -159,15 +161,23 @@ bool AndroidSurfaceGLSkia::GLContextPresent(const GLPresentInfo& present_info) {
   if (present_info.presentation_time) {
     onscreen_surface_->SetPresentationTime(*present_info.presentation_time);
   }
-  return onscreen_surface_->SwapBuffers(present_info.frame_damage);
+  const std::optional<DlIRect> frame_damage_bounds =
+      present_info.frame_damage
+          ? std::make_optional(present_info.frame_damage->bounds())
+          : std::nullopt;
+  return onscreen_surface_->SwapBuffers(frame_damage_bounds);
 }
 
 GLFBOInfo AndroidSurfaceGLSkia::GLContextFBO(GLFrameInfo frame_info) const {
   FML_DCHECK(IsValid());
   // The default window bound framebuffer on Android.
+  const std::optional<DlIRect> initial_damage =
+      onscreen_surface_->InitialDamage();
   return GLFBOInfo{
       .fbo_id = 0,
-      .existing_damage = onscreen_surface_->InitialDamage(),
+      .existing_damage = initial_damage
+                             ? std::make_optional(DlRegion(*initial_damage))
+                             : std::nullopt,
   };
 }
 

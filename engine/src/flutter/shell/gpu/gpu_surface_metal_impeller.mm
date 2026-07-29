@@ -137,20 +137,21 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceMetalImpeller::AcquireFrameFromCAMetalLa
             if (entry.first != texture) {
               // Accumulate damage for other framebuffers
               if (surface_frame.submit_info().frame_damage) {
-                entry.second = entry.second.Union(*surface_frame.submit_info().frame_damage);
+                entry.second =
+                    DlRegion::MakeUnion(entry.second, *surface_frame.submit_info().frame_damage);
               }
             }
           }
           // Reset accumulated damage for current framebuffer
-          (*damage)[texture] = DlIRect();
+          (*damage)[texture] = DlRegion();
         }
 
         std::optional<impeller::IRect> clip_rect;
         if (surface_frame.submit_info().buffer_damage.has_value()) {
-          auto buffer_damage = surface_frame.submit_info().buffer_damage;
+          const DlIRect& buffer_damage = surface_frame.submit_info().buffer_damage->bounds();
           clip_rect =
-              impeller::IRect::MakeLTRB(buffer_damage->GetLeft(), buffer_damage->GetTop(),
-                                        buffer_damage->GetRight(), buffer_damage->GetBottom());
+              impeller::IRect::MakeLTRB(buffer_damage.GetLeft(), buffer_damage.GetTop(),
+                                        buffer_damage.GetRight(), buffer_damage.GetBottom());
         }
 
         auto surface = impeller::SurfaceMTL::MakeFromMetalLayerDrawable(
@@ -261,20 +262,21 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceMetalImpeller::AcquireFrameFromMTLTextur
             if (entry.first != texture_ptr) {
               // Accumulate damage for other framebuffers
               if (surface_frame.submit_info().frame_damage) {
-                entry.second = entry.second.Union(*surface_frame.submit_info().frame_damage);
+                entry.second =
+                    DlRegion::MakeUnion(entry.second, *surface_frame.submit_info().frame_damage);
               }
             }
           }
           // Reset accumulated damage for current framebuffer
-          (*damage)[texture_ptr] = DlIRect();
+          (*damage)[texture_ptr] = DlRegion();
         }
 
         std::optional<impeller::IRect> clip_rect;
         if (surface_frame.submit_info().buffer_damage.has_value()) {
-          auto buffer_damage = surface_frame.submit_info().buffer_damage;
+          const DlIRect& buffer_damage = surface_frame.submit_info().buffer_damage->bounds();
           clip_rect =
-              impeller::IRect::MakeLTRB(buffer_damage->GetLeft(), buffer_damage->GetTop(),
-                                        buffer_damage->GetRight(), buffer_damage->GetBottom());
+              impeller::IRect::MakeLTRB(buffer_damage.GetLeft(), buffer_damage.GetTop(),
+                                        buffer_damage.GetRight(), buffer_damage.GetBottom());
         }
 
         auto surface = impeller::SurfaceMTL::MakeFromTexture(

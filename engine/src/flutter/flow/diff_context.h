@@ -11,6 +11,7 @@
 #include <optional>
 #include <unordered_set>
 #include <vector>
+#include "display_list/geometry/dl_region.h"
 #include "display_list/utils/dl_matrix_clip_tracker.h"
 #include "flutter/flow/paint_region.h"
 #include "flutter/fml/macros.h"
@@ -19,21 +20,21 @@ namespace flutter {
 
 class Layer;
 
-// Represents area that needs to be updated in front buffer (frame_damage) and
-// area that is going to be painted to in back buffer (buffer_damage).
+// Represents regions that need to be updated in the front buffer
+// (frame_damage) and painted into the selected back buffer (buffer_damage).
 struct Damage {
-  // This is the damage between current and previous frame;
+  // This is the damage between current and previous frame.
   // If embedder supports partial update, this is the region that needs to be
   // repainted.
   // Corresponds to "surface damage" from EGL_KHR_partial_update.
-  DlIRect frame_damage;
+  DlRegion frame_damage;
 
-  // Reflects actual change to target framebuffer; This is frame_damage +
-  // damage previously acumulated for target framebuffer.
+  // Reflects actual change to target framebuffer. This is frame_damage plus
+  // damage previously accumulated for the selected target framebuffer.
   // All drawing will be clipped to this region. Knowing the affected area
   // upfront may be useful for tile based GPUs.
   // Corresponds to "buffer damage" from EGL_KHR_partial_update.
-  DlIRect buffer_damage;
+  DlRegion buffer_damage;
 };
 
 // Layer Unique Id to PaintRegion
@@ -138,12 +139,14 @@ class DiffContext {
 
   // Computes final damage
   //
-  // additional_damage is the previously accumulated frame_damage for
-  // current framebuffer
+  // additional_damage is the previously accumulated frame damage for the
+  // current framebuffer. nullopt means that the framebuffer contents are
+  // unknown and therefore require a complete repaint. An empty region means
+  // that the framebuffer already represents the current front buffer.
   //
-  // clip_alignment controls the alignment of resulting frame and surface
-  // damage.
-  Damage ComputeDamage(const DlIRect& additional_damage,
+  // clip_alignment controls the alignment of every rectangle in the resulting
+  // frame and buffer damage.
+  Damage ComputeDamage(const std::optional<DlRegion>& additional_damage,
                        int horizontal_clip_alignment = 0,
                        int vertical_clip_alignment = 0) const;
 
@@ -253,7 +256,7 @@ class DiffContext {
   // Rect must be in device coordinates.
   DlRect ApplyFilterBoundsAdjustment(DlRect rect) const;
 
-  DlRect damage_;
+  DlRegion damage_;
 
   PaintRegionMap& this_frame_paint_region_map_;
   const PaintRegionMap& last_frame_paint_region_map_;
@@ -263,9 +266,12 @@ class DiffContext {
 
   void AddDamage(const DlRect& rect);
 
-  void AlignRect(DlIRect& rect,
-                 int horizontal_alignment,
-                 int vertical_clip_alignment) const;
+  DlIRect AlignRect(const DlIRect& rect,
+                    int horizontal_alignment,
+                    int vertical_clip_alignment) const;
+  DlRegion AlignRegion(const DlRegion& region,
+                       int horizontal_alignment,
+                       int vertical_clip_alignment) const;
 
   struct Readback {
     // Index of rects_ entry that this readback belongs to. Used to

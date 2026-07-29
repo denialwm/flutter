@@ -5279,8 +5279,8 @@ fml::RefPtr<fml::TaskRunner> GetDefaultTaskRunner() {
       /*frame_size=*/flutter::DlISize(800, 600), nullptr,
       /*display_list_fallback=*/true);
   mock_surface->set_submit_info({
-      .frame_damage = flutter::DlIRect::MakeWH(800, 600),
-      .buffer_damage = flutter::DlIRect::MakeWH(400, 600),
+      .frame_damage = flutter::DlRegion(flutter::DlIRect::MakeWH(800, 600)),
+      .buffer_damage = flutter::DlRegion(flutter::DlIRect::MakeWH(400, 600)),
   });
 
   [flutterPlatformViewsController submitFrame:std::move(mock_surface)

@@ -701,10 +701,10 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
     const LayerTree* previous_layer_tree =
         is_reused_layer_tree ? layer_tree.get() : GetLastLayerTree(view_id);
 
-    DrawSurfaceStatus status = DrawToSurfaceUnsafe(
-        view_id, *layer_tree, previous_layer_tree,
-        dirty_texture_ids ? &*dirty_texture_ids : nullptr, is_reused_layer_tree,
-        device_pixel_ratio, presentation_time);
+    DrawSurfaceStatus status =
+        DrawToSurfaceUnsafe(view_id, *layer_tree, previous_layer_tree,
+                            dirty_texture_ids ? &*dirty_texture_ids : nullptr,
+                            device_pixel_ratio, presentation_time);
     FML_DCHECK(status != DrawSurfaceStatus::kDiscarded);
 
     auto& view_record = EnsureViewRecord(task->view_id);
@@ -749,7 +749,6 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     flutter::LayerTree& layer_tree,
     const flutter::LayerTree* previous_layer_tree,
     const std::unordered_set<int64_t>* dirty_texture_ids,
-    bool force_full_repaint,
     float device_pixel_ratio,
     std::optional<fml::TimePoint> presentation_time) {
   FML_DCHECK(surface_);
@@ -794,6 +793,7 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     NOT_SLIMPELLER(compositor_context_->raster_cache().BeginFrame());
 
     std::unique_ptr<FrameDamage> damage;
+    RasterDamagePolicy damage_policy = RasterDamagePolicy::kFullRepaint;
     // when leaf layer tracing is enabled we wish to repaint the whole frame
     // for accurate performance metrics.
     if (frame->framebuffer_info().supports_partial_repaint) {
@@ -801,19 +801,20 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
       // involved - ExternalViewEmbedder unconditionally clears the entire
       // surface and also partial repaint with platform view present is
       // something that still need to be figured out.
-      bool force_full_repaint =
+      const bool platform_requires_full_repaint =
           external_view_embedder_ &&
           (!raster_thread_merger_ || raster_thread_merger_->IsMerged());
 
       damage = std::make_unique<FrameDamage>();
-      auto existing_damage = frame->framebuffer_info().existing_damage;
-      if (existing_damage.has_value() && !force_full_repaint) {
-        damage->SetPreviousLayerTree(previous_layer_tree);
-        damage->SetDirtyTextureIds(dirty_texture_ids);
-        damage->AddAdditionalDamage(existing_damage.value());
-        damage->SetClipAlignment(
-            frame->framebuffer_info().horizontal_clip_alignment,
-            frame->framebuffer_info().vertical_clip_alignment);
+      damage->SetPreviousLayerTree(previous_layer_tree);
+      damage->SetDirtyTextureIds(dirty_texture_ids);
+      damage->SetExistingDamage(frame->framebuffer_info().existing_damage);
+      damage->SetClipAlignment(
+          frame->framebuffer_info().horizontal_clip_alignment,
+          frame->framebuffer_info().vertical_clip_alignment);
+      if (frame->framebuffer_info().existing_damage.has_value() &&
+          !platform_requires_full_repaint) {
+        damage_policy = RasterDamagePolicy::kUseDamageRegion;
       }
     }
 
@@ -826,7 +827,7 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
         compositor_frame->Raster(layer_tree,           // layer tree
                                  ignore_raster_cache,  // ignore raster cache
                                  damage.get(),         // frame damage
-                                 force_full_repaint    // raster policy
+                                 damage_policy         // raster policy
         );
     if (frame_status == RasterStatus::kSkipAndRetry) {
       return DrawSurfaceStatus::kRetry;

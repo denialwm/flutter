@@ -385,7 +385,11 @@ bool GPUSurfaceGLSkia::PresentSurface(const SurfaceFrame& frame) {
     return false;
   }
 
-  delegate_->GLContextSetDamageRegion(frame.submit_info().buffer_damage);
+  const std::optional<DlIRect> buffer_damage_bounds =
+      frame.submit_info().buffer_damage
+          ? std::make_optional(frame.submit_info().buffer_damage->bounds())
+          : std::nullopt;
+  delegate_->GLContextSetDamageRegion(buffer_damage_bounds);
 
   GLPresentInfo present_info = {
       .fbo_id = fbo_id_,

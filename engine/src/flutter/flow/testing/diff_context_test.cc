@@ -28,8 +28,8 @@ Damage DiffContextTest::DiffLayerTree(
                  impeller_enabled, dirty_texture_ids);
   dc.PushCullRect(DlRect::MakeSize(layer_tree.size()));
   layer_tree.root()->Diff(&dc, old_layer_tree.root());
-  return dc.ComputeDamage(additional_damage, horizontal_clip_alignment,
-                          vertical_clip_alignment);
+  return dc.ComputeDamage(DlRegion(additional_damage),
+                          horizontal_clip_alignment, vertical_clip_alignment);
 }
 
 sk_sp<DisplayList> DiffContextTest::CreateDisplayList(const DlRect& bounds,

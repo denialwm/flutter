@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "flutter/common/graphics/gl_context_switch.h"
+#include "flutter/display_list/geometry/dl_region.h"
 #include "flutter/flow/embedded_views.h"
 #include "flutter/fml/macros.h"
 
@@ -32,7 +33,7 @@ struct GLFBOInfo {
   // The frame buffer's ID.
   uint32_t fbo_id;
   // The frame buffer's existing damage (i.e. damage since it was last used).
-  const std::optional<DlIRect> existing_damage;
+  const std::optional<DlRegion> existing_damage;
 };
 
 // Information passed during presentation of a frame.
@@ -41,7 +42,7 @@ struct GLPresentInfo {
 
   // The frame damage is a hint to compositor telling it which parts of front
   // buffer need to be updated.
-  const std::optional<DlIRect>& frame_damage;
+  const std::optional<DlRegion>& frame_damage;
 
   // Time at which this frame is scheduled to be presented. This is a hint
   // that can be passed to the platform to drop queued frames.
@@ -49,7 +50,7 @@ struct GLPresentInfo {
 
   // The buffer damage refers to the region that needs to be set as damaged
   // within the frame buffer.
-  const std::optional<DlIRect>& buffer_damage;
+  const std::optional<DlRegion>& buffer_damage;
 };
 
 class GPUSurfaceGLDelegate {

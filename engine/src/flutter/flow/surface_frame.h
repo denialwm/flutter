@@ -10,6 +10,7 @@
 
 #include "flutter/common/graphics/gl_context_switch.h"
 #include "flutter/display_list/dl_builder.h"
+#include "flutter/display_list/geometry/dl_region.h"
 #include "flutter/display_list/skia/dl_sk_canvas.h"
 #include "flutter/fml/macros.h"
 #include "flutter/fml/time/time_point.h"
@@ -54,10 +55,10 @@ class SurfaceFrame {
     // repainted alongside of dirty area determined by diffing current and
     // last successfully rasterized layer tree;
     //
-    // If existing damage is unspecified (nullopt), entire frame will be
-    // rasterized (no partial redraw). To signal that there is no existing
-    // damage use an empty DlIRect.
-    std::optional<DlIRect> existing_damage = std::nullopt;
+    // If existing damage is unspecified (nullopt), the entire frame will be
+    // rasterized. An empty DlRegion signals that the selected framebuffer
+    // already represents the current front buffer.
+    std::optional<DlRegion> existing_damage = std::nullopt;
   };
 
   SurfaceFrame(sk_sp<SkSurface> surface,
@@ -73,14 +74,14 @@ class SurfaceFrame {
     // frame (n-1), and represents the area that a compositor must recompose.
     //
     // Corresponds to EGL_KHR_swap_buffers_with_damage
-    std::optional<DlIRect> frame_damage;
+    std::optional<DlRegion> frame_damage;
 
     // The buffer damage for a frame is the area changed since that same buffer
     // was last used. If the buffer has not been used before, the buffer damage
     // is the entire area of the buffer.
     //
     // Corresponds to EGL_KHR_partial_update
-    std::optional<DlIRect> buffer_damage;
+    std::optional<DlRegion> buffer_damage;
 
     // Time at which this frame is scheduled to be presented. This is a hint
     // that can be passed to the platform to drop queued frames.

@@ -40,7 +40,7 @@ class SK_API_AVAILABLE_CA_METAL_LAYER GPUSurfaceMetalSkia : public Surface {
 
   // Accumulated damage for each framebuffer; Key is address of underlying
   // MTLTexture for each drawable
-  std::map<void*, DlIRect> damage_;
+  std::map<void*, DlRegion> damage_;
 
   // |Surface|
   std::unique_ptr<SurfaceFrame> AcquireFrame(const DlISize& size) override;

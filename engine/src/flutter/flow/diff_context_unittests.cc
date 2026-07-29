@@ -4,32 +4,58 @@
 
 #include "flutter/flow/testing/diff_context_test.h"
 
+#include <initializer_list>
+#include <optional>
+#include <vector>
+
 namespace flutter {
 namespace testing {
+namespace {
+
+void ExpectRegion(const DlRegion& region,
+                  std::initializer_list<DlIRect> expected) {
+  EXPECT_EQ(region.getRects(), std::vector<DlIRect>(expected));
+}
+
+Damage DiffLayerTreeWithExistingDamage(
+    MockLayerTree& layer_tree,
+    const MockLayerTree& old_layer_tree,
+    const std::optional<DlRegion>& existing_damage,
+    int horizontal_clip_alignment = 0,
+    int vertical_clip_alignment = 0) {
+  DiffContext dc(layer_tree.size(), layer_tree.paint_region_map(),
+                 old_layer_tree.paint_region_map(), true, false);
+  dc.PushCullRect(DlRect::MakeSize(layer_tree.size()));
+  layer_tree.root()->Diff(&dc, old_layer_tree.root());
+  return dc.ComputeDamage(existing_damage, horizontal_clip_alignment,
+                          vertical_clip_alignment);
+}
+
+}  // namespace
 
 TEST_F(DiffContextTest, ClipAlignment) {
   MockLayerTree t1;
   t1.root()->Add(CreateDisplayListLayer(
       CreateDisplayList(DlRect::MakeLTRB(30, 30, 50, 50))));
   auto damage = DiffLayerTree(t1, MockLayerTree(), DlIRect(), 0, 0);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(30, 30, 50, 50));
-  EXPECT_EQ(damage.buffer_damage, DlIRect::MakeLTRB(30, 30, 50, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(30, 30, 50, 50));
+  EXPECT_EQ(damage.buffer_damage.bounds(), DlIRect::MakeLTRB(30, 30, 50, 50));
 
   damage = DiffLayerTree(t1, MockLayerTree(), DlIRect(), 1, 1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(30, 30, 50, 50));
-  EXPECT_EQ(damage.buffer_damage, DlIRect::MakeLTRB(30, 30, 50, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(30, 30, 50, 50));
+  EXPECT_EQ(damage.buffer_damage.bounds(), DlIRect::MakeLTRB(30, 30, 50, 50));
 
   damage = DiffLayerTree(t1, MockLayerTree(), DlIRect(), 8, 1);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(24, 30, 56, 50));
-  EXPECT_EQ(damage.buffer_damage, DlIRect::MakeLTRB(24, 30, 56, 50));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(24, 30, 56, 50));
+  EXPECT_EQ(damage.buffer_damage.bounds(), DlIRect::MakeLTRB(24, 30, 56, 50));
 
   damage = DiffLayerTree(t1, MockLayerTree(), DlIRect(), 1, 8);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(30, 24, 50, 56));
-  EXPECT_EQ(damage.buffer_damage, DlIRect::MakeLTRB(30, 24, 50, 56));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(30, 24, 50, 56));
+  EXPECT_EQ(damage.buffer_damage.bounds(), DlIRect::MakeLTRB(30, 24, 50, 56));
 
   damage = DiffLayerTree(t1, MockLayerTree(), DlIRect(), 16, 16);
-  EXPECT_EQ(damage.frame_damage, DlIRect::MakeLTRB(16, 16, 64, 64));
-  EXPECT_EQ(damage.buffer_damage, DlIRect::MakeLTRB(16, 16, 64, 64));
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(16, 16, 64, 64));
+  EXPECT_EQ(damage.buffer_damage.bounds(), DlIRect::MakeLTRB(16, 16, 64, 64));
 }
 
 TEST_F(DiffContextTest, DisjointDamage) {
@@ -64,9 +90,111 @@ TEST_F(DiffContextTest, DisjointDamage) {
   DiffContext dc(frame_size, t2.paint_region_map(), t1.paint_region_map(), true,
                  false);
   t2.root()->Diff(&dc, t1.root());
-  auto damage = dc.ComputeDamage(DlIRect(), 0, 0);
-  EXPECT_EQ(damage.frame_damage, DlIRect());
-  EXPECT_EQ(damage.buffer_damage, DlIRect());
+  auto damage = dc.ComputeDamage(DlRegion(), 0, 0);
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect());
+  EXPECT_EQ(damage.buffer_damage.bounds(), DlIRect());
+}
+
+TEST_F(DiffContextTest, PreservesDisjointFrameDamageRectangles) {
+  const DlIRect first = DlIRect::MakeLTRB(10, 10, 20, 20);
+  const DlIRect second = DlIRect::MakeLTRB(70, 70, 80, 80);
+
+  MockLayerTree current;
+  current.root()->Add(
+      CreateDisplayListLayer(CreateDisplayList(DlRect::Make(first))));
+  current.root()->Add(
+      CreateDisplayListLayer(CreateDisplayList(DlRect::Make(second))));
+
+  auto damage = DiffLayerTree(current, MockLayerTree());
+  ExpectRegion(damage.frame_damage, {first, second});
+  ExpectRegion(damage.buffer_damage, {first, second});
+}
+
+TEST_F(DiffContextTest, BufferDamageUnionsFrameAndExistingRegions) {
+  const DlIRect changed = DlIRect::MakeLTRB(10, 10, 20, 20);
+  const DlIRect old_first = DlIRect::MakeLTRB(40, 40, 50, 50);
+  const DlIRect old_second = DlIRect::MakeLTRB(70, 70, 80, 80);
+
+  MockLayerTree current;
+  current.root()->Add(
+      CreateDisplayListLayer(CreateDisplayList(DlRect::Make(changed))));
+
+  const DlRegion existing_damage(std::vector<DlIRect>{old_first, old_second});
+  auto damage = DiffLayerTreeWithExistingDamage(current, MockLayerTree(),
+                                                existing_damage);
+  ExpectRegion(damage.frame_damage, {changed});
+  ExpectRegion(damage.buffer_damage, {changed, old_first, old_second});
+}
+
+TEST_F(DiffContextTest, EmptyAndUnknownExistingDamageAreDistinct) {
+  MockLayerTree current;
+  MockLayerTree previous;
+  DiffContext dc(current.size(), current.paint_region_map(),
+                 previous.paint_region_map(), true, false);
+  dc.PushCullRect(DlRect::MakeSize(current.size()));
+  current.root()->Diff(&dc, previous.root());
+
+  const auto known_empty = dc.ComputeDamage(DlRegion());
+  EXPECT_TRUE(known_empty.frame_damage.isEmpty());
+  EXPECT_TRUE(known_empty.buffer_damage.isEmpty());
+
+  const auto unknown = dc.ComputeDamage(std::nullopt);
+  EXPECT_TRUE(unknown.frame_damage.isEmpty());
+  ExpectRegion(unknown.buffer_damage, {DlIRect::MakeSize(current.size())});
+}
+
+TEST_F(DiffContextTest, AlignsEachDamageRectangleWithoutFillingGaps) {
+  const DlIRect first = DlIRect::MakeLTRB(9, 9, 13, 13);
+  const DlIRect second = DlIRect::MakeLTRB(41, 41, 45, 45);
+
+  MockLayerTree current;
+  current.root()->Add(
+      CreateDisplayListLayer(CreateDisplayList(DlRect::Make(first))));
+  current.root()->Add(
+      CreateDisplayListLayer(CreateDisplayList(DlRect::Make(second))));
+
+  auto damage = DiffLayerTreeWithExistingDamage(current, MockLayerTree(),
+                                                DlRegion(), 8, 0);
+  ExpectRegion(damage.frame_damage, {DlIRect::MakeLTRB(8, 9, 16, 13),
+                                     DlIRect::MakeLTRB(40, 41, 48, 45)});
+  ExpectRegion(damage.buffer_damage, {DlIRect::MakeLTRB(8, 9, 16, 13),
+                                      DlIRect::MakeLTRB(40, 41, 48, 45)});
+}
+
+TEST_F(DiffContextTest, ExpandsChainedReadbackDependenciesToFixedPoint) {
+  const DlIRect first_paint = DlIRect::MakeLTRB(10, 10, 20, 20);
+  const DlIRect shared = DlIRect::MakeLTRB(30, 30, 40, 40);
+  const DlIRect changed = DlIRect::MakeLTRB(80, 80, 90, 90);
+
+  PaintRegionMap current_regions;
+  PaintRegionMap previous_regions;
+  DiffContext dc(DlISize(100, 100), current_regions, previous_regions, true,
+                 false);
+  dc.MarkSubtreeDirty(DlRect::Make(changed));
+  // Add this dependency first so reaching it requires a second pass.
+  dc.AddReadbackRegion(first_paint, shared);
+  dc.AddReadbackRegion(shared, changed);
+
+  const auto damage = dc.ComputeDamage(DlRegion());
+  ExpectRegion(damage.frame_damage, {first_paint, shared, changed});
+  ExpectRegion(damage.buffer_damage, {first_paint, shared, changed});
+}
+
+TEST_F(DiffContextTest, ReadbackExpandsHistoricalBufferDamageOnly) {
+  const DlIRect first_paint = DlIRect::MakeLTRB(10, 10, 20, 20);
+  const DlIRect shared = DlIRect::MakeLTRB(30, 30, 40, 40);
+  const DlIRect historical = DlIRect::MakeLTRB(80, 80, 90, 90);
+
+  PaintRegionMap current_regions;
+  PaintRegionMap previous_regions;
+  DiffContext dc(DlISize(100, 100), current_regions, previous_regions, true,
+                 false);
+  dc.AddReadbackRegion(first_paint, shared);
+  dc.AddReadbackRegion(shared, historical);
+
+  const auto damage = dc.ComputeDamage(DlRegion(historical));
+  EXPECT_TRUE(damage.frame_damage.isEmpty());
+  ExpectRegion(damage.buffer_damage, {first_paint, shared, historical});
 }
 
 }  // namespace testing
