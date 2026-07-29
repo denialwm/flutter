@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:dds/dap.dart' hide PidTracker;
+import 'package:meta/meta.dart';
 import 'package:vm_service/vm_service.dart' as vm;
 
 import '../base/io.dart';
@@ -16,6 +17,11 @@ import '../globals.dart' as globals show fs;
 import 'error_formatter.dart';
 import 'flutter_adapter_args.dart';
 import 'flutter_base_adapter.dart';
+
+@visibleForTesting
+bool isDenialRawEmbedderTool(String? customTool) {
+  return customTool == 'denial-flutter' || (customTool?.endsWith('/denial-flutter') ?? false);
+}
 
 /// A DAP Debug Adapter for running and debugging Flutter applications.
 class FlutterDebugAdapter extends FlutterBaseDebugAdapter with VmServiceInfoFileUtils {
@@ -95,7 +101,18 @@ class FlutterDebugAdapter extends FlutterBaseDebugAdapter with VmServiceInfoFile
   /// Functionality provided via the daemon (hot reload/restart) will still be
   /// available.
   @override
-  bool get enableDebugger => super.enableDebugger && !profileMode && !releaseMode;
+  bool get enableDebugger =>
+      super.enableDebugger && !profileMode && !releaseMode && !_isDenialRawEmbedderAttach;
+
+  /// Pausing an attached Denial isolate freezes the complete interactive
+  /// desktop. Keep the supported raw-embedder workflow connected to Flutter's
+  /// daemon and DevTools, but do not give DAP pause, stepping, or breakpoint
+  /// control over the compositor shell.
+  bool get _isDenialRawEmbedderAttach {
+    final DartCommonLaunchAttachRequestArguments currentArgs = args;
+    return currentArgs is FlutterAttachRequestArguments &&
+        isDenialRawEmbedderTool(currentArgs.customTool);
+  }
 
   /// Whether the launch configuration arguments specify `--profile`.
   ///
