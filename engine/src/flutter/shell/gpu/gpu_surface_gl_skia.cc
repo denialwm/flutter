@@ -268,11 +268,10 @@ bool GPUSurfaceGLSkia::SelectOrCreateOnscreenSurface(
     const GLFBOInfo& fbo_info) {
   auto surface_it = onscreen_surfaces_.find(fbo_info.fbo_id);
   if (surface_it == onscreen_surfaces_.end()) {
-    auto surface =
-        WrapOnscreenSurface(context_.get(),   // GL context
-                            size,             // root surface size
-                            fbo_info.fbo_id,  // window FBO ID
-                            gl_interface_.get());
+    auto surface = WrapOnscreenSurface(context_.get(),   // GL context
+                                       size,             // root surface size
+                                       fbo_info.fbo_id,  // window FBO ID
+                                       gl_interface_.get());
     if (!surface) {
       FML_LOG(ERROR) << "Could not wrap onscreen surface.";
       return false;
