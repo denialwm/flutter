@@ -14,8 +14,9 @@ vars = {
   'dart_git': 'https://dart.googlesource.com',
   'flutter_git': 'https://flutter.googlesource.com',
   'skia_git': 'https://skia.googlesource.com',
+  'denial_skia_git': 'https://github.com/denialwm',
   'llvm_git': 'https://llvm.googlesource.com',
-  'skia_revision': 'e9ed4fc9f1544c58d8a9347c1fc9471d8dd7c465',
+  'skia_revision': '5097a648e9bbb1d4a7fdf06a2a6d7bef3c9dd414',
 
   # WARNING: DO NOT EDIT canvaskit_cipd_instance MANUALLY
   # See `lib/web_ui/README.md` for how to roll CanvasKit to a new version.
@@ -476,7 +477,7 @@ deps = {
    Var('flutter_git') + '/third_party/freetype2' + '@' + 'be4bcb57914154fc1b9e2900bf8e4b516057e2b8',
 
   'engine/src/flutter/third_party/skia':
-   Var('skia_git') + '/skia.git' + '@' +  Var('skia_revision'),
+   Var('denial_skia_git') + '/skia.git' + '@' +  Var('skia_revision'),
 
   'engine/src/flutter/third_party/ocmock':
    Var('flutter_git') + '/third_party/ocmock' + '@' +  Var('ocmock_rev'),
