@@ -27,7 +27,9 @@ void TextureLayer::Diff(DiffContext* context, const Layer* old_layer) {
     if (!context->IsTextureDirty(texture_id_)) {
       context->MarkSubtreeHasTextureLayer();
       context->AddExistingPaintRegion(context->GetOldLayerPaintRegion(prev));
-      context->SetLayerPaintRegion(this, context->CurrentSubtreeRegion());
+      const PaintRegion paint_region = context->CurrentSubtreeRegion();
+      context->SetLayerPaintRegion(this, paint_region);
+      context->CacheTexturePaintRegion(texture_id_, paint_region);
       return;
     }
     // TODO(knopp) It would be nice to be able to determine that a texture is
@@ -42,7 +44,9 @@ void TextureLayer::Diff(DiffContext* context, const Layer* old_layer) {
   // https://github.com/flutter/flutter/issues/92925
   context->MarkSubtreeHasTextureLayer();
   context->AddLayerBounds(DlRect::MakeOriginSize(offset_, size_));
-  context->SetLayerPaintRegion(this, context->CurrentSubtreeRegion());
+  const PaintRegion paint_region = context->CurrentSubtreeRegion();
+  context->SetLayerPaintRegion(this, paint_region);
+  context->CacheTexturePaintRegion(texture_id_, paint_region);
 }
 
 void TextureLayer::Preroll(PrerollContext* context) {

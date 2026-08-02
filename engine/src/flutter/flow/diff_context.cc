@@ -158,9 +158,10 @@ Damage DiffContext::ComputeDamage(
   bool expanded;
   do {
     expanded = false;
-    for (const auto& r : readbacks_) {
+    auto expand_readback = [&](const DlIRect& paint_rect,
+                               const DlIRect& readback_rect) {
       const DlRegion dependency = DlRegion::MakeIntersection(
-          RegionFromRects({r.paint_rect, r.readback_rect}), frame_clip);
+          RegionFromRects({paint_rect, readback_rect}), frame_clip);
 
       if (frame_damage.intersects(dependency)) {
         DlRegion expanded_frame = DlRegion::MakeUnion(frame_damage, dependency);
@@ -177,6 +178,17 @@ Damage DiffContext::ComputeDamage(
           buffer_damage = std::move(expanded_buffer);
           expanded = true;
         }
+      }
+    };
+
+    if (cached_readback_regions_) {
+      FML_DCHECK(readbacks_.empty());
+      for (const auto& r : *cached_readback_regions_) {
+        expand_readback(r.paint_rect, r.readback_rect);
+      }
+    } else {
+      for (const auto& r : readbacks_) {
+        expand_readback(r.paint_rect, r.readback_rect);
       }
     }
   } while (expanded);
@@ -270,6 +282,34 @@ void DiffContext::AddReadbackRegion(const DlIRect& paint_rect,
   // Push empty rect as a placeholder for position in current subtree
   rects_->push_back(DlRect());
   readbacks_.push_back(readback);
+  if (readback_region_cache_) {
+    readback_region_cache_->push_back({paint_rect, readback_rect});
+  }
+}
+
+void DiffContext::SetDiffMetadataCache(TexturePaintRegionList* texture_regions,
+                                       ReadbackRegionList* readback_regions) {
+  FML_DCHECK(texture_regions);
+  FML_DCHECK(readback_regions);
+  FML_DCHECK(!cached_readback_regions_);
+  texture_regions->clear();
+  readback_regions->clear();
+  texture_region_cache_ = texture_regions;
+  readback_region_cache_ = readback_regions;
+}
+
+void DiffContext::CacheTexturePaintRegion(int64_t texture_id,
+                                          const PaintRegion& paint_region) {
+  if (texture_region_cache_) {
+    texture_region_cache_->push_back({texture_id, paint_region});
+  }
+}
+
+void DiffContext::UseCachedReadbackRegions(
+    const ReadbackRegionList* readback_regions) {
+  FML_DCHECK(!readback_region_cache_);
+  FML_DCHECK(readbacks_.empty());
+  cached_readback_regions_ = readback_regions;
 }
 
 PaintRegion DiffContext::CurrentSubtreeRegion() const {

@@ -58,11 +58,29 @@ class LayerTree {
   const PaintRegionMap& paint_region_map() const { return paint_region_map_; }
   PaintRegionMap& paint_region_map() { return paint_region_map_; }
 
+  const TexturePaintRegionList& texture_paint_regions() const {
+    return texture_paint_regions_;
+  }
+  TexturePaintRegionList& texture_paint_regions() {
+    return texture_paint_regions_;
+  }
+
+  const ReadbackRegionList& readback_regions() const {
+    return readback_regions_;
+  }
+  ReadbackRegionList& readback_regions() { return readback_regions_; }
+
+  bool has_diff_metadata() const { return has_diff_metadata_; }
+  void set_has_diff_metadata(bool value) { has_diff_metadata_ = value; }
+
  private:
   std::shared_ptr<Layer> root_layer_;
   DlISize frame_size_;  // Physical pixels.
 
   PaintRegionMap paint_region_map_;
+  TexturePaintRegionList texture_paint_regions_;
+  ReadbackRegionList readback_regions_;
+  bool has_diff_metadata_ = false;
 
   std::vector<RasterCacheItem*> raster_cache_items_;
 
