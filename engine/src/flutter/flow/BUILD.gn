@@ -150,6 +150,7 @@ if (enable_unittests) {
     testonly = true
 
     sources = [
+      "compositor_context_unittests.cc",
       "diff_context_unittests.cc",
       "embedded_view_params_unittests.cc",
       "flow_run_all_unittests.cc",

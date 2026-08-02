@@ -45,7 +45,61 @@ double RegionArea(const DlRegion& region) {
   return area;
 }
 
+/// The max ratio of dirty pixels to target pixels for which Impeller attempts
+/// a partial repaint. Impeller needs a large resolve texture and a final blit
+/// for partial repaint, so small reductions in painted area are not useful.
+constexpr float kImpellerRepaintRatio = 0.7f;
+
+bool ShouldPerformImpellerPartialRepaint(const DlRegion& damage,
+                                         DlISize layer_tree_size) {
+  if (damage.isEmpty()) {
+    return true;
+  }
+  if (RegionCoversFrame(damage, layer_tree_size)) {
+    return false;
+  }
+  const double frame_area =
+      static_cast<double>(layer_tree_size.width) * layer_tree_size.height;
+  return frame_area > 0.0 &&
+         RegionArea(damage) / frame_area <= kImpellerRepaintRatio;
+}
+
 }  // namespace
+
+RasterDamagePlan RasterDamagePlan::Make(const std::optional<DlRegion>& damage,
+                                        DlISize layer_tree_size,
+                                        RasterDamagePolicy damage_policy,
+                                        RasterBackend backend) {
+  const DlRegion full_region(DlIRect::MakeSize(layer_tree_size));
+  const auto full_repaint = [&]() {
+    return RasterDamagePlan{std::nullopt, full_region};
+  };
+
+  if (damage_policy == RasterDamagePolicy::kFullRepaint ||
+      !damage.has_value() || RegionCoversFrame(*damage, layer_tree_size)) {
+    return full_repaint();
+  }
+
+  if (backend == RasterBackend::kImpeller &&
+      !ShouldPerformImpellerPartialRepaint(*damage, layer_tree_size)) {
+    return full_repaint();
+  }
+
+  if (backend == RasterBackend::kSkiaGanesh && damage->isComplex()) {
+    // Ganesh turns a non-rectangular root clip into a path. Its ClipStack then
+    // analyzes and applies that path for every draw op, which can cost more CPU
+    // than the pixels it avoids. A rectangular conservative superset stays on
+    // the scissor path and still limits preroll and fragment work to the
+    // narrowest rectangle that contains all repair damage.
+    DlRegion rectangular_damage(damage->bounds());
+    if (RegionCoversFrame(rectangular_damage, layer_tree_size)) {
+      return full_repaint();
+    }
+    return RasterDamagePlan{rectangular_damage, rectangular_damage};
+  }
+
+  return RasterDamagePlan{*damage, *damage};
+}
 
 std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
     flutter::LayerTree& layer_tree,
@@ -79,9 +133,9 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
   return std::nullopt;
 }
 
-void FrameDamage::SetFullBufferDamage(DlISize frame_size) {
+void FrameDamage::SetBufferDamage(DlRegion buffer_damage) {
   if (damage_) {
-    damage_->buffer_damage = DlRegion(DlIRect::MakeSize(frame_size));
+    damage_->buffer_damage = std::move(buffer_damage);
   }
 }
 
@@ -165,16 +219,14 @@ RasterStatus CompositorContext::ScopedFrame::Raster(
     clip_region = frame_damage->ComputeDamageRegion(
         layer_tree, !ignore_raster_cache, !gr_context_);
 
-    const bool full_repaint =
-        damage_policy == RasterDamagePolicy::kFullRepaint ||
-        !clip_region.has_value() ||
-        RegionCoversFrame(clip_region.value(), layer_tree.frame_size()) ||
-        (aiks_context_ &&
-         !ShouldPerformPartialRepaint(clip_region, layer_tree.frame_size()));
-    if (full_repaint) {
-      clip_region = std::nullopt;
-      frame_damage->SetFullBufferDamage(layer_tree.frame_size());
-    }
+    const RasterBackend backend =
+        aiks_context_ ? RasterBackend::kImpeller
+                      : (gr_context_ ? RasterBackend::kSkiaGanesh
+                                     : RasterBackend::kSkiaSoftware);
+    RasterDamagePlan plan = RasterDamagePlan::Make(
+        clip_region, layer_tree.frame_size(), damage_policy, backend);
+    clip_region = std::move(plan.repaint_region);
+    frame_damage->SetBufferDamage(std::move(plan.buffer_damage));
   }
 
   const DlRect preroll_cull =
@@ -244,37 +296,6 @@ void CompositorContext::ScopedFrame::PaintLayerTreeImpeller(
 
   // The canvas()->Restore() is taken care of by the DlAutoCanvasRestore
   layer_tree.Paint(*this, ignore_raster_cache);
-}
-
-/// @brief The max ratio of pixel width or height to size that is dirty which
-///        results in a partial repaint.
-///
-///        Performing a partial repaint has a small overhead - Impeller needs to
-///        allocate a fairly large resolve texture for the root pass instead of
-///        using the drawable texture, and a final blit must be performed. At a
-///        minimum, if the damage rect is the entire buffer, we must not perform
-///        a partial repaint. Beyond that, we could only experimentally
-///        determine what this value should be. From looking at the Flutter
-///        Gallery, we noticed that there are occassionally small partial
-///        repaints which shave off trivial numbers of pixels.
-constexpr float kImpellerRepaintRatio = 0.7f;
-
-bool CompositorContext::ShouldPerformPartialRepaint(
-    const std::optional<DlRegion>& damage,
-    DlISize layer_tree_size) {
-  if (!damage.has_value()) {
-    return false;
-  }
-  if (damage->isEmpty()) {
-    return true;
-  }
-  if (RegionCoversFrame(*damage, layer_tree_size)) {
-    return false;
-  }
-  const double frame_area =
-      static_cast<double>(layer_tree_size.width) * layer_tree_size.height;
-  return frame_area > 0.0 &&
-         RegionArea(*damage) / frame_area <= kImpellerRepaintRatio;
 }
 
 void CompositorContext::OnGrContextCreated() {
