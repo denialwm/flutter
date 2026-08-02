@@ -16,7 +16,7 @@ vars = {
   'skia_git': 'https://skia.googlesource.com',
   'denial_skia_git': 'https://github.com/denialwm',
   'llvm_git': 'https://llvm.googlesource.com',
-  'skia_revision': '5097a648e9bbb1d4a7fdf06a2a6d7bef3c9dd414',
+  'skia_revision': '0ee042f542b3e79f5ac49115387718c6bb3d7d34',
 
   # WARNING: DO NOT EDIT canvaskit_cipd_instance MANUALLY
   # See `lib/web_ui/README.md` for how to roll CanvasKit to a new version.
