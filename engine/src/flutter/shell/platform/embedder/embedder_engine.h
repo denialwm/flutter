@@ -92,6 +92,11 @@ class EmbedderEngine {
   bool ScheduleFrameForExternalTextures(
       std::vector<int64_t> texture_identifiers);
 
+#ifdef SHELL_ENABLE_GL
+  bool SetExternalTextureGlStateCallback(
+      EmbedderExternalTextureGL::ExternalTextureGlStateCallback callback);
+#endif
+
   Shell& GetShell();
 
  private:
