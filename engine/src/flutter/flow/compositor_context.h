@@ -6,6 +6,7 @@
 #define FLUTTER_FLOW_COMPOSITOR_CONTEXT_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_set>
 
@@ -52,6 +53,27 @@ enum class RasterStatus {
 enum class RasterDamagePolicy {
   kUseDamageRegion,
   kFullRepaint,
+};
+
+// Identifies the raster backend capabilities that affect damage planning.
+enum class RasterBackend {
+  kSkiaGanesh,
+  kSkiaSoftware,
+  kImpeller,
+};
+
+// Separates exact logical damage from the region that is economical for the
+// selected raster backend to paint. A null repaint_region means that the
+// entire target will be repainted. buffer_damage always describes the pixels
+// the selected plan may modify.
+struct RasterDamagePlan {
+  static RasterDamagePlan Make(const std::optional<DlRegion>& damage,
+                               DlISize layer_tree_size,
+                               RasterDamagePolicy damage_policy,
+                               RasterBackend backend);
+
+  std::optional<DlRegion> repaint_region;
+  DlRegion buffer_damage;
 };
 
 class FrameDamage {
@@ -102,10 +124,10 @@ class FrameDamage {
     return damage_ ? std::make_optional(damage_->buffer_damage) : std::nullopt;
   }
 
-  // Records that rasterization ignored the calculated repair region and
-  // repainted the entire target. Frame damage remains precise for output
-  // routing and accumulation by other framebuffer slots.
-  void SetFullBufferDamage(DlISize frame_size);
+  // Records the conservative region selected for rasterization. Frame damage
+  // remains precise for output routing and accumulation by other framebuffer
+  // slots.
+  void SetBufferDamage(DlRegion buffer_damage);
 
  private:
   std::optional<DlRegion> existing_damage_ = std::nullopt;
@@ -221,12 +243,6 @@ class CompositorContext {
   void BeginFrame(ScopedFrame& frame, bool enable_instrumentation);
 
   void EndFrame(ScopedFrame& frame, bool enable_instrumentation);
-
-  /// @brief  Whether Impeller shouild attempt a partial repaint.
-  ///         The Impeller backend requires an additional blit pass, which may
-  ///         not be worthwhile if the damage region is large.
-  static bool ShouldPerformPartialRepaint(const std::optional<DlRegion>& damage,
-                                          DlISize layer_tree_size);
 
   FML_DISALLOW_COPY_AND_ASSIGN(CompositorContext);
 };
