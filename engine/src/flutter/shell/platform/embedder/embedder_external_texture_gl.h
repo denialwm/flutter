@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SHELL_PLATFORM_EMBEDDER_EMBEDDER_EXTERNAL_TEXTURE_GL_H_
 #define FLUTTER_SHELL_PLATFORM_EMBEDDER_EMBEDDER_EXTERNAL_TEXTURE_GL_H_
 
+#include <functional>
+
 #include "flutter/common/graphics/texture.h"
 #include "flutter/fml/macros.h"
 #include "flutter/shell/platform/embedder/embedder.h"
@@ -16,14 +18,18 @@ class EmbedderExternalTextureGL : public flutter::Texture {
  public:
   using ExternalTextureCallback = std::function<
       std::unique_ptr<FlutterOpenGLTexture>(int64_t, size_t, size_t)>;
+  using ExternalTextureGlStateCallback = std::function<bool(int64_t)>;
 
-  EmbedderExternalTextureGL(int64_t texture_identifier,
-                            const ExternalTextureCallback& callback);
+  EmbedderExternalTextureGL(
+      int64_t texture_identifier,
+      const ExternalTextureCallback& callback,
+      const ExternalTextureGlStateCallback& gl_state_callback);
 
   ~EmbedderExternalTextureGL();
 
  private:
   const ExternalTextureCallback& external_texture_callback_;
+  const ExternalTextureGlStateCallback& external_texture_gl_state_callback_;
   sk_sp<DlImage> last_image_;
 
   sk_sp<DlImage> ResolveTexture(int64_t texture_id,

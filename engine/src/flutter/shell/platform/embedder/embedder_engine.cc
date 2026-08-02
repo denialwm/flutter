@@ -353,6 +353,19 @@ bool EmbedderEngine::ScheduleFrameForExternalTextures(
   return true;
 }
 
+#ifdef SHELL_ENABLE_GL
+bool EmbedderEngine::SetExternalTextureGlStateCallback(
+    EmbedderExternalTextureGL::ExternalTextureGlStateCallback callback) {
+  if (!external_texture_resolver_ ||
+      !external_texture_resolver_->SupportsExternalTextures() || !callback) {
+    return false;
+  }
+  external_texture_resolver_->SetExternalTextureGlStateCallback(
+      std::move(callback));
+  return true;
+}
+#endif
+
 Shell& EmbedderEngine::GetShell() {
   FML_DCHECK(shell_);
   return *shell_.get();

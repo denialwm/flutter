@@ -4558,6 +4558,7 @@ TEST_F(EmbedderTest, ExternalTextureGLRefreshedTooOften) {
   glGenTextures(1, &name);
 
   bool resolve_called = false;
+  int gl_state_query_count = 0;
 
   EmbedderExternalTextureGL::ExternalTextureCallback callback(
       [&](int64_t, size_t, size_t) {
@@ -4571,7 +4572,13 @@ TEST_F(EmbedderTest, ExternalTextureGLRefreshedTooOften) {
         res->width = res->height = 100;
         return res;
       });
-  EmbedderExternalTextureGL texture(1, callback);
+  EmbedderExternalTextureGL::ExternalTextureGlStateCallback gl_state_callback(
+      [&](int64_t texture_id) {
+        EXPECT_EQ(texture_id, 1);
+        gl_state_query_count++;
+        return false;
+      });
+  EmbedderExternalTextureGL texture(1, callback, gl_state_callback);
 
   auto skia_surface = surface.GetOnscreenSurface();
   DlSkCanvasAdapter canvas(skia_surface->getCanvas());
@@ -4585,6 +4592,7 @@ TEST_F(EmbedderTest, ExternalTextureGLRefreshedTooOften) {
                   DlImageSampling::kLinear);
 
   EXPECT_TRUE(resolve_called);
+  EXPECT_EQ(gl_state_query_count, 1);
   resolve_called = false;
 
   texture_->Paint(ctx, DlRect::MakeXYWH(0, 0, 100, 100), false,
@@ -4597,6 +4605,7 @@ TEST_F(EmbedderTest, ExternalTextureGLRefreshedTooOften) {
                   DlImageSampling::kLinear);
 
   EXPECT_TRUE(resolve_called);
+  EXPECT_EQ(gl_state_query_count, 2);
 
   glFinish();
 }

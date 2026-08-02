@@ -3766,6 +3766,31 @@ FlutterEngineResult DenialFlutterEngineScheduleFrameForExternalTextures(
                    "Could not schedule Denial external-texture frame.");
 }
 
+#ifdef SHELL_ENABLE_GL
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineSetExternalTextureGlStateCallback(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    DenialFlutterExternalTextureGlStateCallback callback,
+    void* user_data) {
+  if (engine == nullptr || callback == nullptr) {
+    return LOG_EMBEDDER_ERROR(
+        kInvalidArguments,
+        "Invalid Denial external-texture GL state callback.");
+  }
+  auto gl_state_callback = [callback, user_data](int64_t texture_identifier) {
+    return callback(user_data, texture_identifier);
+  };
+  return reinterpret_cast<flutter::EmbedderEngine*>(engine)
+                 ->SetExternalTextureGlStateCallback(
+                     std::move(gl_state_callback))
+             ? kSuccess
+             : LOG_EMBEDDER_ERROR(
+                   kInternalInconsistency,
+                   "Could not install Denial external-texture GL state "
+                   "callback.");
+}
+#endif
+
 FlutterEngineResult FlutterEngineSetNextFrameCallback(
     FLUTTER_API_SYMBOL(FlutterEngine) engine,
     VoidCallback callback,

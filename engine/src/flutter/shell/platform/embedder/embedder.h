@@ -3609,6 +3609,34 @@ FlutterEngineResult DenialFlutterEngineScheduleFrameForExternalTextures(
     size_t texture_count);
 
 //------------------------------------------------------------------------------
+/// Callback used to declare whether an external-texture resolve may mutate GL
+/// state or destroy GL/EGL objects. It runs synchronously immediately before
+/// the engine invokes the standard OpenGL external-texture callback for the
+/// same identifier.
+///
+/// Returning false permits the engine to retain its pending Ganesh command
+/// batch and cached GL state across that callback. The embedder must return
+/// true unless the following callback is guaranteed not to call GL.
+typedef bool (*DenialFlutterExternalTextureGlStateCallback)(
+    void* user_data,
+    int64_t texture_identifier);
+
+//------------------------------------------------------------------------------
+/// @brief      Installs Denial's external-texture GL-state preflight callback.
+///
+/// @param[in]  engine     A running OpenGL engine instance.
+/// @param[in]  callback   A non-null synchronous preflight callback.
+/// @param[in]  user_data  Opaque data passed to `callback`.
+///
+/// @return the result of the call made to the engine.
+///
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineSetExternalTextureGlStateCallback(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    DenialFlutterExternalTextureGlStateCallback callback,
+    void* user_data);
+
+//------------------------------------------------------------------------------
 /// @brief      Schedule a callback to be called after the next frame is drawn.
 ///             This must be called from the platform thread. The callback is
 ///             executed only once from the raster thread; embedders must

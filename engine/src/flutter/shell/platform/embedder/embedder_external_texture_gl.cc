@@ -29,8 +29,11 @@ namespace flutter {
 
 EmbedderExternalTextureGL::EmbedderExternalTextureGL(
     int64_t texture_identifier,
-    const ExternalTextureCallback& callback)
-    : Texture(texture_identifier), external_texture_callback_(callback) {
+    const ExternalTextureCallback& callback,
+    const ExternalTextureGlStateCallback& gl_state_callback)
+    : Texture(texture_identifier),
+      external_texture_callback_(callback),
+      external_texture_gl_state_callback_(gl_state_callback) {
   FML_DCHECK(external_texture_callback_);
 }
 
@@ -79,8 +82,13 @@ sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTextureSkia(
     int64_t texture_id,
     GrDirectContext* context,
     const SkISize& size) {
-  context->flushAndSubmit();
-  context->resetContext(kAll_GrBackendState);
+  const bool callback_may_modify_gl =
+      !external_texture_gl_state_callback_ ||
+      external_texture_gl_state_callback_(texture_id);
+  if (callback_may_modify_gl) {
+    context->flushAndSubmit();
+    context->resetContext(kAll_GrBackendState);
+  }
   std::unique_ptr<FlutterOpenGLTexture> texture =
       external_texture_callback_(texture_id, size.width(), size.height());
 
