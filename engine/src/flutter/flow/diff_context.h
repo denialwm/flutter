@@ -40,6 +40,24 @@ struct Damage {
 // Layer Unique Id to PaintRegion
 using PaintRegionMap = std::map<uint64_t, PaintRegion>;
 
+// Reusable metadata for autonomous frames that redraw an unchanged layer tree.
+// A texture ID may occur in more than one TextureLayer. The list is sorted by
+// ID after collection so autonomous frames can search it without pointer-heavy
+// tree or hash-map traversal.
+struct TexturePaintRegion {
+  int64_t texture_id;
+  PaintRegion paint_region;
+};
+
+using TexturePaintRegionList = std::vector<TexturePaintRegion>;
+
+struct ReadbackRegion {
+  DlIRect paint_rect;
+  DlIRect readback_rect;
+};
+
+using ReadbackRegionList = std::vector<ReadbackRegion>;
+
 // Tracks state during tree diffing process and computes resulting damage
 class DiffContext {
  public:
@@ -178,6 +196,18 @@ class DiffContext {
            dirty_texture_ids_->find(texture_id) != dirty_texture_ids_->end();
   }
 
+  // Captures texture paint regions and readback dependencies while diffing a
+  // new layer tree. The supplied containers are cleared before use.
+  void SetDiffMetadataCache(TexturePaintRegionList* texture_regions,
+                            ReadbackRegionList* readback_regions);
+
+  // Records the paint region for a TextureLayer in the active metadata cache.
+  void CacheTexturePaintRegion(int64_t texture_id,
+                               const PaintRegion& paint_region);
+
+  // Reuses readback dependencies captured for the exact same LayerTree.
+  void UseCachedReadbackRegions(const ReadbackRegionList* readback_regions);
+
   class Statistics {
    public:
     // Picture replaced by different picture
@@ -263,6 +293,9 @@ class DiffContext {
   bool has_raster_cache_;
   bool impeller_enabled_;
   const std::unordered_set<int64_t>* dirty_texture_ids_;
+  TexturePaintRegionList* texture_region_cache_ = nullptr;
+  ReadbackRegionList* readback_region_cache_ = nullptr;
+  const ReadbackRegionList* cached_readback_regions_ = nullptr;
 
   void AddDamage(const DlRect& rect);
 

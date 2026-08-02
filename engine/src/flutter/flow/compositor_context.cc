@@ -4,6 +4,7 @@
 
 #include "flutter/flow/compositor_context.h"
 
+#include <algorithm>
 #include <cmath>
 #include <optional>
 #include <utility>
@@ -107,12 +108,31 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
     bool impeller_enabled) {
   if (layer_tree.root_layer()) {
     PaintRegionMap empty_paint_region_map;
+    const bool reuse_diff_metadata = prev_layer_tree_ == &layer_tree &&
+                                     dirty_texture_ids_ != nullptr &&
+                                     layer_tree.has_diff_metadata();
     DiffContext context(layer_tree.frame_size(), layer_tree.paint_region_map(),
                         prev_layer_tree_ ? prev_layer_tree_->paint_region_map()
                                          : empty_paint_region_map,
                         has_raster_cache, impeller_enabled, dirty_texture_ids_);
     context.PushCullRect(DlRect::MakeSize(layer_tree.frame_size()));
-    {
+    if (reuse_diff_metadata) {
+      context.UseCachedReadbackRegions(&layer_tree.readback_regions());
+      for (const int64_t texture_id : *dirty_texture_ids_) {
+        const auto& regions = layer_tree.texture_paint_regions();
+        auto region =
+            std::lower_bound(regions.begin(), regions.end(), texture_id,
+                             [](const TexturePaintRegion& region, int64_t id) {
+                               return region.texture_id < id;
+                             });
+        while (region != regions.end() && region->texture_id == texture_id) {
+          context.AddDamage(region->paint_region);
+          ++region;
+        }
+      }
+    } else {
+      context.SetDiffMetadataCache(&layer_tree.texture_paint_regions(),
+                                   &layer_tree.readback_regions());
       DiffContext::AutoSubtreeRestore subtree(&context);
       const Layer* prev_root_layer = nullptr;
       if (!prev_layer_tree_ ||
@@ -124,6 +144,12 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
         prev_root_layer = prev_layer_tree_->root_layer();
       }
       layer_tree.root_layer()->Diff(&context, prev_root_layer);
+      auto& texture_regions = layer_tree.texture_paint_regions();
+      std::sort(texture_regions.begin(), texture_regions.end(),
+                [](const TexturePaintRegion& a, const TexturePaintRegion& b) {
+                  return a.texture_id < b.texture_id;
+                });
+      layer_tree.set_has_diff_metadata(true);
     }
 
     damage_ = context.ComputeDamage(

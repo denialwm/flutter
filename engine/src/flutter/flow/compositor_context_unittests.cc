@@ -8,6 +8,10 @@
 #include <optional>
 #include <vector>
 
+#include "flutter/flow/layers/backdrop_filter_layer.h"
+#include "flutter/flow/layers/clip_rect_layer.h"
+#include "flutter/flow/layers/layer_tree.h"
+#include "flutter/flow/layers/texture_layer.h"
 #include "gtest/gtest.h"
 
 namespace flutter {
@@ -27,6 +31,28 @@ void ExpectFullRepaint(const RasterDamagePlan& plan) {
   EXPECT_FALSE(plan.repaint_region.has_value());
   ExpectRegion(plan.buffer_damage, {kFullFrame});
 }
+
+class CountingTextureLayer final : public TextureLayer {
+ public:
+  CountingTextureLayer(const DlPoint& offset,
+                       const DlSize& size,
+                       int64_t texture_id)
+      : TextureLayer(offset,
+                     size,
+                     texture_id,
+                     false,
+                     DlImageSampling::kLinear) {}
+
+  void Diff(DiffContext* context, const Layer* old_layer) override {
+    diff_count_++;
+    TextureLayer::Diff(context, old_layer);
+  }
+
+  int diff_count() const { return diff_count_; }
+
+ private:
+  int diff_count_ = 0;
+};
 
 TEST(RasterDamagePlanTest, UnknownDamageRepaintsFullTarget) {
   const RasterDamagePlan plan = RasterDamagePlan::Make(
@@ -119,6 +145,68 @@ TEST(RasterDamagePlanTest, ImpellerRejectsLargeComplexDamage) {
       large_damage, kFrameSize, RasterDamagePolicy::kUseDamageRegion,
       RasterBackend::kImpeller);
   ExpectFullRepaint(plan);
+}
+
+TEST(FrameDamageTest, ReusedTreeDamagesDirtyTextureWithoutDiffingLayers) {
+  auto root = std::make_shared<ContainerLayer>();
+  auto first =
+      std::make_shared<CountingTextureLayer>(DlPoint(), DlSize(20, 20), 1);
+  auto second = std::make_shared<CountingTextureLayer>(DlPoint(50, 10),
+                                                       DlSize(20, 30), 2);
+  root->Add(first);
+  root->Add(second);
+  LayerTree tree(root, kFrameSize);
+
+  FrameDamage initial_frame;
+  initial_frame.ComputeDamageRegion(tree, true, false);
+  EXPECT_EQ(first->diff_count(), 1);
+  EXPECT_EQ(second->diff_count(), 1);
+
+  const std::unordered_set<int64_t> dirty_texture_ids = {2};
+  FrameDamage autonomous_frame;
+  autonomous_frame.SetPreviousLayerTree(&tree);
+  autonomous_frame.SetDirtyTextureIds(&dirty_texture_ids);
+  autonomous_frame.SetExistingDamage(DlRegion());
+  autonomous_frame.ComputeDamageRegion(tree, true, false);
+
+  EXPECT_EQ(first->diff_count(), 1);
+  EXPECT_EQ(second->diff_count(), 1);
+  ASSERT_TRUE(autonomous_frame.GetFrameDamage().has_value());
+  ExpectRegion(*autonomous_frame.GetFrameDamage(),
+               {DlIRect::MakeLTRB(50, 10, 70, 40)});
+}
+
+TEST(FrameDamageTest, ReusedTreePreservesReadbackDamageDependencies) {
+  auto root = std::make_shared<ContainerLayer>();
+  auto texture = std::make_shared<CountingTextureLayer>(DlPoint(10, 10),
+                                                        DlSize(10, 10), 7);
+  root->Add(texture);
+
+  auto clip = std::make_shared<ClipRectLayer>(DlRect::MakeLTRB(60, 60, 80, 80),
+                                              Clip::kHardEdge);
+  auto filter = DlImageFilter::MakeMatrix(DlMatrix::MakeTranslation({50, 50}),
+                                          DlImageSampling::kLinear);
+  clip->Add(
+      std::make_shared<BackdropFilterLayer>(filter, DlBlendMode::kSrcOver));
+  root->Add(clip);
+  LayerTree tree(root, kFrameSize);
+
+  FrameDamage initial_frame;
+  initial_frame.ComputeDamageRegion(tree, true, false);
+  EXPECT_EQ(texture->diff_count(), 1);
+
+  const std::unordered_set<int64_t> dirty_texture_ids = {7};
+  FrameDamage autonomous_frame;
+  autonomous_frame.SetPreviousLayerTree(&tree);
+  autonomous_frame.SetDirtyTextureIds(&dirty_texture_ids);
+  autonomous_frame.SetExistingDamage(DlRegion());
+  autonomous_frame.ComputeDamageRegion(tree, true, false);
+
+  EXPECT_EQ(texture->diff_count(), 1);
+  ASSERT_TRUE(autonomous_frame.GetFrameDamage().has_value());
+  ExpectRegion(
+      *autonomous_frame.GetFrameDamage(),
+      {DlIRect::MakeLTRB(10, 10, 30, 30), DlIRect::MakeLTRB(60, 60, 80, 80)});
 }
 
 }  // namespace
