@@ -17,7 +17,7 @@ vars = {
   'denial_skia_git': 'https://github.com/denialwm',
   'llvm_git': 'https://llvm.googlesource.com',
   'dart_ai_rev': '9c96bfe5f091c9451eff5b59c9bffeb2e806b875',
-  'skia_revision': '1945026029a69ff326337eb850bf81d9f675dfbd',
+  'skia_revision': '5b495e3e15a59ee76af882d83316d351654c1e88',
 
   # Do not download the Emscripten SDK by default.
   # This prevents us from downloading the Emscripten toolchain for builds
