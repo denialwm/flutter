@@ -208,10 +208,7 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
           .struct_size = sizeof(FlutterVulkanImage2),
       };
       if (!delegate_->AcquireImage2(size, &image)) {
-        return std::make_unique<SurfaceFrame>(
-            nullptr, SurfaceFrame::FramebufferInfo{},
-            [](SurfaceFrame&, DlCanvas*) { return true; },
-            [](SurfaceFrame&) { return true; }, size, nullptr, true);
+        return nullptr;
       }
       if (image.struct_size < sizeof(FlutterVulkanImage2) || !image.image) {
         FML_LOG(ERROR) << "Invalid borrowed VkImage given by the embedder.";

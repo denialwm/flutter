@@ -53,7 +53,7 @@ class TestGPUSurfaceVulkanDelegate : public GPUSurfaceVulkanDelegate {
   bool SupportsBorrowedImages() const override { return persistent_; }
 
   bool AcquireImage2(const DlISize&, FlutterVulkanImage2* image) override {
-    if (!persistent_) {
+    if (!persistent_ || !borrowed_image_available_) {
       return false;
     }
     *image = {
@@ -71,8 +71,13 @@ class TestGPUSurfaceVulkanDelegate : public GPUSurfaceVulkanDelegate {
     return true;
   }
 
+  void SetBorrowedImageAvailable(bool available) {
+    borrowed_image_available_ = available;
+  }
+
  private:
   bool persistent_;
+  bool borrowed_image_available_ = true;
   fml::RefPtr<vulkan::VulkanProcTable> vk_;
   fml::RefPtr<TestVulkanContext> test_context_;
   std::unique_ptr<TestVulkanSurface> test_surface_;
@@ -124,6 +129,21 @@ TEST(GPUSurfaceVulkanImpeller,
   auto next_frame = surface->AcquireFrame(DlISize(100, 100));
   EXPECT_TRUE(next_frame);
   EXPECT_EQ(impeller::CommandPoolRecyclerVK::GetGlobalPoolCount(*context), 0);
+}
+
+TEST(GPUSurfaceVulkanImpeller, DoesNotRasterWithoutBorrowedImage) {
+  impeller::ContextVK::Settings context_settings;
+  context_settings.proc_address_callback = vkGetInstanceProcAddr;
+  context_settings.shader_libraries_data = ShaderLibraryMappings();
+  auto context = impeller::ContextVK::Create(std::move(context_settings));
+
+  TestGPUSurfaceVulkanDelegate delegate(/*persistent=*/true);
+  delegate.SetBorrowedImageAvailable(false);
+
+  std::unique_ptr<Surface> surface =
+      std::make_unique<GPUSurfaceVulkanImpeller>(&delegate, context);
+
+  EXPECT_FALSE(surface->AcquireFrame(DlISize(100, 100)));
 }
 
 }  // namespace testing
