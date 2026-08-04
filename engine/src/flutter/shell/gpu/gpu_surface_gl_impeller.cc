@@ -15,7 +15,8 @@ namespace flutter {
 GPUSurfaceGLImpeller::GPUSurfaceGLImpeller(
     GPUSurfaceGLDelegate* delegate,
     std::shared_ptr<impeller::Context> context,
-    bool render_to_surface)
+    bool render_to_surface,
+    bool fbo_zero_is_no_target)
     : weak_factory_(this) {
   if (delegate == nullptr) {
     return;
@@ -35,6 +36,7 @@ GPUSurfaceGLImpeller::GPUSurfaceGLImpeller(
   delegate_ = delegate;
   impeller_context_ = std::move(context);
   render_to_surface_ = render_to_surface;
+  fbo_zero_is_no_target_ = fbo_zero_is_no_target;
   aiks_context_ = std::move(aiks_context);
   is_valid_ = true;
 }
@@ -47,6 +49,21 @@ bool GPUSurfaceGLImpeller::IsValid() {
   return is_valid_;
 }
 
+bool GPUSurfaceGLImpeller::PresentFrame(GPUSurfaceGLDelegate* delegate,
+                                        uint32_t fbo_id,
+                                        const DlISize& size) {
+  const std::optional<DlRegion> full_damage = DlRegion(DlIRect::MakeSize(size));
+  GLPresentInfo present_info = {
+      .fbo_id = fbo_id,
+      .frame_damage = full_damage,
+      // TODO (https://github.com/flutter/flutter/issues/105597): wire-up
+      // presentation time to impeller backend.
+      .presentation_time = std::nullopt,
+      .buffer_damage = full_damage,
+  };
+  return delegate->GLContextPresent(present_info);
+}
+
 // |Surface|
 std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
     const DlISize& size) {
@@ -54,22 +71,6 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
     FML_LOG(ERROR) << "OpenGL surface was invalid.";
     return nullptr;
   }
-
-  auto swap_callback = [weak = weak_factory_.GetWeakPtr(),
-                        delegate = delegate_]() -> bool {
-    if (weak) {
-      GLPresentInfo present_info = {
-          .fbo_id = 0u,
-          .frame_damage = std::nullopt,
-          // TODO (https://github.com/flutter/flutter/issues/105597): wire-up
-          // presentation time to impeller backend.
-          .presentation_time = std::nullopt,
-          .buffer_damage = std::nullopt,
-      };
-      delegate->GLContextPresent(present_info);
-    }
-    return true;
-  };
 
   auto context_switch = delegate_->GLContextMakeCurrent();
   if (!context_switch->GetResult()) {
@@ -90,6 +91,28 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
   GLFrameInfo frame_info = {static_cast<uint32_t>(size.width),
                             static_cast<uint32_t>(size.height)};
   const GLFBOInfo fbo_info = delegate_->GLContextFBO(frame_info);
+  auto present = [weak = weak_factory_.GetWeakPtr(), delegate = delegate_,
+                  size](uint32_t fbo_id) -> bool {
+    if (!weak) {
+      return false;
+    }
+    return PresentFrame(delegate, fbo_id, size);
+  };
+  auto make_skipped_frame = [&](std::unique_ptr<GLContextResult> context) {
+    return std::make_unique<SurfaceFrame>(
+        nullptr, delegate_->GLContextFramebufferInfo(),
+        [](SurfaceFrame&, DlCanvas*) { return true; },
+        [present](SurfaceFrame&) { return present(0u); }, size,
+        std::move(context), true);
+  };
+
+  if (fbo_info.fbo_id == 0u && fbo_zero_is_no_target_) {
+    return make_skipped_frame(std::move(context_switch));
+  }
+
+  auto swap_callback = [present, fbo_id = fbo_info.fbo_id]() -> bool {
+    return present(fbo_id);
+  };
   auto surface = impeller::SurfaceGLES::WrapFBO(
       impeller_context_,                         // context
       swap_callback,                             // swap_callback
@@ -97,6 +120,14 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
       impeller::PixelFormat::kR8G8B8A8UNormInt,  // color_format
       impeller::ISize{size.width, size.height}   // fbo_size
   );
+  if (!surface) {
+    FML_LOG(ERROR) << "Could not wrap Impeller OpenGL FBO " << fbo_info.fbo_id
+                   << ".";
+    if (fbo_zero_is_no_target_) {
+      return make_skipped_frame(std::move(context_switch));
+    }
+    return nullptr;
+  }
 
   impeller::RenderTarget render_target = surface->GetRenderTarget();
 
@@ -122,7 +153,6 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
                                     cull_rect,                          //
                                     /*reset_host_buffer=*/true          //
     );
-    return true;
   };
 
   return std::make_unique<SurfaceFrame>(

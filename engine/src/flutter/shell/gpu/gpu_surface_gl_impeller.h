@@ -14,12 +14,17 @@
 #include "flutter/shell/gpu/gpu_surface_gl_delegate.h"
 
 namespace flutter {
+namespace testing {
+FML_TEST_CLASS(EmbedderSurfaceGLImpellerTest,
+               ImpellerPresentPreservesFBOAndReportsFullDamage);
+}  // namespace testing
 
 class GPUSurfaceGLImpeller final : public Surface {
  public:
   explicit GPUSurfaceGLImpeller(GPUSurfaceGLDelegate* delegate,
                                 std::shared_ptr<impeller::Context> context,
-                                bool render_to_surface);
+                                bool render_to_surface,
+                                bool fbo_zero_is_no_target = false);
 
   // |Surface|
   ~GPUSurfaceGLImpeller() override;
@@ -28,15 +33,22 @@ class GPUSurfaceGLImpeller final : public Surface {
   bool IsValid() override;
 
  private:
+  FML_FRIEND_TEST(testing::EmbedderSurfaceGLImpellerTest,
+                  ImpellerPresentPreservesFBOAndReportsFullDamage);
   GPUSurfaceGLDelegate* delegate_ = nullptr;
   std::shared_ptr<impeller::Context> impeller_context_;
   bool render_to_surface_ = true;
+  bool fbo_zero_is_no_target_ = false;
   std::shared_ptr<impeller::AiksContext> aiks_context_;
   bool is_valid_ = false;
   fml::TaskRunnerAffineWeakPtrFactory<GPUSurfaceGLImpeller> weak_factory_;
 
   // |Surface|
   std::unique_ptr<SurfaceFrame> AcquireFrame(const DlISize& size) override;
+
+  static bool PresentFrame(GPUSurfaceGLDelegate* delegate,
+                           uint32_t fbo_id,
+                           const DlISize& size);
 
   // |Surface|
   DlMatrix GetRootTransformation() const override;

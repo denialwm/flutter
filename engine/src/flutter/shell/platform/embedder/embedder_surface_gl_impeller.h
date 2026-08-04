@@ -32,6 +32,7 @@ class EmbedderSurfaceGLImpeller final : public EmbedderSurface,
   EmbedderSurfaceGLImpeller(
       EmbedderSurfaceGLSkia::GLDispatchTable gl_dispatch_table,
       bool fbo_reset_after_present,
+      bool fbo_zero_is_no_target,
       std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder,
       impeller::Flags impeller_flags = {});
 
@@ -45,6 +46,7 @@ class EmbedderSurfaceGLImpeller final : public EmbedderSurface,
   bool valid_ = false;
   EmbedderSurfaceGLSkia::GLDispatchTable gl_dispatch_table_;
   bool fbo_reset_after_present_;
+  bool fbo_zero_is_no_target_;
   std::shared_ptr<impeller::ContextGLES> impeller_context_;
   std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder_;
   std::shared_ptr<ReactorWorker> worker_;

@@ -345,7 +345,8 @@ InferOpenGLPlatformViewCreationCallback(
     std::unique_ptr<flutter::EmbedderExternalViewEmbedder>
         external_view_embedder,
     bool enable_impeller,
-    impeller::Flags impeller_flags) {
+    impeller::Flags impeller_flags,
+    bool fbo_zero_is_no_target) {
 #ifdef SHELL_ENABLE_GL
   if (config->type != kOpenGL) {
     return nullptr;
@@ -528,7 +529,7 @@ InferOpenGLPlatformViewCreationCallback(
 
   return fml::MakeCopyable(
       [gl_dispatch_table, fbo_reset_after_present, platform_dispatch_table,
-       enable_impeller, impeller_flags,
+       enable_impeller, impeller_flags, fbo_zero_is_no_target,
        external_view_embedder =
            std::move(external_view_embedder)](flutter::Shell& shell) mutable {
         std::shared_ptr<flutter::EmbedderExternalViewEmbedder> view_embedder =
@@ -538,7 +539,8 @@ InferOpenGLPlatformViewCreationCallback(
               shell,                   // delegate
               shell.GetTaskRunners(),  // task runners
               std::make_unique<flutter::EmbedderSurfaceGLImpeller>(
-                  gl_dispatch_table, fbo_reset_after_present, view_embedder,
+                  gl_dispatch_table, fbo_reset_after_present,
+                  fbo_zero_is_no_target, view_embedder,
                   impeller_flags),      // embedder_surface
               platform_dispatch_table,  // embedder platform dispatch table
               view_embedder             // external view embedder
@@ -868,7 +870,8 @@ InferPlatformViewCreationCallback(
     std::unique_ptr<flutter::EmbedderExternalViewEmbedder>
         external_view_embedder,
     bool enable_impeller,
-    impeller::Flags impeller_flags) {
+    impeller::Flags impeller_flags,
+    bool fbo_zero_is_no_target) {
   if (config == nullptr) {
     return nullptr;
   }
@@ -877,7 +880,8 @@ InferPlatformViewCreationCallback(
     case kOpenGL:
       return InferOpenGLPlatformViewCreationCallback(
           config, user_data, platform_dispatch_table,
-          std::move(external_view_embedder), enable_impeller, impeller_flags);
+          std::move(external_view_embedder), enable_impeller, impeller_flags,
+          fbo_zero_is_no_target);
     case kSoftware:
       return InferSoftwarePlatformViewCreationCallback(
           config, user_data, platform_dispatch_table,
@@ -2367,7 +2371,8 @@ FlutterEngineResult FlutterEngineInitialize(size_t version,
   auto on_create_platform_view = InferPlatformViewCreationCallback(
       config, user_data, platform_dispatch_table,
       std::move(external_view_embedder_result.value()),
-      settings.enable_impeller, impeller_flags);
+      settings.enable_impeller, impeller_flags,
+      settings.denial_gl_fbo_zero_is_no_target);
 
   if (!on_create_platform_view) {
     return LOG_EMBEDDER_ERROR(
