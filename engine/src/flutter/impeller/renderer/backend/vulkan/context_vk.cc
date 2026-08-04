@@ -879,33 +879,29 @@ bool ContextVK::CancelExternalFrame() {
 
 bool ContextVK::SubmitExternalFrame(fml::UniqueFD& fd) {
 #if defined(FML_OS_LINUX) || defined(FML_OS_ANDROID)
-  if (!SupportsExternalFrameSync() || !FlushCommandBuffers()) {
+  if (!SupportsExternalFrameSync()) {
     return false;
   }
   auto release = CreateExternalFrameRelease();
   if (!release) {
     return false;
   }
-  auto& release_vk = CommandBufferVK::Cast(*release);
-  if (!release_vk.EndCommandBuffer()) {
-    return false;
-  }
-  const auto release_handle = release_vk.GetCommandBuffer();
   auto signal = std::make_shared<ExternalSemaphoreVK>(shared_from_this());
   if (!signal->IsValid()) {
     return false;
   }
-  auto [fence_result, fence] = GetDevice().createFenceUnique({});
-  if (fence_result != vk::Result::eSuccess) {
-    return false;
-  }
 
-  vk::SubmitInfo submit_info;
-  submit_info.setPCommandBuffers(&release_handle);
-  submit_info.setCommandBufferCount(1u);
-  submit_info.setPSignalSemaphores(&signal->GetHandle());
-  submit_info.setSignalSemaphoreCount(1u);
-  if (GetGraphicsQueue()->Submit(submit_info, *fence) != vk::Result::eSuccess) {
+  std::vector<std::shared_ptr<CommandBuffer>> frame_commands;
+  if (should_batch_cmd_buffers_) {
+    frame_commands = std::move(pending_command_buffers_);
+    pending_command_buffers_.clear();
+  }
+  frame_commands.push_back(std::move(release));
+
+  const auto submitted = command_queue_vk_->SubmitWithSignalSemaphore(
+      frame_commands, signal->GetHandle(),
+      [signal](CommandBuffer::Status) { static_cast<void>(signal); });
+  if (!submitted.ok()) {
     return false;
   }
 
@@ -915,16 +911,9 @@ bool ContextVK::SubmitExternalFrame(fml::UniqueFD& fd) {
   external_frame_images_.clear();
   external_frame_state_ = ExternalFrameState::kClosed;
 
-  fml::closure retain = [signal, release = std::move(release)]() {
-    static_cast<void>(signal);
-    static_cast<void>(release);
-  };
   if (!signal->CreateFD(fd)) {
     GetIdleWaiter()->WaitIdle();
     return true;
-  }
-  if (!fence_waiter_->TryAddFence(fence, retain)) {
-    GetIdleWaiter()->WaitIdle();
   }
   return true;
 #else

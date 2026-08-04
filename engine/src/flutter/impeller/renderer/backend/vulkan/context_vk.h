@@ -306,7 +306,7 @@ class ContextVK final : public Context,
   std::string device_name_;
   std::shared_ptr<fml::ConcurrentMessageLoop> raster_message_loop_;
   std::shared_ptr<GPUTracerVK> gpu_tracer_;
-  std::shared_ptr<CommandQueue> command_queue_vk_;
+  std::shared_ptr<CommandQueueVK> command_queue_vk_;
   std::shared_ptr<const IdleWaiter> idle_waiter_vk_;
   WorkaroundsVK workarounds_;
 
