@@ -39,9 +39,6 @@ class Surface {
 
   virtual std::unique_ptr<SurfaceFrame> AcquireFrame(const DlISize& size) = 0;
 
-  /// Completes a scheduled frame which produced no surface.
-  virtual void NotifyFrameSkipped();
-
   virtual DlMatrix GetRootTransformation() const = 0;
 
   virtual GrDirectContext* GetContext() = 0;

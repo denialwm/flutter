@@ -234,8 +234,6 @@ struct Settings {
   // no-target response when every atlas image is retained by KMS.
   bool denial_gl_fbo_zero_is_no_target = false;
 
-  bool enable_vulkan_frame_lifecycle = false;
-
   bool enable_flutter_gpu = false;
 
   // Enable android surface control swapchains where supported.

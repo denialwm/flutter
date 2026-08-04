@@ -93,8 +93,7 @@ TEST(FenceWaiterVKTest, AddFenceDoesNothingIfTerminating) {
     waiter->Terminate();
 
     auto fence = device.createFenceUnique({}).value;
-    EXPECT_FALSE(
-        waiter->AddFence(std::move(fence), [&signal]() { signal.Signal(); }));
+    waiter->AddFence(std::move(fence), [&signal]() { signal.Signal(); });
   }
 
   // Ensure the fence did _not_ signal.

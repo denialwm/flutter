@@ -19,8 +19,7 @@ namespace flutter {
 class GPUSurfaceVulkanImpeller final : public Surface {
  public:
   explicit GPUSurfaceVulkanImpeller(GPUSurfaceVulkanDelegate* delegate,
-                                    std::shared_ptr<impeller::Context> context,
-                                    bool enable_root_msaa = true);
+                                    std::shared_ptr<impeller::Context> context);
 
   // |Surface|
   ~GPUSurfaceVulkanImpeller() override;
@@ -33,14 +32,10 @@ class GPUSurfaceVulkanImpeller final : public Surface {
   std::shared_ptr<impeller::Context> impeller_context_;
   std::shared_ptr<impeller::AiksContext> aiks_context_;
   std::shared_ptr<impeller::SwapchainTransientsVK> transients_;
-  bool enable_root_msaa_ = true;
   bool is_valid_ = false;
 
   // |Surface|
   std::unique_ptr<SurfaceFrame> AcquireFrame(const DlISize& size) override;
-
-  // |Surface|
-  void NotifyFrameSkipped() override;
 
   // |Surface|
   DlMatrix GetRootTransformation() const override;

@@ -246,7 +246,6 @@ void Rasterizer::DrawLastLayerTrees(
   }
   if (tasks.empty()) {
     pending_texture_ids_ = std::move(dirty_texture_ids);
-    surface_->NotifyFrameSkipped();
     return;
   }
 
@@ -278,9 +277,6 @@ DrawStatus Rasterizer::Draw(const std::shared_ptr<FramePipeline>& pipeline) {
                                       this](std::unique_ptr<FrameItem> item) {
     auto dirty_texture_ids = std::move(pending_texture_ids_);
     pending_texture_ids_.clear();
-    if (item->layer_tree_tasks.empty()) {
-      pending_texture_ids_ = std::move(dirty_texture_ids);
-    }
     for (auto& task : item->layer_tree_tasks) {
       // An engaged empty set is meaningful: this framework frame changed no
       // external texture. A null set retains Flutter's conservative fallback
@@ -522,9 +518,6 @@ Rasterizer::DoDrawResult Rasterizer::DoDraw(
   frame_timings_recorder->AssertInState(FrameTimingsRecorder::State::kBuildEnd);
 
   if (tasks.empty()) {
-    if (surface_) {
-      surface_->NotifyFrameSkipped();
-    }
     return DoDrawResult{DoDrawStatus::kDone};
   }
   if (!surface_) {
@@ -641,7 +634,6 @@ Rasterizer::DoDrawResult Rasterizer::DrawToSurfaces(
               result.status = DoDrawStatus::kGpuUnavailable;
               frame_timings_recorder.RecordRasterStart(fml::TimePoint::Now());
               frame_timings_recorder.RecordRasterEnd();
-              surface_->NotifyFrameSkipped();
             })
             .SetIfFalse([&] {
               result.resubmitted_item = DrawToSurfacesUnsafe(
@@ -674,7 +666,6 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
   if (tasks.empty()) {
     frame_timings_recorder.RecordRasterStart(fml::TimePoint::Now());
     frame_timings_recorder.RecordRasterEnd();
-    surface_->NotifyFrameSkipped();
     return nullptr;
   }
 

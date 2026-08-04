@@ -300,9 +300,6 @@ class CapabilitiesVK final : public Capabilities,
   /// are available.
   bool SupportsExternalSemaphoreExtensions() const;
 
-  /// Whether an exportable Linux sync-file semaphore can be created.
-  bool SupportsExternalSemaphoreFd() const;
-
   //----------------------------------------------------------------------------
   /// @brief      Get the fixed compression rate supported by the context for
   ///             the given format and usage.
@@ -343,7 +340,6 @@ class CapabilitiesVK final : public Capabilities,
   bool has_triangle_fans_ = true;
   bool has_primitive_restart_ = true;
   bool has_framebuffer_fetch_ = true;
-  bool supports_external_semaphore_fd_ = false;
   bool supports_external_fence_and_semaphore_ = false;
   bool is_valid_ = false;
 

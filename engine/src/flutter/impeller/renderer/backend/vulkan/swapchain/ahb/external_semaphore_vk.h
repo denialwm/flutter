@@ -71,10 +71,6 @@ class ExternalSemaphoreVK {
   ///
   fml::UniqueFD CreateFD() const;
 
-  /// Export the semaphore and distinguish export failure from the valid
-  /// already-signalled representation, which is an invalid file descriptor.
-  bool CreateFD(fml::UniqueFD& fd) const;
-
   const vk::Semaphore& GetHandle() const;
 
   const SharedHandleVK<vk::Semaphore>& GetSharedHandle() const;

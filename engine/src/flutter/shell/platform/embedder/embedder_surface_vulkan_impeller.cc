@@ -29,19 +29,15 @@ EmbedderSurfaceVulkanImpeller::EmbedderSurfaceVulkanImpeller(
     uint32_t queue_family_index,
     VkQueue queue,
     const VulkanDispatchTable& vulkan_dispatch_table,
-    std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder,
-    bool enable_root_msaa)
+    std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder)
     : vk_(fml::MakeRefCounted<vulkan::VulkanProcTable>(
           vulkan_dispatch_table.get_instance_proc_address)),
       vulkan_dispatch_table_(vulkan_dispatch_table),
-      external_view_embedder_(std::move(external_view_embedder)),
-      enable_root_msaa_(enable_root_msaa) {
+      external_view_embedder_(std::move(external_view_embedder)) {
   // Make sure all required members of the dispatch table are checked.
   if (!vulkan_dispatch_table_.get_instance_proc_address ||
       !vulkan_dispatch_table_.get_next_image ||
-      !vulkan_dispatch_table_.present_image ||
-      (!!vulkan_dispatch_table_.frame_callback !=
-       !!vulkan_dispatch_table_.get_next_frame_image)) {
+      !vulkan_dispatch_table_.present_image) {
     return;
   }
 
@@ -80,12 +76,6 @@ EmbedderSurfaceVulkanImpeller::EmbedderSurfaceVulkanImpeller(
     FML_LOG(ERROR) << "Failed to initialize Vulkan Context.";
     return;
   }
-  if (vulkan_dispatch_table_.frame_callback &&
-      !context_->SupportsFrameFence()) {
-    FML_LOG(ERROR) << "Vulkan sync-file export is unavailable.";
-    context_.reset();
-    return;
-  }
 
   FML_LOG(IMPORTANT) << "Using the Impeller rendering backend (Vulkan).";
 
@@ -111,34 +101,9 @@ FlutterVulkanImage EmbedderSurfaceVulkanImpeller::AcquireImage(
 }
 
 // |GPUSurfaceVulkanDelegate|
-bool EmbedderSurfaceVulkanImpeller::AcquireFrameImage(
-    const DlISize& size,
-    FlutterVulkanFrameImage* image) {
-  return vulkan_dispatch_table_.get_next_frame_image &&
-         vulkan_dispatch_table_.get_next_frame_image(size, image);
-}
-
-// |GPUSurfaceVulkanDelegate|
 bool EmbedderSurfaceVulkanImpeller::PresentImage(VkImage image,
                                                  VkFormat format) {
   return vulkan_dispatch_table_.present_image(image, format);
-}
-
-// |GPUSurfaceVulkanDelegate|
-bool EmbedderSurfaceVulkanImpeller::SupportsVulkanFrameCallback() const {
-  return !!vulkan_dispatch_table_.frame_callback;
-}
-
-// |GPUSurfaceVulkanDelegate|
-bool EmbedderSurfaceVulkanImpeller::OnVulkanFrame(
-    FlutterVulkanFrameStatus status,
-    const FlutterVulkanFrameImage* image,
-    fml::UniqueFD release_fence) {
-  if (!vulkan_dispatch_table_.frame_callback) {
-    return false;
-  }
-  return vulkan_dispatch_table_.frame_callback(status, image,
-                                               std::move(release_fence));
 }
 
 // |EmbedderSurface|
@@ -148,8 +113,7 @@ bool EmbedderSurfaceVulkanImpeller::IsValid() const {
 
 // |EmbedderSurface|
 std::unique_ptr<Surface> EmbedderSurfaceVulkanImpeller::CreateGPUSurface() {
-  return std::make_unique<GPUSurfaceVulkanImpeller>(this, context_,
-                                                    enable_root_msaa_);
+  return std::make_unique<GPUSurfaceVulkanImpeller>(this, context_);
 }
 
 // |EmbedderSurface|

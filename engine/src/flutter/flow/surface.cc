@@ -10,8 +10,6 @@ Surface::Surface() = default;
 
 Surface::~Surface() = default;
 
-void Surface::NotifyFrameSkipped() {}
-
 std::unique_ptr<GLContextResult> Surface::MakeRenderContextCurrent() {
   return std::make_unique<GLContextDefaultResult>(true);
 }

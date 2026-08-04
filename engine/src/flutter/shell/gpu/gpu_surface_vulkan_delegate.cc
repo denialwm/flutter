@@ -8,19 +8,4 @@ namespace flutter {
 
 GPUSurfaceVulkanDelegate::~GPUSurfaceVulkanDelegate() = default;
 
-bool GPUSurfaceVulkanDelegate::AcquireFrameImage(const DlISize&,
-                                                 FlutterVulkanFrameImage*) {
-  return false;
-}
-
-bool GPUSurfaceVulkanDelegate::SupportsVulkanFrameCallback() const {
-  return false;
-}
-
-bool GPUSurfaceVulkanDelegate::OnVulkanFrame(FlutterVulkanFrameStatus,
-                                             const FlutterVulkanFrameImage*,
-                                             fml::UniqueFD) {
-  return false;
-}
-
 }  // namespace flutter

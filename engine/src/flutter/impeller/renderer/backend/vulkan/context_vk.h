@@ -42,7 +42,6 @@ class GPUTracerVK;
 class DescriptorPoolRecyclerVK;
 class CommandQueueVK;
 class DescriptorPoolVK;
-class TextureSourceVK;
 
 class IdleWaiterVK : public IdleWaiter {
  public:
@@ -239,26 +238,6 @@ class ContextVK final : public Context,
   // | Context |
   bool FlushCommandBuffers() override;
 
-  bool BeginFrameImages(std::shared_ptr<const TextureSourceVK> root_image,
-                        vk::ImageLayout external_layout,
-                        uint32_t external_queue_family);
-
-  bool AddFrameTexture(std::shared_ptr<const TextureSourceVK> texture,
-                       vk::ImageLayout external_layout,
-                       uint32_t external_queue_family);
-
-  bool AcquireFrameImages();
-
-  /// Cancels the active frame and reports whether external ownership was
-  /// restored (or never acquired).
-  bool CancelFrameImages();
-
-  /// Appends a sync-file signal after all work already submitted to the
-  /// embedder graphics queue.
-  bool SubmitFrameFence(fml::UniqueFD& fd);
-
-  bool SupportsFrameFence() const;
-
   RuntimeStageBackend GetRuntimeStageBackend() const override;
 
   std::shared_ptr<const IdleWaiter> GetIdleWaiter() const override {
@@ -318,27 +297,8 @@ class ContextVK final : public Context,
   bool should_batch_cmd_buffers_ = false;
   std::vector<std::shared_ptr<CommandBuffer>> pending_command_buffers_;
 
-  struct FrameImage {
-    std::shared_ptr<const TextureSourceVK> source;
-    vk::ImageLayout external_layout;
-    uint32_t external_queue_family;
-    bool render_target;
-  };
-  std::vector<FrameImage> frame_images_;
-  enum class FrameImageState {
-    kClosed,
-    kOpen,
-    kAcquired,
-  };
-  FrameImageState frame_image_state_ = FrameImageState::kClosed;
-
-  std::shared_ptr<CommandBuffer> CreateFrameReleaseCommandBuffer();
-
-  bool SupportsExternalQueueFamily(uint32_t queue_family) const;
-
   const uint64_t hash_;
 
-  bool uses_embedder_device_ = false;
   bool is_valid_ = false;
 
   explicit ContextVK(const Flags& flags);

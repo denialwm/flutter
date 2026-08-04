@@ -47,8 +47,7 @@ class Animator final {
 
   Animator(Delegate& delegate,
            const TaskRunners& task_runners,
-           std::unique_ptr<VsyncWaiter> waiter,
-           bool submit_empty_frames = false);
+           std::unique_ptr<VsyncWaiter> waiter);
 
   ~Animator();
 
@@ -135,7 +134,6 @@ class Animator final {
   Delegate& delegate_;
   TaskRunners task_runners_;
   std::shared_ptr<VsyncWaiter> waiter_;
-  const bool submit_empty_frames_;
 
   std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder_;
   std::unordered_map<int64_t, std::unique_ptr<LayerTreeTask>>

@@ -63,11 +63,6 @@ FenceWaiterVK::~FenceWaiterVK() {
 
 bool FenceWaiterVK::AddFence(vk::UniqueFence fence,
                              const fml::closure& callback) {
-  return TryAddFence(fence, callback);
-}
-
-bool FenceWaiterVK::TryAddFence(vk::UniqueFence& fence,
-                                const fml::closure& callback) {
   if (!fence || !callback) {
     return false;
   }

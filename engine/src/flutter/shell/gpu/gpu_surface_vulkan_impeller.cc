@@ -5,7 +5,6 @@
 #include "flutter/shell/gpu/gpu_surface_vulkan_impeller.h"
 
 #include <memory>
-#include <optional>
 
 #include "flow/surface_frame.h"
 #include "flutter/fml/make_copyable.h"
@@ -51,93 +50,10 @@ class WrappedTextureSourceVK : public impeller::TextureSourceVK {
   impeller::vk::UniqueImageView image_view_;
 };
 
-class VulkanFrameLease final {
- public:
-  VulkanFrameLease(GPUSurfaceVulkanDelegate* delegate,
-                   std::optional<FlutterVulkanFrameImage> image,
-                   std::shared_ptr<impeller::Context> context)
-      : delegate_(delegate),
-        image_(std::move(image)),
-        context_(std::move(context)) {}
-
-  ~VulkanFrameLease() {
-    if (!completed_) {
-      auto& context_vk = impeller::ContextVK::Cast(*context_);
-      FlutterVulkanFrameStatus status =
-          image_ ? kFlutterVulkanFrameCancelled : kFlutterVulkanFrameSkipped;
-      if (submitted_) {
-        context_vk.GetIdleWaiter()->WaitIdle();
-      } else if (begun_ && !context_vk.CancelFrameImages()) {
-        status = kFlutterVulkanFrameFailed;
-      }
-      Complete(status, {});
-    }
-  }
-
-  bool Begin(std::shared_ptr<const impeller::TextureSourceVK> root_image,
-             impeller::vk::ImageLayout external_layout,
-             uint32_t external_queue_family) {
-    begun_ = image_ &&
-             impeller::ContextVK::Cast(*context_).BeginFrameImages(
-                 std::move(root_image), external_layout, external_queue_family);
-    return begun_;
-  }
-
-  bool Acquire() {
-    return begun_ && impeller::ContextVK::Cast(*context_).AcquireFrameImages();
-  }
-
-  bool Submit() {
-    if (!begun_ || submitted_) {
-      return false;
-    }
-    if (!impeller::ContextVK::Cast(*context_).SubmitFrameFence(
-            release_fence_)) {
-      return false;
-    }
-    submitted_ = true;
-    return true;
-  }
-
-  bool Ready() {
-    if (!image_ || !submitted_) {
-      return false;
-    }
-    return Complete(kFlutterVulkanFrameReady, std::move(release_fence_));
-  }
-
-  bool Skip() {
-    if (image_ || completed_) {
-      return false;
-    }
-    Complete(kFlutterVulkanFrameSkipped, {});
-    return true;
-  }
-
- private:
-  bool Complete(FlutterVulkanFrameStatus status, fml::UniqueFD release_fence) {
-    if (completed_) {
-      return false;
-    }
-    completed_ = true;
-    return delegate_->OnVulkanFrame(status, image_ ? &*image_ : nullptr,
-                                    std::move(release_fence));
-  }
-
-  GPUSurfaceVulkanDelegate* delegate_;
-  std::optional<FlutterVulkanFrameImage> image_;
-  std::shared_ptr<impeller::Context> context_;
-  fml::UniqueFD release_fence_;
-  bool begun_ = false;
-  bool submitted_ = false;
-  bool completed_ = false;
-};
-
 GPUSurfaceVulkanImpeller::GPUSurfaceVulkanImpeller(
     GPUSurfaceVulkanDelegate* delegate,
-    std::shared_ptr<impeller::Context> context,
-    bool enable_root_msaa)
-    : delegate_(delegate), enable_root_msaa_(enable_root_msaa) {
+    std::shared_ptr<impeller::Context> context)
+    : delegate_(delegate) {
   if (!context || !context->IsValid()) {
     return;
   }
@@ -171,7 +87,6 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
 
   if (size.IsEmpty()) {
     FML_LOG(ERROR) << "Vulkan surface was asked for an empty frame.";
-    NotifyFrameSkipped();
     return nullptr;
   }
 
@@ -225,48 +140,13 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
         true      // display list fallback
     );
   } else {
-    const bool uses_frame_lifecycle = delegate_->SupportsVulkanFrameCallback();
-    std::optional<FlutterVulkanFrameImage> flutter_frame_image;
-    FlutterVulkanImageHandle image_handle = 0;
-    uint32_t image_format = 0;
-    if (uses_frame_lifecycle) {
-      FlutterVulkanFrameImage image = {
-          .struct_size = sizeof(FlutterVulkanFrameImage),
-      };
-      if (delegate_->AcquireFrameImage(size, &image)) {
-        flutter_frame_image = image;
-        image_handle = image.image;
-        image_format = image.format;
-      }
-    } else {
-      const FlutterVulkanImage image = delegate_->AcquireImage(size);
-      image_handle = image.image;
-      image_format = image.format;
-    }
-    if (!image_handle) {
-      if (uses_frame_lifecycle) {
-        auto frame = std::make_shared<VulkanFrameLease>(delegate_, std::nullopt,
-                                                        impeller_context_);
-        return std::make_unique<SurfaceFrame>(
-            nullptr, SurfaceFrame::FramebufferInfo{},
-            [](SurfaceFrame&, DlCanvas*) { return true; },
-            [frame](SurfaceFrame&) { return frame->Skip(); }, size, nullptr,
-            true);
-      }
+    FlutterVulkanImage flutter_image = delegate_->AcquireImage(size);
+    if (!flutter_image.image) {
       FML_LOG(ERROR) << "Invalid VkImage given by the embedder.";
       return nullptr;
     }
-    auto frame = uses_frame_lifecycle
-                     ? std::make_shared<VulkanFrameLease>(
-                           delegate_, flutter_frame_image, impeller_context_)
-                     : nullptr;
-    if (frame &&
-        flutter_frame_image->struct_size < sizeof(FlutterVulkanFrameImage)) {
-      FML_LOG(ERROR) << "Vulkan frame image is missing ownership metadata.";
-      return nullptr;
-    }
     impeller::vk::Format vk_format =
-        static_cast<impeller::vk::Format>(image_format);
+        static_cast<impeller::vk::Format>(flutter_image.format);
     std::optional<impeller::PixelFormat> format =
         impeller::VkFormatToImpellerFormat(vk_format);
     if (!format.has_value()) {
@@ -281,7 +161,7 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
     context_vk.DisposeThreadLocalCachedResources();
 
     impeller::vk::Image vk_image =
-        impeller::vk::Image(reinterpret_cast<VkImage>(image_handle));
+        impeller::vk::Image(reinterpret_cast<VkImage>(flutter_image.image));
 
     impeller::TextureDescriptor desc;
     desc.format = format.value();
@@ -313,33 +193,21 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
     if (transients_ == nullptr) {
       transients_ = std::make_shared<impeller::SwapchainTransientsVK>(
           impeller_context_, desc,
-          /*enable_msaa=*/enable_root_msaa_);
+          /*enable_msaa=*/true);
     }
 
     auto wrapped_onscreen = std::make_shared<WrappedTextureSourceVK>(
         vk_image, std::move(image_view), desc);
-    if (frame) {
-      const auto external_layout =
-          static_cast<impeller::vk::ImageLayout>(flutter_frame_image->layout);
-      wrapped_onscreen->SetLayoutWithoutEncoding(external_layout);
-      if (!frame->Begin(wrapped_onscreen, external_layout,
-                        flutter_frame_image->external_queue_family_index)) {
-        FML_LOG(ERROR) << "Could not begin the Vulkan frame transaction.";
-        return nullptr;
-      }
-    }
     auto surface = impeller::SurfaceVK::WrapSwapchainImage(
         transients_, wrapped_onscreen, [&]() -> bool { return true; });
-    if (!surface) {
-      FML_LOG(ERROR) << "Could not wrap the embedder Vulkan image.";
-      return nullptr;
-    }
     impeller::RenderTarget render_target = surface->GetRenderTarget();
     auto cull_rect =
         impeller::Rect::MakeSize(render_target.GetRenderTargetSize());
-    SurfaceFrame::EncodeCallback encode_callback =
-        [aiks_context = aiks_context_,    //
-         render_target, cull_rect, frame  //
+
+    SurfaceFrame::EncodeCallback encode_callback = [aiks_context =
+                                                        aiks_context_,  //
+                                                    render_target,
+                                                    cull_rect  //
     ](SurfaceFrame& surface_frame, DlCanvas* canvas) mutable -> bool {
       if (!aiks_context) {
         return false;
@@ -350,39 +218,22 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
         FML_LOG(ERROR) << "Could not build display list for surface frame.";
         return false;
       }
-      if (frame && !frame->Acquire()) {
-        FML_LOG(ERROR) << "Could not acquire the external Vulkan images.";
-        return false;
-      }
 
-      const bool rendered =
-          impeller::RenderToTarget(aiks_context->GetContentContext(),  //
-                                   render_target,                      //
-                                   display_list,                       //
-                                   cull_rect,                          //
-                                   /*reset_host_buffer=*/true          //
-          );
-      if (!rendered) {
-        return false;
-      }
-      if (!frame) {
-        return true;
-      }
-
-      if (!frame->Submit()) {
-        FML_LOG(ERROR) << "Could not submit the Vulkan frame fence.";
-        return false;
-      }
-      return true;
+      return impeller::RenderToTarget(aiks_context->GetContentContext(),  //
+                                      render_target,                      //
+                                      display_list,                       //
+                                      cull_rect,                          //
+                                      /*reset_host_buffer=*/true          //
+      );
     };
 
     SurfaceFrame::SubmitCallback submit_callback =
-        [image_handle, image_format, delegate = delegate_,
-         impeller_context = impeller_context_, wrapped_onscreen,
-         frame](const SurfaceFrame&) -> bool {
+        [image = flutter_image, delegate = delegate_,
+         impeller_context = impeller_context_,
+         wrapped_onscreen](const SurfaceFrame&) -> bool {
       TRACE_EVENT0("flutter", "GPUSurfaceVulkan::PresentImage");
 
-      if (!frame) {
+      {
         const auto& context = impeller::ContextVK::Cast(*impeller_context);
 
         //----------------------------------------------------------------------------
@@ -414,11 +265,8 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
         }
       }
 
-      if (frame) {
-        return frame->Ready();
-      }
-      return delegate->PresentImage(reinterpret_cast<VkImage>(image_handle),
-                                    static_cast<VkFormat>(image_format));
+      return delegate->PresentImage(reinterpret_cast<VkImage>(image.image),
+                                    static_cast<VkFormat>(image.format));
     };
 
     SurfaceFrame::FramebufferInfo framebuffer_info{.supports_readback = true};
@@ -431,12 +279,6 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
                                           nullptr,  // context result
                                           true      // display list fallback
     );
-  }
-}
-
-void GPUSurfaceVulkanImpeller::NotifyFrameSkipped() {
-  if (delegate_ && delegate_->SupportsVulkanFrameCallback()) {
-    delegate_->OnVulkanFrame(kFlutterVulkanFrameSkipped, nullptr, {});
   }
 }
 
