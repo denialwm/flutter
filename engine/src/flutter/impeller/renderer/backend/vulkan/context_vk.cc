@@ -416,8 +416,8 @@ void ContextVK::Setup(Settings settings) {
   //----------------------------------------------------------------------------
   /// Create the fence waiter.
   ///
-  auto fence_waiter =
-      std::shared_ptr<FenceWaiterVK>(new FenceWaiterVK(device_holder));
+  auto fence_waiter = std::shared_ptr<FenceWaiterVK>(
+      new FenceWaiterVK(device_holder, uses_embedder_device_));
 
   //----------------------------------------------------------------------------
   /// Create the resource manager and command pool recycler.

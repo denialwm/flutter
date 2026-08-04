@@ -41,8 +41,9 @@ class FenceWaiterVK {
   std::condition_variable wait_set_cv_;
   WaitSet wait_set_;
   bool terminate_ = false;
+  const bool poll_fences_;
 
-  explicit FenceWaiterVK(std::weak_ptr<DeviceHolderVK> device_holder);
+  FenceWaiterVK(std::weak_ptr<DeviceHolderVK> device_holder, bool poll_fences);
 
   void Main();
 

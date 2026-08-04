@@ -52,8 +52,9 @@ class WaitSetEntry {
   WaitSetEntry& operator=(WaitSetEntry&&) = delete;
 };
 
-FenceWaiterVK::FenceWaiterVK(std::weak_ptr<DeviceHolderVK> device_holder)
-    : device_holder_(std::move(device_holder)) {
+FenceWaiterVK::FenceWaiterVK(std::weak_ptr<DeviceHolderVK> device_holder,
+                             bool poll_fences)
+    : device_holder_(std::move(device_holder)), poll_fences_(poll_fences) {
   waiter_thread_ = std::make_unique<std::thread>([&]() { Main(); });
 }
 
@@ -160,11 +161,28 @@ bool FenceWaiterVK::Wait() {
     return true;
   }
 
-  auto result = device.waitForFences(
-      /*fenceCount=*/fences.size(),
-      /*pFences=*/fences.data(),
-      /*waitAll=*/false,
-      /*timeout=*/std::chrono::nanoseconds{100ms}.count());
+  vk::Result result;
+  if (poll_fences_) {
+    result = device.waitForFences(
+        /*fenceCount=*/fences.size(),
+        /*pFences=*/fences.data(),
+        /*waitAll=*/false,
+        /*timeout=*/0u);
+    if (result == vk::Result::eTimeout) {
+      // Some desktop drivers busy-spin inside a timed Vulkan fence wait. The
+      // embedder already owns presentation synchronization, so completion
+      // cleanup can trade sub-millisecond immediacy for bounded CPU use.
+      std::unique_lock lock(wait_set_mutex_);
+      wait_set_cv_.wait_for(lock, 1ms);
+      return true;
+    }
+  } else {
+    result = device.waitForFences(
+        /*fenceCount=*/fences.size(),
+        /*pFences=*/fences.data(),
+        /*waitAll=*/false,
+        /*timeout=*/std::chrono::nanoseconds{100ms}.count());
+  }
   if (!(result == vk::Result::eSuccess || result == vk::Result::eTimeout)) {
     VALIDATION_LOG << "Fence waiter encountered an unexpected error. Tearing "
                       "down the waiter thread.";
