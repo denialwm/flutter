@@ -230,6 +230,10 @@ struct Settings {
   bool enable_impeller = false;
 #endif
 
+  // Denial's rotating direct-scanout atlas uses FBO 0 as an explicit
+  // no-target response when every atlas image is retained by KMS.
+  bool denial_gl_fbo_zero_is_no_target = false;
+
   bool enable_flutter_gpu = false;
 
   // Enable android surface control swapchains where supported.

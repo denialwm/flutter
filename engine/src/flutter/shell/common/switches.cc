@@ -445,6 +445,9 @@ Settings SettingsFromCommandLine(const fml::CommandLine& command_line,
   }
 #endif  // FML_OS_IOS && !FML_OS_IOS_SIMULATOR
 
+  settings.denial_gl_fbo_zero_is_no_target =
+      command_line.HasOption(FlagForSwitch(Switch::DenialGLFBOZeroIsNoTarget));
+
   {
     std::string impeller_backend_value;
     if (command_line.GetOptionValue(FlagForSwitch(Switch::ImpellerBackend),

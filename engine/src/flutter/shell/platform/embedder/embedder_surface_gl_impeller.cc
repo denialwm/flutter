@@ -77,9 +77,11 @@ class ReactorWorker final : public impeller::ReactorGLES::Worker {
 EmbedderSurfaceGLImpeller::EmbedderSurfaceGLImpeller(
     EmbedderSurfaceGLSkia::GLDispatchTable gl_dispatch_table,
     bool fbo_reset_after_present,
+    bool fbo_zero_is_no_target,
     std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder)
     : gl_dispatch_table_(std::move(gl_dispatch_table)),
       fbo_reset_after_present_(fbo_reset_after_present),
+      fbo_zero_is_no_target_(fbo_zero_is_no_target),
       external_view_embedder_(std::move(external_view_embedder)),
       worker_(std::make_shared<ReactorWorker>()) {
   // Make sure all required members of the dispatch table are checked.
@@ -185,11 +187,11 @@ EmbedderSurfaceGLImpeller::GetGLProcResolver() const {
 // |GPUSurfaceGLDelegate|
 SurfaceFrame::FramebufferInfo
 EmbedderSurfaceGLImpeller::GLContextFramebufferInfo() const {
-  // Enable partial repaint by default on the embedders.
+  // SurfaceGLES clears the color attachment on every frame. Do not advertise
+  // partial repaint until it can preserve the selected rotating FBO.
   auto info = SurfaceFrame::FramebufferInfo{};
   info.supports_readback = true;
-  info.supports_partial_repaint =
-      gl_dispatch_table_.gl_populate_existing_damage != nullptr;
+  info.supports_partial_repaint = false;
   return info;
 }
 
@@ -201,9 +203,10 @@ std::unique_ptr<Surface> EmbedderSurfaceGLImpeller::CreateGPUSurface() {
   GLContextMakeCurrent();
 
   return std::make_unique<GPUSurfaceGLImpeller>(
-      this,                     // GPU surface GL delegate
-      impeller_context_,        // Impeller context
-      !external_view_embedder_  // render to surface
+      this,                      // GPU surface GL delegate
+      impeller_context_,         // Impeller context
+      !external_view_embedder_,  // render to surface
+      fbo_zero_is_no_target_     // Denial atlas backpressure contract
   );
 }
 

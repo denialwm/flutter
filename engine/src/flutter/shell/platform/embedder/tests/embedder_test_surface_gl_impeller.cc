@@ -39,6 +39,7 @@ TEST(EmbedderSurfaceGLImpellerTest, GLES3ContextHasGLES3Shaders) {
       StubDispatchTable(/* version */ "OpenGL ES 3.0");
   const auto surface = EmbedderSurfaceGLImpeller(
       gl_dispatch_table, /* fbo_reset_after_present */ false,
+      /* fbo_zero_is_no_target */ false,
       /* external_view_embedder */ nullptr);
 
   const std::shared_ptr<impeller::Context> context =
@@ -61,6 +62,7 @@ TEST(EmbedderSurfaceGLImpellerTest, GLES2ContextDoesNotHaveGLES3Shaders) {
       StubDispatchTable(/* version */ "OpenGL ES 2.0");
   const auto surface = EmbedderSurfaceGLImpeller(
       gl_dispatch_table, /* fbo_reset_after_present */ false,
+      /* fbo_zero_is_no_target */ false,
       /* external_view_embedder */ nullptr);
 
   const std::shared_ptr<impeller::Context> context =
@@ -76,6 +78,33 @@ TEST(EmbedderSurfaceGLImpellerTest, GLES2ContextDoesNotHaveGLES3Shaders) {
   const auto text =
       std::string_view(reinterpret_cast<const char*>(source->GetMapping()));
   EXPECT_THAT(text, StartsWith("#version 100"));
+}
+
+TEST(EmbedderSurfaceGLImpellerTest,
+     ImpellerPresentPreservesFBOAndReportsFullDamage) {
+  auto gl_dispatch_table = StubDispatchTable(/* version */ "OpenGL ES 3.0");
+  uint32_t presented_fbo = 0u;
+  std::optional<DlRegion> frame_damage;
+  std::optional<DlRegion> buffer_damage;
+  gl_dispatch_table.gl_present_callback = [&](const GLPresentInfo& info) {
+    presented_fbo = info.fbo_id;
+    frame_damage = info.frame_damage;
+    buffer_damage = info.buffer_damage;
+    return true;
+  };
+  auto surface = EmbedderSurfaceGLImpeller(
+      gl_dispatch_table, /* fbo_reset_after_present */ false,
+      /* fbo_zero_is_no_target */ false,
+      /* external_view_embedder */ nullptr);
+
+  const DlISize frame_size = DlISize(64, 32);
+  EXPECT_TRUE(GPUSurfaceGLImpeller::PresentFrame(&surface, /* fbo_id */ 73u,
+                                                 frame_size));
+  EXPECT_EQ(presented_fbo, 73u);
+  ASSERT_TRUE(frame_damage.has_value());
+  ASSERT_TRUE(buffer_damage.has_value());
+  EXPECT_EQ(frame_damage->bounds(), DlIRect::MakeSize(frame_size));
+  EXPECT_EQ(buffer_damage->bounds(), DlIRect::MakeSize(frame_size));
 }
 }  // namespace testing
 }  // namespace flutter

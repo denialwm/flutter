@@ -122,6 +122,17 @@ TEST(SwitchesTest, NoEnableImpeller) {
   }
 }
 
+TEST(SwitchesTest, DenialGLFBOZeroIsNoTargetIsExplicit) {
+  auto command_line = fml::CommandLineFromInitializerList(
+      {"command", "--denial-gl-fbo-zero-is-no-target"});
+  EXPECT_TRUE(
+      SettingsFromCommandLine(command_line).denial_gl_fbo_zero_is_no_target);
+
+  command_line = fml::CommandLineFromInitializerList({"command"});
+  EXPECT_FALSE(
+      SettingsFromCommandLine(command_line).denial_gl_fbo_zero_is_no_target);
+}
+
 TEST(SwitchesTest, ProfileStartup) {
   {
     fml::CommandLine command_line =

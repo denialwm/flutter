@@ -248,6 +248,10 @@ DEF_SWITCH(EnableImpeller,
            "enable-impeller",
            "Enable the Impeller renderer on supported platforms. Ignored if "
            "Impeller is not supported on the platform.")
+DEF_SWITCH(DenialGLFBOZeroIsNoTarget,
+           "denial-gl-fbo-zero-is-no-target",
+           "Treat FBO 0 as an explicit no-target response for Denial's "
+           "rotating direct-scanout atlas.")
 DEF_SWITCH(ImpellerBackend,
            "impeller-backend",
            "Requests a particular Impeller backend on platforms that support "
