@@ -100,7 +100,7 @@ TEST(GPUSurfaceVulkanImpeller, DisposesThreadLocalResources) {
 }
 
 TEST(GPUSurfaceVulkanImpeller,
-     PreservesThreadLocalResourcesForPersistentBorrowedImages) {
+     ReusesPersistentBorrowedImagesWithPerFramePoolDisposal) {
   impeller::ContextVK::Settings context_settings;
   context_settings.proc_address_callback = vkGetInstanceProcAddr;
   context_settings.shader_libraries_data = ShaderLibraryMappings();
@@ -119,11 +119,11 @@ TEST(GPUSurfaceVulkanImpeller,
   EXPECT_EQ(impeller::CommandPoolRecyclerVK::GetGlobalPoolCount(*context), 0);
   first_frame.reset();
 
-  auto persistent_pool = context->GetCommandPoolRecycler()->Get();
+  auto next_pool = context->GetCommandPoolRecycler()->Get();
   EXPECT_EQ(impeller::CommandPoolRecyclerVK::GetGlobalPoolCount(*context), 1);
   auto next_frame = surface->AcquireFrame(DlISize(100, 100));
   EXPECT_TRUE(next_frame);
-  EXPECT_EQ(impeller::CommandPoolRecyclerVK::GetGlobalPoolCount(*context), 1);
+  EXPECT_EQ(impeller::CommandPoolRecyclerVK::GetGlobalPoolCount(*context), 0);
 }
 
 }  // namespace testing

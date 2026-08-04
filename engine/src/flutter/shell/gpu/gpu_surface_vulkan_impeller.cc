@@ -227,12 +227,9 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
       }
 
       auto& context_vk = impeller::ContextVK::Cast(*impeller_context_);
+      context_vk.DisposeThreadLocalCachedResources();
       const bool persistent =
           (image.flags & kFlutterVulkanImageFlagPersistent) != 0u;
-      if (!persistent || !previous_borrowed_image_was_persistent_) {
-        context_vk.DisposeThreadLocalCachedResources();
-      }
-      previous_borrowed_image_was_persistent_ = persistent;
       const auto vk_image =
           impeller::vk::Image(reinterpret_cast<VkImage>(image.image));
 

@@ -39,7 +39,6 @@ class GPUSurfaceVulkanImpeller final : public Surface {
   std::unordered_map<FlutterVulkanImageHandle,
                      std::shared_ptr<impeller::TextureSourceVK>>
       persistent_borrowed_images_;
-  bool previous_borrowed_image_was_persistent_ = false;
   bool is_valid_ = false;
   bool enable_root_msaa_ = true;
 
