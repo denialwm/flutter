@@ -28,6 +28,12 @@ EmbedderExternalTextureResolver::EmbedderExternalTextureResolver(
     : metal_callback_(std::move(metal_callback)) {}
 #endif
 
+#if defined(SHELL_ENABLE_VULKAN) && IMPELLER_SUPPORTS_RENDERING
+EmbedderExternalTextureResolver::EmbedderExternalTextureResolver(
+    EmbedderExternalTextureVK::ExternalTextureCallback vulkan_callback)
+    : vulkan_callback_(std::move(vulkan_callback)) {}
+#endif
+
 std::unique_ptr<Texture>
 EmbedderExternalTextureResolver::ResolveExternalTexture(int64_t texture_id) {
 #ifdef SHELL_ENABLE_GL
@@ -44,6 +50,13 @@ EmbedderExternalTextureResolver::ResolveExternalTexture(int64_t texture_id) {
   }
 #endif
 
+#if defined(SHELL_ENABLE_VULKAN) && IMPELLER_SUPPORTS_RENDERING
+  if (vulkan_callback_) {
+    return std::make_unique<EmbedderExternalTextureVK>(texture_id,
+                                                       vulkan_callback_);
+  }
+#endif
+
   return nullptr;
 }
 
@@ -56,6 +69,12 @@ bool EmbedderExternalTextureResolver::SupportsExternalTextures() {
 
 #ifdef SHELL_ENABLE_METAL
   if (metal_callback_) {
+    return true;
+  }
+#endif
+
+#if defined(SHELL_ENABLE_VULKAN) && IMPELLER_SUPPORTS_RENDERING
+  if (vulkan_callback_) {
     return true;
   }
 #endif

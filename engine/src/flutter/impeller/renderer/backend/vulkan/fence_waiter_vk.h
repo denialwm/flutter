@@ -46,6 +46,7 @@ class FenceWaiterVK {
 
   bool Wait();
   void WaitUntilEmpty();
+  bool TryAddFence(vk::UniqueFence& fence, const fml::closure& callback);
 
   FenceWaiterVK(const FenceWaiterVK&) = delete;
 

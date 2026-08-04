@@ -940,6 +940,67 @@ typedef struct {
   uint32_t format;
 } FlutterVulkanImage;
 
+/// A root image supplied for an explicit Vulkan Impeller frame transaction.
+typedef struct {
+  /// The size of this struct. Must be sizeof(FlutterVulkanFrameImage).
+  size_t struct_size;
+  /// Handle to the VkImage owned by the embedder.
+  FlutterVulkanImageHandle image;
+  /// The VkFormat of the image (for example: VK_FORMAT_R8G8B8A8_UNORM).
+  uint32_t format;
+  /// The image layout while owned by `external_queue_family_index`.
+  uint32_t layout;
+  /// Queue family which owns the image between Flutter frames.
+  /// Queue-family transfer requires an exclusive-sharing image. Using
+  /// VK_QUEUE_FAMILY_FOREIGN_EXT also requires VK_EXT_queue_family_foreign to
+  /// be enabled and listed in FlutterVulkanRendererConfig.
+  uint32_t external_queue_family_index;
+} FlutterVulkanFrameImage;
+
+/// A texture supplied by the embedder for sampling in a Vulkan Impeller scene.
+/// Exactly one of `image` and `pixels` must be populated. Borrowed VkImages are
+/// retained until `destruction_callback` runs. A borrowed image is acquired
+/// only for a root frame in which it is painted and is returned to its declared
+/// layout and queue family before that frame completes. Host pixel data must
+/// also remain valid until `destruction_callback` runs; the callback is invoked
+/// after the engine has copied the pixels.
+typedef struct {
+  /// The size of this struct. Must be sizeof(FlutterVulkanExternalTexture).
+  size_t struct_size;
+  /// Borrowed VkImage handle, or zero when supplying host pixels.
+  FlutterVulkanImageHandle image;
+  /// VkFormat shared by the borrowed image or host pixel payload.
+  uint32_t format;
+  /// Current VkImageLayout for a borrowed image. Ignored for host pixels.
+  uint32_t layout;
+  /// Queue family which owns a borrowed image outside Flutter.
+  /// Borrowed images participating in ownership transfer must use exclusive
+  /// sharing.
+  uint32_t external_queue_family_index;
+  /// Texture dimensions.
+  size_t width;
+  size_t height;
+  /// Whether sampling must force alpha to one.
+  bool opaque;
+  /// Tightly packed host pixels, or nullptr when supplying a VkImage.
+  const uint8_t* pixels;
+  /// Host pixel row stride. Ignored for borrowed images.
+  size_t row_bytes;
+  /// Embedder baton returned to `destruction_callback`.
+  void* user_data;
+  /// Required for every successful payload. Invoked when the engine no longer
+  /// references the texture payload.
+  VoidCallback destruction_callback;
+} FlutterVulkanExternalTexture;
+
+/// A successful callback must provide a non-null `destruction_callback`.
+typedef bool (*FlutterVulkanExternalTextureFrameCallback)(
+    void* /* user data */,
+    int64_t /* texture identifier */,
+    size_t /* requested width */,
+    size_t /* requested height */,
+    FlutterVulkanExternalTexture* /* texture out */);
+
 /// Callback to fetch a Vulkan function pointer for a given instance. Normally,
 /// this should return the results of vkGetInstanceProcAddr.
 typedef void* (*FlutterVulkanInstanceProcAddressCallback)(
@@ -952,11 +1013,79 @@ typedef FlutterVulkanImage (*FlutterVulkanImageCallback)(
     void* /* user data */,
     const FlutterFrameInfo* /* frame info */);
 
+/// Callback to acquire a root image for an explicit Vulkan Impeller frame.
+/// Returns false when no image is currently available. The engine initializes
+/// `struct_size` before invoking this callback.
+typedef bool (*FlutterVulkanFrameImageCallback)(
+    void* /* user data */,
+    const FlutterFrameInfo* /* frame info */,
+    FlutterVulkanFrameImage* /* image out */);
+
 /// Callback for when a VkImage has been written to and is ready for use by the
 /// embedder.
 typedef bool (*FlutterVulkanPresentCallback)(
     void* /* user data */,
     const FlutterVulkanImage* /* image */);
+
+/// The terminal state of a Vulkan Impeller root frame.
+typedef enum {
+  /// Rendering was submitted. `image` is non-null and `release_fence_fd` is
+  /// a sync file signalled after rendering and after the root image and every
+  /// borrowed texture sampled by this frame have returned to their declared
+  /// layouts and queue families. The descriptor is -1 when completion was
+  /// established synchronously.
+  kFlutterVulkanFrameReady,
+  /// No root image was acquired. `image` is null and no GPU work was submitted
+  /// for the root frame.
+  kFlutterVulkanFrameSkipped,
+  /// An acquired image was abandoned before presentation. `image` is non-null;
+  /// no GPU work remains outstanding and external image ownership was restored.
+  kFlutterVulkanFrameCancelled,
+  /// An acquired image could not be returned to its declared layout or queue
+  /// family. `image` is non-null and `release_fence_fd` is -1. The embedder
+  /// must
+  /// retire the image and the Vulkan session unless it can re-establish
+  /// ownership externally.
+  kFlutterVulkanFrameFailed,
+} FlutterVulkanFrameStatus;
+
+/// Called synchronously on Flutter's raster thread exactly once for each
+/// accepted implicit-view Vulkan Impeller root transaction on a live surface.
+/// `image` is borrowed for this call only. Internal pipeline backpressure may
+/// defer an accepted transaction rather than completing a new one.
+///
+/// Ownership of a non-negative `release_fence_fd` transfers to the embedder.
+/// Ready frames may supply -1 to mean already complete; skipped, cancelled, and
+/// failed frames always supply -1. The callback's return value is used for
+/// ready frames and ignored otherwise.
+typedef bool (*FlutterVulkanFrameCallback)(
+    void* /* user data */,
+    FlutterVulkanFrameStatus /* status */,
+    const FlutterVulkanFrameImage* /* nullable image */,
+    int /* release fence fd */);
+
+/// Opt-in Vulkan Impeller renderer contract. Supplying this extension requires
+/// both frame callbacks. Vulkan Impeller then uses only these callbacks for
+/// root-frame acquisition and completion; the legacy get/present callbacks
+/// remain untouched.
+typedef struct {
+  /// The size of this struct. Must be
+  /// sizeof(FlutterVulkanImpellerRendererConfig).
+  size_t struct_size;
+
+  /// Acquires the root image for a Vulkan Impeller frame transaction.
+  FlutterVulkanFrameImageCallback get_next_frame_image_callback;
+
+  /// Completes every accepted Vulkan Impeller root-frame transaction exactly
+  /// once.
+  FlutterVulkanFrameCallback frame_callback;
+
+  /// Optional callback for external textures sampled by Vulkan Impeller.
+  FlutterVulkanExternalTextureFrameCallback external_texture_frame_callback;
+
+  /// Whether Vulkan Impeller should allocate a multisampled root attachment.
+  bool enable_root_msaa;
+} FlutterVulkanImpellerRendererConfig;
 
 typedef struct {
   /// The size of this struct. Must be sizeof(FlutterVulkanRendererConfig).
@@ -1021,6 +1150,10 @@ typedef struct {
   /// without any additional synchronization.
   /// Not used if a FlutterCompositor is supplied in FlutterProjectArgs.
   FlutterVulkanPresentCallback present_image_callback;
+
+  /// Optional, independently versioned Vulkan Impeller renderer contract.
+  /// When absent, Vulkan rendering uses the legacy callbacks above unchanged.
+  const FlutterVulkanImpellerRendererConfig* impeller;
 
 } FlutterVulkanRendererConfig;
 

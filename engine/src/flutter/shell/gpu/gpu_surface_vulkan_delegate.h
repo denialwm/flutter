@@ -7,6 +7,7 @@
 
 #include "flutter/display_list/geometry/dl_geometry_types.h"
 #include "flutter/fml/memory/ref_ptr.h"
+#include "flutter/fml/unique_fd.h"
 #include "flutter/shell/platform/embedder/embedder.h"
 #include "flutter/vulkan/procs/vulkan_proc_table.h"
 #include "flutter/vulkan/vulkan_device.h"
@@ -39,10 +40,23 @@ class GPUSurfaceVulkanDelegate {
   ///
   virtual FlutterVulkanImage AcquireImage(const DlISize& size) = 0;
 
+  /// @brief  Acquire an image for an explicit Vulkan Impeller frame.
+  virtual bool AcquireFrameImage(const DlISize& size,
+                                 FlutterVulkanFrameImage* image);
+
   /// @brief  Called by the engine once a frame has been rendered to the image
   ///         and it's ready to be bound for further reading/writing.
   ///
   virtual bool PresentImage(VkImage image, VkFormat format) = 0;
+
+  /// @brief  Whether the delegate accepts explicit Vulkan frame lifecycle
+  ///         notifications.
+  virtual bool SupportsVulkanFrameCallback() const;
+
+  /// @brief  Complete one Vulkan Impeller root frame.
+  virtual bool OnVulkanFrame(FlutterVulkanFrameStatus status,
+                             const FlutterVulkanFrameImage* image,
+                             fml::UniqueFD release_fence);
 };
 
 }  // namespace flutter

@@ -173,9 +173,12 @@ template("embedder_source_set") {
 
       if (impeller_supports_rendering) {
         sources += [
+          "embedder_external_texture_vk.cc",
+          "embedder_external_texture_vk.h",
           "embedder_surface_vulkan_impeller.cc",
           "embedder_surface_vulkan_impeller.h",
         ]
+        deps += [ "//flutter/impeller/renderer/backend/vulkan" ]
       }
 
       deps += [

@@ -415,8 +415,9 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
 
         // The animator is owned by the UI thread but it gets its vsync pulses
         // from the platform.
-        auto animator = std::make_unique<Animator>(*shell, task_runners,
-                                                   std::move(vsync_waiter));
+        auto animator = std::make_unique<Animator>(
+            *shell, task_runners, std::move(vsync_waiter),
+            shell->GetSettings().enable_vulkan_frame_lifecycle);
 
         engine_promise.set_value(
             on_create_engine(*shell,                               //

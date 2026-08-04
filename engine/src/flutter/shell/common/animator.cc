@@ -24,10 +24,12 @@ constexpr fml::TimeDelta kNotifyIdleTaskWaitTime =
 
 Animator::Animator(Delegate& delegate,
                    const TaskRunners& task_runners,
-                   std::unique_ptr<VsyncWaiter> waiter)
+                   std::unique_ptr<VsyncWaiter> waiter,
+                   bool submit_empty_frames)
     : delegate_(delegate),
       task_runners_(task_runners),
       waiter_(std::move(waiter)),
+      submit_empty_frames_(submit_empty_frames),
 #if SHELL_ENABLE_METAL
       layer_tree_pipeline_(std::make_shared<FramePipeline>(2)),
 #else   // SHELL_ENABLE_METAL
@@ -125,7 +127,8 @@ void Animator::EndFrame() {
     // `EndFrame` again.
     return;
   }
-  if (!layer_trees_tasks_.empty()) {
+  if (!layer_trees_tasks_.empty() ||
+      (submit_empty_frames_ && producer_continuation_)) {
     // The build is completed in OnAnimatorBeginFrame.
     frame_timings_recorder_->RecordBuildEnd(fml::TimePoint::Now());
 

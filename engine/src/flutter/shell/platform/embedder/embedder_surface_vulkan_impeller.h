@@ -23,8 +23,15 @@ class EmbedderSurfaceVulkanImpeller final : public EmbedderSurface,
     PFN_vkGetInstanceProcAddr get_instance_proc_address;  // required
     std::function<FlutterVulkanImage(const DlISize& frame_size)>
         get_next_image;  // required
+    std::function<bool(const DlISize& frame_size,
+                       FlutterVulkanFrameImage* image)>
+        get_next_frame_image;  // required with frame_callback
     std::function<bool(VkImage image, VkFormat format)>
-        present_image;  // required
+        present_image;  // required for legacy Vulkan presentation
+    std::function<bool(FlutterVulkanFrameStatus status,
+                       const FlutterVulkanFrameImage* image,
+                       fml::UniqueFD release_fence)>
+        frame_callback;  // optional
   };
 
   EmbedderSurfaceVulkanImpeller(
@@ -39,7 +46,8 @@ class EmbedderSurfaceVulkanImpeller final : public EmbedderSurface,
       uint32_t queue_family_index,
       VkQueue queue,
       const VulkanDispatchTable& vulkan_dispatch_table,
-      std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder);
+      std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder,
+      bool enable_root_msaa);
 
   ~EmbedderSurfaceVulkanImpeller() override;
 
@@ -50,7 +58,19 @@ class EmbedderSurfaceVulkanImpeller final : public EmbedderSurface,
   FlutterVulkanImage AcquireImage(const DlISize& size) override;
 
   // |GPUSurfaceVulkanDelegate|
+  bool AcquireFrameImage(const DlISize& size,
+                         FlutterVulkanFrameImage* image) override;
+
+  // |GPUSurfaceVulkanDelegate|
   bool PresentImage(VkImage image, VkFormat format) override;
+
+  // |GPUSurfaceVulkanDelegate|
+  bool SupportsVulkanFrameCallback() const override;
+
+  // |GPUSurfaceVulkanDelegate|
+  bool OnVulkanFrame(FlutterVulkanFrameStatus status,
+                     const FlutterVulkanFrameImage* image,
+                     fml::UniqueFD release_fence) override;
 
   // |GPUSurfaceVulkanDelegate|
   std::shared_ptr<impeller::Context> CreateImpellerContext() const override;
@@ -61,6 +81,7 @@ class EmbedderSurfaceVulkanImpeller final : public EmbedderSurface,
   VulkanDispatchTable vulkan_dispatch_table_;
   std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder_;
   std::shared_ptr<impeller::ContextVK> context_;
+  bool enable_root_msaa_ = true;
 
   // |EmbedderSurface|
   bool IsValid() const override;
