@@ -303,6 +303,9 @@ class CapabilitiesVK final : public Capabilities,
   /// Whether a Linux sync-file semaphore can be exported by this device.
   bool SupportsExternalSemaphoreFd() const;
 
+  /// Whether external-memory acquisition can declare an image unmodified.
+  bool SupportsExternalMemoryAcquireUnmodified() const;
+
   //----------------------------------------------------------------------------
   /// @brief      Get the fixed compression rate supported by the context for
   ///             the given format and usage.

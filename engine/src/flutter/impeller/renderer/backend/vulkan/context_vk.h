@@ -242,7 +242,8 @@ class ContextVK final : public Context,
   /// Opens one borrowed-image transaction for an embedder root image.
   bool BeginExternalFrame(std::shared_ptr<const TextureSourceVK> root_image,
                           vk::ImageLayout external_layout,
-                          uint32_t external_queue_family);
+                          uint32_t external_queue_family,
+                          bool external_memory_unmodified);
 
   /// Adds a borrowed texture which is actually sampled by this frame.
   bool AddExternalFrameImage(std::shared_ptr<const TextureSourceVK> texture,
@@ -325,6 +326,7 @@ class ContextVK final : public Context,
     vk::ImageLayout external_layout;
     uint32_t external_queue_family;
     bool render_target;
+    bool external_memory_unmodified;
   };
   std::vector<ExternalFrameImage> external_frame_images_;
   enum class ExternalFrameState { kClosed, kOpen, kAcquired };

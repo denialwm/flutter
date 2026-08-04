@@ -684,7 +684,8 @@ bool ContextVK::FlushCommandBuffers() {
 bool ContextVK::BeginExternalFrame(
     std::shared_ptr<const TextureSourceVK> root_image,
     vk::ImageLayout external_layout,
-    uint32_t external_queue_family) {
+    uint32_t external_queue_family,
+    bool external_memory_unmodified) {
   if (external_frame_state_ != ExternalFrameState::kClosed || !root_image ||
       external_layout == vk::ImageLayout::eUndefined ||
       external_layout == vk::ImageLayout::ePreinitialized ||
@@ -692,8 +693,9 @@ bool ContextVK::BeginExternalFrame(
     return false;
   }
   external_frame_images_.clear();
-  external_frame_images_.push_back(
-      {std::move(root_image), external_layout, external_queue_family, true});
+  external_frame_images_.push_back({std::move(root_image), external_layout,
+                                    external_queue_family, true,
+                                    external_memory_unmodified});
   external_frame_state_ = ExternalFrameState::kOpen;
   return true;
 }
@@ -718,8 +720,8 @@ bool ContextVK::AddExternalFrameImage(
     return existing->external_layout == external_layout &&
            existing->external_queue_family == external_queue_family;
   }
-  external_frame_images_.push_back(
-      {std::move(texture), external_layout, external_queue_family, false});
+  external_frame_images_.push_back({std::move(texture), external_layout,
+                                    external_queue_family, false, false});
   return true;
 }
 
@@ -735,6 +737,11 @@ bool ContextVK::AcquireExternalFrameImages() {
   auto& command_vk = CommandBufferVK::Cast(*command);
   std::vector<vk::ImageMemoryBarrier> barriers;
   barriers.reserve(external_frame_images_.size());
+  vk::ExternalMemoryAcquireUnmodifiedEXT unmodified_acquire;
+  unmodified_acquire.acquireUnmodifiedMemory = true;
+  const bool supports_unmodified_acquire =
+      CapabilitiesVK::Cast(*device_capabilities_)
+          .SupportsExternalMemoryAcquireUnmodified();
   vk::PipelineStageFlags destination_stages;
   const auto graphics_family =
       static_cast<uint32_t>(GetGraphicsQueue()->GetIndex().family);
@@ -774,6 +781,9 @@ bool ContextVK::AcquireExternalFrameImages() {
     barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
     barrier.subresourceRange.levelCount = 1u;
     barrier.subresourceRange.layerCount = 1u;
+    if (image.external_memory_unmodified && supports_unmodified_acquire) {
+      barrier.pNext = &unmodified_acquire;
+    }
     barriers.push_back(barrier);
   }
   command_vk.GetCommandBuffer().pipelineBarrier(

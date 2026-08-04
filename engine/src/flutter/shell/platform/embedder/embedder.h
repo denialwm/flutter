@@ -930,6 +930,14 @@ typedef void* FlutterVulkanQueueHandle;
 /// Alias for VkImage.
 typedef uint64_t FlutterVulkanImageHandle;
 
+typedef uint64_t FlutterVulkanImageFlags;
+
+/// The external owner has not modified the image since Impeller most recently
+/// released it. The engine may use this to avoid redundant external-memory
+/// synchronization when the device supports it.
+static const FlutterVulkanImageFlags
+    kFlutterVulkanImageFlagExternalMemoryUnmodified = 1u << 0;
+
 typedef struct {
   /// The size of this struct. Must be sizeof(FlutterVulkanImage).
   size_t struct_size;
@@ -954,6 +962,8 @@ typedef struct {
   /// Queue family which owns the image outside Impeller. Images shared with a
   /// Linux dma-buf consumer normally use VK_QUEUE_FAMILY_FOREIGN_EXT.
   uint32_t external_queue_family_index;
+  /// Optional FlutterVulkanImageFlags describing external ownership.
+  FlutterVulkanImageFlags flags;
 } FlutterVulkanImage2;
 
 /// A texture supplied for sampling by Vulkan Impeller. Exactly one of `image`

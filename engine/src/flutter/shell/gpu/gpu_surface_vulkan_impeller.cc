@@ -74,7 +74,8 @@ class BorrowedFrame final {
     begun_ = impeller::ContextVK::Cast(*context_).BeginExternalFrame(
         std::move(root_image),
         static_cast<impeller::vk::ImageLayout>(image_.layout),
-        image_.external_queue_family_index);
+        image_.external_queue_family_index,
+        (image_.flags & kFlutterVulkanImageFlagExternalMemoryUnmodified) != 0u);
     return begun_;
   }
 

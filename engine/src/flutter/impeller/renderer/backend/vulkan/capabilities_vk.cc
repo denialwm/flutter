@@ -852,6 +852,10 @@ bool CapabilitiesVK::SupportsExternalSemaphoreFd() const {
   return supports_external_semaphore_fd_;
 }
 
+bool CapabilitiesVK::SupportsExternalMemoryAcquireUnmodified() const {
+  return HasExtension(VK_EXT_EXTERNAL_MEMORY_ACQUIRE_UNMODIFIED_EXTENSION_NAME);
+}
+
 bool CapabilitiesVK::SupportsExtendedRangeFormats() const {
   return false;
 }
