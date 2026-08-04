@@ -106,5 +106,24 @@ TEST(EmbedderSurfaceGLImpellerTest,
   EXPECT_EQ(frame_damage->bounds(), DlIRect::MakeSize(frame_size));
   EXPECT_EQ(buffer_damage->bounds(), DlIRect::MakeSize(frame_size));
 }
+
+TEST(EmbedderSurfaceGLImpellerTest,
+     ImpellerUsesEmbedderRootSurfaceTransformation) {
+  auto gl_dispatch_table = StubDispatchTable(/* version */ "OpenGL ES 3.0");
+  const DlMatrix expected = DlMatrix::MakeTranslation({0.0, 32.0}) *
+                            DlMatrix::MakeScale({1.0, -1.0, 1.0});
+  gl_dispatch_table.gl_surface_transformation_callback = [expected] {
+    return expected;
+  };
+  auto surface = EmbedderSurfaceGLImpeller(
+      gl_dispatch_table, /* fbo_reset_after_present */ false,
+      /* fbo_zero_is_no_target */ false,
+      /* external_view_embedder */ nullptr);
+
+  DisplayListBuilder canvas(DlRect::MakeWH(64.0, 32.0));
+  GPUSurfaceGLImpeller::ConfigureRootCanvas(&canvas, &surface);
+
+  EXPECT_EQ(canvas.GetMatrix(), expected);
+}
 }  // namespace testing
 }  // namespace flutter

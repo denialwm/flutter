@@ -64,6 +64,18 @@ bool GPUSurfaceGLImpeller::PresentFrame(GPUSurfaceGLDelegate* delegate,
   return delegate->GLContextPresent(present_info);
 }
 
+DlMatrix GPUSurfaceGLImpeller::RootTransformation(
+    GPUSurfaceGLDelegate* delegate) {
+  return delegate->GLContextSurfaceTransformation();
+}
+
+void GPUSurfaceGLImpeller::ConfigureRootCanvas(DlCanvas* canvas,
+                                               GPUSurfaceGLDelegate* delegate) {
+  if (canvas) {
+    canvas->SetTransform(RootTransformation(delegate));
+  }
+}
+
 // |Surface|
 std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
     const DlISize& size) {
@@ -155,7 +167,7 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
     );
   };
 
-  return std::make_unique<SurfaceFrame>(
+  auto frame = std::make_unique<SurfaceFrame>(
       nullptr,                                // surface
       delegate_->GLContextFramebufferInfo(),  // framebuffer info
       encode_callback,                        // encode callback
@@ -166,13 +178,13 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
       std::move(context_switch),  // context result
       true                        // display list fallback
   );
+  ConfigureRootCanvas(frame->Canvas(), delegate_);
+  return frame;
 }
 
 // |Surface|
 DlMatrix GPUSurfaceGLImpeller::GetRootTransformation() const {
-  // This backend does not currently support root surface transformations. Just
-  // return identity.
-  return {};
+  return RootTransformation(delegate_);
 }
 
 // |Surface|
