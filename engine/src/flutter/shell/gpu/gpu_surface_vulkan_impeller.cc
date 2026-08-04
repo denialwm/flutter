@@ -227,7 +227,12 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
       }
 
       auto& context_vk = impeller::ContextVK::Cast(*impeller_context_);
-      context_vk.DisposeThreadLocalCachedResources();
+      const bool persistent =
+          (image.flags & kFlutterVulkanImageFlagPersistent) != 0u;
+      if (!persistent || !previous_borrowed_image_was_persistent_) {
+        context_vk.DisposeThreadLocalCachedResources();
+      }
+      previous_borrowed_image_was_persistent_ = persistent;
       const auto vk_image =
           impeller::vk::Image(reinterpret_cast<VkImage>(image.image));
 
@@ -239,30 +244,50 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
       desc.compression_type = impeller::CompressionType::kLossless;
       desc.usage = impeller::TextureUsage::kRenderTarget;
 
-      impeller::vk::ImageViewCreateInfo view_info = {};
-      view_info.viewType = impeller::vk::ImageViewType::e2D;
-      view_info.format = ToVKImageFormat(desc.format);
-      view_info.subresourceRange.aspectMask =
-          impeller::vk::ImageAspectFlagBits::eColor;
-      view_info.subresourceRange.levelCount = 1;
-      view_info.subresourceRange.layerCount = 1;
-      view_info.image = vk_image;
-      auto [result, image_view] =
-          context_vk.GetDevice().createImageViewUnique(view_info);
-      if (result != impeller::vk::Result::eSuccess) {
-        FML_LOG(ERROR) << "Failed to create borrowed image view: "
-                       << impeller::vk::to_string(result);
-        return nullptr;
-      }
-
       if (transients_ == nullptr) {
         transients_ = std::make_shared<impeller::SwapchainTransientsVK>(
             impeller_context_, desc, enable_root_msaa_);
       }
-      auto wrapped_onscreen = std::make_shared<WrappedTextureSourceVK>(
-          vk_image, std::move(image_view), desc);
-      wrapped_onscreen->SetLayoutWithoutEncoding(
-          static_cast<impeller::vk::ImageLayout>(image.layout));
+
+      std::shared_ptr<impeller::TextureSourceVK> wrapped_onscreen;
+      if (persistent) {
+        const auto found = persistent_borrowed_images_.find(image.image);
+        if (found != persistent_borrowed_images_.end()) {
+          wrapped_onscreen = found->second;
+          const auto& cached_desc = wrapped_onscreen->GetTextureDescriptor();
+          if (cached_desc.format != desc.format ||
+              cached_desc.size != desc.size ||
+              wrapped_onscreen->GetLayout() !=
+                  static_cast<impeller::vk::ImageLayout>(image.layout)) {
+            FML_LOG(ERROR) << "Persistent borrowed VkImage metadata changed.";
+            return nullptr;
+          }
+        }
+      }
+      if (!wrapped_onscreen) {
+        impeller::vk::ImageViewCreateInfo view_info = {};
+        view_info.viewType = impeller::vk::ImageViewType::e2D;
+        view_info.format = ToVKImageFormat(desc.format);
+        view_info.subresourceRange.aspectMask =
+            impeller::vk::ImageAspectFlagBits::eColor;
+        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.layerCount = 1;
+        view_info.image = vk_image;
+        auto [result, image_view] =
+            context_vk.GetDevice().createImageViewUnique(view_info);
+        if (result != impeller::vk::Result::eSuccess) {
+          FML_LOG(ERROR) << "Failed to create borrowed image view: "
+                         << impeller::vk::to_string(result);
+          return nullptr;
+        }
+        wrapped_onscreen = std::make_shared<WrappedTextureSourceVK>(
+            vk_image, std::move(image_view), desc);
+        wrapped_onscreen->SetLayoutWithoutEncoding(
+            static_cast<impeller::vk::ImageLayout>(image.layout));
+        if (persistent) {
+          persistent_borrowed_images_.emplace(image.image, wrapped_onscreen);
+        }
+      }
       auto frame =
           std::make_shared<BorrowedFrame>(delegate_, image, impeller_context_);
       if (!frame->Begin(wrapped_onscreen)) {

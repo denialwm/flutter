@@ -31,8 +31,9 @@ std::vector<std::shared_ptr<fml::Mapping>> ShaderLibraryMappings() {
 
 class TestGPUSurfaceVulkanDelegate : public GPUSurfaceVulkanDelegate {
  public:
-  TestGPUSurfaceVulkanDelegate()
-      : vk_(fml::MakeRefCounted<vulkan::VulkanProcTable>(
+  explicit TestGPUSurfaceVulkanDelegate(bool persistent = false)
+      : persistent_(persistent),
+        vk_(fml::MakeRefCounted<vulkan::VulkanProcTable>(
             vkGetInstanceProcAddr)),
         test_context_(fml::MakeRefCounted<TestVulkanContext>()),
         test_surface_(TestVulkanSurface::Create(*test_context_, {100, 100})) {}
@@ -49,7 +50,29 @@ class TestGPUSurfaceVulkanDelegate : public GPUSurfaceVulkanDelegate {
 
   bool PresentImage(VkImage image, VkFormat format) override { return true; }
 
+  bool SupportsBorrowedImages() const override { return persistent_; }
+
+  bool AcquireImage2(const DlISize&, FlutterVulkanImage2* image) override {
+    if (!persistent_) {
+      return false;
+    }
+    *image = {
+        .struct_size = sizeof(FlutterVulkanImage2),
+        .image = reinterpret_cast<uint64_t>(test_surface_->GetImage()),
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .layout = VK_IMAGE_LAYOUT_GENERAL,
+        .external_queue_family_index = VK_QUEUE_FAMILY_IGNORED,
+        .flags = kFlutterVulkanImageFlagPersistent,
+    };
+    return true;
+  }
+
+  bool PresentImage2(const FlutterVulkanImage2&, fml::UniqueFD) override {
+    return true;
+  }
+
  private:
+  bool persistent_;
   fml::RefPtr<vulkan::VulkanProcTable> vk_;
   fml::RefPtr<TestVulkanContext> test_context_;
   std::unique_ptr<TestVulkanSurface> test_surface_;
@@ -74,6 +97,33 @@ TEST(GPUSurfaceVulkanImpeller, DisposesThreadLocalResources) {
   // the pool from the global map.
   auto frame = surface->AcquireFrame(DlISize(100, 100));
   EXPECT_EQ(impeller::CommandPoolRecyclerVK::GetGlobalPoolCount(*context), 0);
+}
+
+TEST(GPUSurfaceVulkanImpeller,
+     PreservesThreadLocalResourcesForPersistentBorrowedImages) {
+  impeller::ContextVK::Settings context_settings;
+  context_settings.proc_address_callback = vkGetInstanceProcAddr;
+  context_settings.shader_libraries_data = ShaderLibraryMappings();
+  auto context = impeller::ContextVK::Create(std::move(context_settings));
+
+  TestGPUSurfaceVulkanDelegate delegate(/*persistent=*/true);
+
+  std::unique_ptr<Surface> surface =
+      std::make_unique<GPUSurfaceVulkanImpeller>(&delegate, context);
+
+  auto pool = context->GetCommandPoolRecycler()->Get();
+  EXPECT_EQ(impeller::CommandPoolRecyclerVK::GetGlobalPoolCount(*context), 1);
+
+  auto first_frame = surface->AcquireFrame(DlISize(100, 100));
+  EXPECT_TRUE(first_frame);
+  EXPECT_EQ(impeller::CommandPoolRecyclerVK::GetGlobalPoolCount(*context), 0);
+  first_frame.reset();
+
+  auto persistent_pool = context->GetCommandPoolRecycler()->Get();
+  EXPECT_EQ(impeller::CommandPoolRecyclerVK::GetGlobalPoolCount(*context), 1);
+  auto next_frame = surface->AcquireFrame(DlISize(100, 100));
+  EXPECT_TRUE(next_frame);
+  EXPECT_EQ(impeller::CommandPoolRecyclerVK::GetGlobalPoolCount(*context), 1);
 }
 
 }  // namespace testing

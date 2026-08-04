@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SHELL_GPU_GPU_SURFACE_VULKAN_IMPELLER_H_
 #define FLUTTER_SHELL_GPU_GPU_SURFACE_VULKAN_IMPELLER_H_
 
+#include <unordered_map>
+
 #include "flutter/common/graphics/gl_context_switch.h"
 #include "flutter/flow/surface.h"
 #include "flutter/fml/macros.h"
@@ -13,6 +15,7 @@
 #include "flutter/impeller/renderer/context.h"
 #include "flutter/shell/gpu/gpu_surface_vulkan_delegate.h"
 #include "impeller/renderer/backend/vulkan/swapchain/swapchain_transients_vk.h"
+#include "impeller/renderer/backend/vulkan/texture_source_vk.h"
 
 namespace flutter {
 
@@ -33,6 +36,10 @@ class GPUSurfaceVulkanImpeller final : public Surface {
   std::shared_ptr<impeller::Context> impeller_context_;
   std::shared_ptr<impeller::AiksContext> aiks_context_;
   std::shared_ptr<impeller::SwapchainTransientsVK> transients_;
+  std::unordered_map<FlutterVulkanImageHandle,
+                     std::shared_ptr<impeller::TextureSourceVK>>
+      persistent_borrowed_images_;
+  bool previous_borrowed_image_was_persistent_ = false;
   bool is_valid_ = false;
   bool enable_root_msaa_ = true;
 

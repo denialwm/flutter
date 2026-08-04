@@ -938,6 +938,12 @@ typedef uint64_t FlutterVulkanImageFlags;
 static const FlutterVulkanImageFlags
     kFlutterVulkanImageFlagExternalMemoryUnmodified = 1u << 0;
 
+/// The VkImage handle, allocation, format, and dimensions remain unchanged and
+/// valid until the renderer is destroyed. The engine may retain Vulkan views
+/// and other objects which reference the image across frames.
+static const FlutterVulkanImageFlags kFlutterVulkanImageFlagPersistent = 1u
+                                                                         << 1;
+
 typedef struct {
   /// The size of this struct. Must be sizeof(FlutterVulkanImage).
   size_t struct_size;
@@ -959,8 +965,9 @@ typedef struct {
   uint32_t format;
   /// VkImageLayout while the image is externally owned.
   uint32_t layout;
-  /// Queue family which owns the image outside Impeller. Images shared with a
-  /// Linux dma-buf consumer normally use VK_QUEUE_FAMILY_FOREIGN_EXT.
+  /// Queue family which owns the image outside Impeller. Use
+  /// VK_QUEUE_FAMILY_EXTERNAL for another API on the same physical device and
+  /// driver, or VK_QUEUE_FAMILY_FOREIGN_EXT for a different device or driver.
   uint32_t external_queue_family_index;
   /// Optional FlutterVulkanImageFlags describing external ownership.
   FlutterVulkanImageFlags flags;
