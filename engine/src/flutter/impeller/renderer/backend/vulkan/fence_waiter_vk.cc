@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <utility>
 
 #include "flutter/fml/cpu_affinity.h"
@@ -53,8 +54,9 @@ class WaitSetEntry {
 };
 
 FenceWaiterVK::FenceWaiterVK(std::weak_ptr<DeviceHolderVK> device_holder,
-                             bool poll_fences)
-    : device_holder_(std::move(device_holder)), poll_fences_(poll_fences) {
+                             bool wait_indefinitely)
+    : device_holder_(std::move(device_holder)),
+      wait_indefinitely_(wait_indefinitely) {
   waiter_thread_ = std::make_unique<std::thread>([&]() { Main(); });
 }
 
@@ -161,28 +163,17 @@ bool FenceWaiterVK::Wait() {
     return true;
   }
 
-  vk::Result result;
-  if (poll_fences_) {
-    result = device.waitForFences(
-        /*fenceCount=*/fences.size(),
-        /*pFences=*/fences.data(),
-        /*waitAll=*/false,
-        /*timeout=*/0u);
-    if (result == vk::Result::eTimeout) {
-      // Some desktop drivers busy-spin inside a timed Vulkan fence wait. The
-      // embedder already owns presentation synchronization, so completion
-      // cleanup can trade sub-millisecond immediacy for bounded CPU use.
-      std::unique_lock lock(wait_set_mutex_);
-      wait_set_cv_.wait_for(lock, 1ms);
-      return true;
-    }
-  } else {
-    result = device.waitForFences(
-        /*fenceCount=*/fences.size(),
-        /*pFences=*/fences.data(),
-        /*waitAll=*/false,
-        /*timeout=*/std::chrono::nanoseconds{100ms}.count());
-  }
+  // Some desktop drivers busy-spin for the duration of a finite Vulkan fence
+  // wait. An embedder-supplied device remains alive until engine shutdown, so
+  // its completion thread can use the driver's genuinely blocking wait path.
+  const uint64_t timeout = wait_indefinitely_
+                               ? std::numeric_limits<uint64_t>::max()
+                               : std::chrono::nanoseconds{100ms}.count();
+  const auto result = device.waitForFences(
+      /*fenceCount=*/fences.size(),
+      /*pFences=*/fences.data(),
+      /*waitAll=*/false,
+      /*timeout=*/timeout);
   if (!(result == vk::Result::eSuccess || result == vk::Result::eTimeout)) {
     VALIDATION_LOG << "Fence waiter encountered an unexpected error. Tearing "
                       "down the waiter thread.";
