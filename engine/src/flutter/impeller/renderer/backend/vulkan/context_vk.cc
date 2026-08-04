@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "impeller/renderer/backend/vulkan/context_vk.h"
+#include <algorithm>
 #include <thread>
 #include <unordered_map>
 
@@ -41,6 +42,9 @@
 #include "impeller/renderer/backend/vulkan/gpu_tracer_vk.h"
 #include "impeller/renderer/backend/vulkan/resource_manager_vk.h"
 #include "impeller/renderer/backend/vulkan/surface_context_vk.h"
+#if defined(FML_OS_LINUX) || defined(FML_OS_ANDROID)
+#include "impeller/renderer/backend/vulkan/swapchain/ahb/external_semaphore_vk.h"
+#endif
 #include "impeller/renderer/backend/vulkan/yuv_conversion_library_vk.h"
 #include "impeller/renderer/capabilities.h"
 
@@ -152,6 +156,7 @@ void ContextVK::Setup(Settings settings) {
     VALIDATION_LOG << "Missing proc address callback.";
     return;
   }
+  uses_embedder_device_ = settings.embedder_data.has_value();
 
   raster_message_loop_ = fml::ConcurrentMessageLoop::Create(
       ChooseThreadCountForWorkers(std::thread::hardware_concurrency()));
@@ -674,6 +679,274 @@ bool ContextVK::FlushCommandBuffers() {
   } else {
     return true;
   }
+}
+
+bool ContextVK::BeginExternalFrame(
+    std::shared_ptr<const TextureSourceVK> root_image,
+    vk::ImageLayout external_layout,
+    uint32_t external_queue_family) {
+  if (external_frame_state_ != ExternalFrameState::kClosed || !root_image ||
+      external_layout == vk::ImageLayout::eUndefined ||
+      external_layout == vk::ImageLayout::ePreinitialized ||
+      !SupportsExternalQueueFamily(external_queue_family)) {
+    return false;
+  }
+  external_frame_images_.clear();
+  external_frame_images_.push_back(
+      {std::move(root_image), external_layout, external_queue_family, true});
+  external_frame_state_ = ExternalFrameState::kOpen;
+  return true;
+}
+
+bool ContextVK::AddExternalFrameImage(
+    std::shared_ptr<const TextureSourceVK> texture,
+    vk::ImageLayout external_layout,
+    uint32_t external_queue_family) {
+  if (external_frame_state_ != ExternalFrameState::kOpen || !texture ||
+      external_layout == vk::ImageLayout::eUndefined ||
+      external_layout == vk::ImageLayout::ePreinitialized ||
+      !SupportsExternalQueueFamily(external_queue_family)) {
+    return false;
+  }
+  const auto image = texture->GetImage();
+  const auto existing =
+      std::find_if(external_frame_images_.begin(), external_frame_images_.end(),
+                   [image](const ExternalFrameImage& entry) {
+                     return entry.source->GetImage() == image;
+                   });
+  if (existing != external_frame_images_.end()) {
+    return existing->external_layout == external_layout &&
+           existing->external_queue_family == external_queue_family;
+  }
+  external_frame_images_.push_back(
+      {std::move(texture), external_layout, external_queue_family, false});
+  return true;
+}
+
+bool ContextVK::AcquireExternalFrameImages() {
+  if (external_frame_state_ != ExternalFrameState::kOpen ||
+      external_frame_images_.empty()) {
+    return false;
+  }
+  auto command = CreateCommandBuffer();
+  if (!command) {
+    return false;
+  }
+  auto& command_vk = CommandBufferVK::Cast(*command);
+  std::vector<vk::ImageMemoryBarrier> barriers;
+  barriers.reserve(external_frame_images_.size());
+  vk::PipelineStageFlags destination_stages;
+  const auto graphics_family =
+      static_cast<uint32_t>(GetGraphicsQueue()->GetIndex().family);
+  for (const auto& image : external_frame_images_) {
+    if (image.source->GetLayout() != image.external_layout) {
+      VALIDATION_LOG << "External image layout changed before acquisition.";
+      return false;
+    }
+    if (!command_vk.Track(image.source)) {
+      return false;
+    }
+    const auto stage = image.render_target
+                           ? vk::PipelineStageFlagBits::eColorAttachmentOutput
+                           : vk::PipelineStageFlagBits::eFragmentShader |
+                                 vk::PipelineStageFlagBits::eComputeShader;
+    const auto access = image.render_target
+                            ? vk::AccessFlagBits::eColorAttachmentRead |
+                                  vk::AccessFlagBits::eColorAttachmentWrite
+                            : vk::AccessFlagBits::eShaderRead;
+    const auto internal_layout = image.render_target
+                                     ? vk::ImageLayout::eGeneral
+                                     : vk::ImageLayout::eShaderReadOnlyOptimal;
+    const bool transfer =
+        image.external_queue_family != VK_QUEUE_FAMILY_IGNORED &&
+        image.external_queue_family != graphics_family;
+    destination_stages |= stage;
+    vk::ImageMemoryBarrier barrier;
+    barrier.srcAccessMask = {};
+    barrier.dstAccessMask = access;
+    barrier.oldLayout = image.external_layout;
+    barrier.newLayout = internal_layout;
+    barrier.srcQueueFamilyIndex =
+        transfer ? image.external_queue_family : VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex =
+        transfer ? graphics_family : VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image.source->GetImage();
+    barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+    barrier.subresourceRange.levelCount = 1u;
+    barrier.subresourceRange.layerCount = 1u;
+    barriers.push_back(barrier);
+  }
+  command_vk.GetCommandBuffer().pipelineBarrier(
+      vk::PipelineStageFlagBits::eTopOfPipe, destination_stages, {}, nullptr,
+      nullptr, barriers);
+  if (!EnqueueCommandBuffer(command)) {
+    GetIdleWaiter()->WaitIdle();
+    return false;
+  }
+  for (const auto& image : external_frame_images_) {
+    image.source->SetLayoutWithoutEncoding(
+        image.render_target ? vk::ImageLayout::eGeneral
+                            : vk::ImageLayout::eShaderReadOnlyOptimal);
+  }
+  external_frame_state_ = ExternalFrameState::kAcquired;
+  return true;
+}
+
+std::shared_ptr<CommandBuffer> ContextVK::CreateExternalFrameRelease() {
+  if (external_frame_state_ != ExternalFrameState::kAcquired ||
+      external_frame_images_.empty()) {
+    return nullptr;
+  }
+  auto command = CreateCommandBuffer();
+  if (!command) {
+    return nullptr;
+  }
+  auto& command_vk = CommandBufferVK::Cast(*command);
+  std::vector<vk::ImageMemoryBarrier> barriers;
+  barriers.reserve(external_frame_images_.size());
+  vk::PipelineStageFlags source_stages;
+  const auto graphics_family =
+      static_cast<uint32_t>(GetGraphicsQueue()->GetIndex().family);
+  for (const auto& image : external_frame_images_) {
+    if (!command_vk.Track(image.source)) {
+      return nullptr;
+    }
+    const auto stage = image.render_target
+                           ? vk::PipelineStageFlagBits::eColorAttachmentOutput
+                           : vk::PipelineStageFlagBits::eFragmentShader |
+                                 vk::PipelineStageFlagBits::eComputeShader;
+    const auto access = image.render_target
+                            ? vk::AccessFlagBits::eColorAttachmentRead |
+                                  vk::AccessFlagBits::eColorAttachmentWrite
+                            : vk::AccessFlagBits::eShaderRead;
+    const bool transfer =
+        image.external_queue_family != VK_QUEUE_FAMILY_IGNORED &&
+        image.external_queue_family != graphics_family;
+    source_stages |= stage;
+    vk::ImageMemoryBarrier barrier;
+    barrier.srcAccessMask = access;
+    barrier.dstAccessMask = {};
+    barrier.oldLayout = image.source->GetLayout();
+    barrier.newLayout = image.external_layout;
+    barrier.srcQueueFamilyIndex =
+        transfer ? graphics_family : VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex =
+        transfer ? image.external_queue_family : VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image.source->GetImage();
+    barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+    barrier.subresourceRange.levelCount = 1u;
+    barrier.subresourceRange.layerCount = 1u;
+    barriers.push_back(barrier);
+  }
+  command_vk.GetCommandBuffer().pipelineBarrier(
+      source_stages, vk::PipelineStageFlagBits::eBottomOfPipe, {}, nullptr,
+      nullptr, barriers);
+  return command;
+}
+
+bool ContextVK::CancelExternalFrame() {
+  if (external_frame_state_ == ExternalFrameState::kClosed) {
+    return true;
+  }
+  bool restored = true;
+  if (external_frame_state_ == ExternalFrameState::kAcquired) {
+    const bool flushed = FlushCommandBuffers();
+    auto release = CreateExternalFrameRelease();
+    bool released = false;
+    if (release) {
+      auto& release_vk = CommandBufferVK::Cast(*release);
+      if (release_vk.EndCommandBuffer()) {
+        const auto handle = release_vk.GetCommandBuffer();
+        vk::SubmitInfo submit_info;
+        submit_info.setPCommandBuffers(&handle);
+        submit_info.setCommandBufferCount(1u);
+        released = GetGraphicsQueue()->Submit(submit_info, vk::Fence{}) ==
+                   vk::Result::eSuccess;
+      }
+    }
+    GetIdleWaiter()->WaitIdle();
+    restored = flushed && released;
+    if (restored) {
+      for (const auto& image : external_frame_images_) {
+        image.source->SetLayoutWithoutEncoding(image.external_layout);
+      }
+    }
+  }
+  external_frame_images_.clear();
+  external_frame_state_ = ExternalFrameState::kClosed;
+  return restored;
+}
+
+bool ContextVK::SubmitExternalFrame(fml::UniqueFD& fd) {
+#if defined(FML_OS_LINUX) || defined(FML_OS_ANDROID)
+  if (!SupportsExternalFrameSync() || !FlushCommandBuffers()) {
+    return false;
+  }
+  auto release = CreateExternalFrameRelease();
+  if (!release) {
+    return false;
+  }
+  auto& release_vk = CommandBufferVK::Cast(*release);
+  if (!release_vk.EndCommandBuffer()) {
+    return false;
+  }
+  const auto release_handle = release_vk.GetCommandBuffer();
+  auto signal = std::make_shared<ExternalSemaphoreVK>(shared_from_this());
+  if (!signal->IsValid()) {
+    return false;
+  }
+  auto [fence_result, fence] = GetDevice().createFenceUnique({});
+  if (fence_result != vk::Result::eSuccess) {
+    return false;
+  }
+
+  vk::SubmitInfo submit_info;
+  submit_info.setPCommandBuffers(&release_handle);
+  submit_info.setCommandBufferCount(1u);
+  submit_info.setPSignalSemaphores(&signal->GetHandle());
+  submit_info.setSignalSemaphoreCount(1u);
+  if (GetGraphicsQueue()->Submit(submit_info, *fence) != vk::Result::eSuccess) {
+    return false;
+  }
+
+  for (const auto& image : external_frame_images_) {
+    image.source->SetLayoutWithoutEncoding(image.external_layout);
+  }
+  external_frame_images_.clear();
+  external_frame_state_ = ExternalFrameState::kClosed;
+
+  fml::closure retain = [signal, release = std::move(release)]() {
+    static_cast<void>(signal);
+    static_cast<void>(release);
+  };
+  if (!signal->CreateFD(fd)) {
+    GetIdleWaiter()->WaitIdle();
+    return true;
+  }
+  if (!fence_waiter_->TryAddFence(fence, retain)) {
+    GetIdleWaiter()->WaitIdle();
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool ContextVK::SupportsExternalFrameSync() const {
+#if defined(FML_OS_LINUX) || defined(FML_OS_ANDROID)
+  const auto& capabilities = CapabilitiesVK::Cast(*device_capabilities_);
+  return uses_embedder_device_ && capabilities.SupportsExternalSemaphoreFd();
+#else
+  return false;
+#endif
+}
+
+bool ContextVK::SupportsExternalQueueFamily(uint32_t queue_family) const {
+  if (queue_family != VK_QUEUE_FAMILY_FOREIGN_EXT) {
+    return true;
+  }
+  return CapabilitiesVK::Cast(*device_capabilities_)
+      .HasExtension(RequiredAndroidDeviceExtensionVK::kEXTQueueFamilyForeign);
 }
 
 // Creating a render pass is observed to take an additional 6ms on a Pixel 7

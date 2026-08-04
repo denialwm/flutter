@@ -641,6 +641,16 @@ bool CapabilitiesVK::SetPhysicalDevice(
   has_triangle_fans_ =
       !HasExtension(OptionalDeviceExtensionVK::kVKKHRPortabilitySubset);
 
+  vk::PhysicalDeviceExternalSemaphoreInfo semaphore_info;
+  semaphore_info.handleType = vk::ExternalSemaphoreHandleTypeFlagBits::eSyncFd;
+  const auto semaphore_properties =
+      device.getExternalSemaphoreProperties(semaphore_info);
+  supports_external_semaphore_fd_ =
+      HasExtension(OptionalAndroidDeviceExtensionVK::kKHRExternalSemaphore) &&
+      HasExtension(OptionalAndroidDeviceExtensionVK::kKHRExternalSemaphoreFd) &&
+      bool(semaphore_properties.externalSemaphoreFeatures &
+           vk::ExternalSemaphoreFeatureFlagBits::eExportable);
+
   // External Fence/Semaphore for AHB swapchain
   if (HasExtension(OptionalAndroidDeviceExtensionVK::kKHRExternalFenceFd) &&
       HasExtension(OptionalAndroidDeviceExtensionVK::kKHRExternalFence) &&
@@ -836,6 +846,10 @@ void CapabilitiesVK::ApplyWorkarounds(const WorkaroundsVK& workarounds) {
 
 bool CapabilitiesVK::SupportsExternalSemaphoreExtensions() const {
   return supports_external_fence_and_semaphore_;
+}
+
+bool CapabilitiesVK::SupportsExternalSemaphoreFd() const {
+  return supports_external_semaphore_fd_;
 }
 
 bool CapabilitiesVK::SupportsExtendedRangeFormats() const {

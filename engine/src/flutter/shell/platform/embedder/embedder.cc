@@ -219,13 +219,27 @@ static bool IsVulkanRendererConfigValid(const FlutterRendererConfig* config) {
       !SAFE_EXISTS(vulkan_config, physical_device) ||
       !SAFE_EXISTS(vulkan_config, device) ||
       !SAFE_EXISTS(vulkan_config, queue) ||
-      !SAFE_EXISTS(vulkan_config, get_instance_proc_address_callback) ||
-      !SAFE_EXISTS(vulkan_config, get_next_image_callback) ||
-      !SAFE_EXISTS(vulkan_config, present_image_callback)) {
+      !SAFE_EXISTS(vulkan_config, get_instance_proc_address_callback)) {
     return false;
   }
 
-  return true;
+  const bool legacy =
+      SAFE_ACCESS(vulkan_config, get_next_image_callback, nullptr) &&
+      SAFE_ACCESS(vulkan_config, present_image_callback, nullptr);
+#if IMPELLER_SUPPORTS_RENDERING
+  const FlutterVulkanImpellerRendererConfig* impeller =
+      SAFE_ACCESS(vulkan_config, impeller, nullptr);
+  const bool borrowed =
+      impeller && SAFE_ACCESS(impeller, get_next_image_callback, nullptr) &&
+      SAFE_ACCESS(impeller, present_image_callback, nullptr);
+  if (impeller && !borrowed) {
+    return false;
+  }
+#else
+  const bool borrowed = false;
+#endif
+
+  return legacy || borrowed;
 }
 
 static bool IsRendererValid(const FlutterRendererConfig* config) {
@@ -677,28 +691,35 @@ InferVulkanPlatformViewCreationCallback(
     return ptr(user_data, instance, proc_name);
   };
 
-  auto vulkan_get_next_image =
-      [ptr = config->vulkan.get_next_image_callback,
-       user_data](const flutter::DlISize& frame_size) -> FlutterVulkanImage {
-    FlutterFrameInfo frame_info = {
-        .struct_size = sizeof(FlutterFrameInfo),
-        .size = {static_cast<uint32_t>(frame_size.width),
-                 static_cast<uint32_t>(frame_size.height)},
-    };
+  std::function<FlutterVulkanImage(const flutter::DlISize&)>
+      vulkan_get_next_image;
+  if (config->vulkan.get_next_image_callback) {
+    vulkan_get_next_image =
+        [ptr = config->vulkan.get_next_image_callback,
+         user_data](const flutter::DlISize& frame_size) -> FlutterVulkanImage {
+      FlutterFrameInfo frame_info = {
+          .struct_size = sizeof(FlutterFrameInfo),
+          .size = {static_cast<uint32_t>(frame_size.width),
+                   static_cast<uint32_t>(frame_size.height)},
+      };
 
-    return ptr(user_data, &frame_info);
-  };
-
-  auto vulkan_present_image_callback =
-      [ptr = config->vulkan.present_image_callback, user_data](
-          VkImage image, VkFormat format) -> bool {
-    FlutterVulkanImage image_desc = {
-        .struct_size = sizeof(FlutterVulkanImage),
-        .image = reinterpret_cast<uint64_t>(image),
-        .format = static_cast<uint32_t>(format),
+      return ptr(user_data, &frame_info);
     };
-    return ptr(user_data, &image_desc);
-  };
+  }
+
+  std::function<bool(VkImage, VkFormat)> vulkan_present_image_callback;
+  if (config->vulkan.present_image_callback) {
+    vulkan_present_image_callback =
+        [ptr = config->vulkan.present_image_callback, user_data](
+            VkImage image, VkFormat format) -> bool {
+      FlutterVulkanImage image_desc = {
+          .struct_size = sizeof(FlutterVulkanImage),
+          .image = reinterpret_cast<uint64_t>(image),
+          .format = static_cast<uint32_t>(format),
+      };
+      return ptr(user_data, &image_desc);
+    };
+  }
 
   auto vk_instance = static_cast<VkInstance>(config->vulkan.instance);
   auto proc_addr =
@@ -709,12 +730,42 @@ InferVulkanPlatformViewCreationCallback(
 
 #if IMPELLER_SUPPORTS_RENDERING
   if (enable_impeller) {
+    const FlutterVulkanRendererConfig* vulkan_config = &config->vulkan;
+    const FlutterVulkanImpellerRendererConfig* impeller_config =
+        SAFE_ACCESS(vulkan_config, impeller, nullptr);
+    std::function<bool(const flutter::DlISize&, FlutterVulkanImage2*)>
+        vulkan_get_next_image2;
+    std::function<bool(const FlutterVulkanImage2&, fml::UniqueFD)>
+        vulkan_present_image2;
+    if (impeller_config) {
+      auto get_next =
+          SAFE_ACCESS(impeller_config, get_next_image_callback, nullptr);
+      auto present =
+          SAFE_ACCESS(impeller_config, present_image_callback, nullptr);
+      vulkan_get_next_image2 = [ptr = get_next, user_data](
+                                   const flutter::DlISize& frame_size,
+                                   FlutterVulkanImage2* image) {
+        FlutterFrameInfo frame_info = {
+            .struct_size = sizeof(FlutterFrameInfo),
+            .size = {static_cast<uint32_t>(frame_size.width),
+                     static_cast<uint32_t>(frame_size.height)},
+        };
+        return ptr(user_data, &frame_info, image);
+      };
+      vulkan_present_image2 = [ptr = present, user_data](
+                                  const FlutterVulkanImage2& image,
+                                  fml::UniqueFD release_fence) {
+        return ptr(user_data, &image, release_fence.release());
+      };
+    }
     flutter::EmbedderSurfaceVulkanImpeller::VulkanDispatchTable
         vulkan_dispatch_table = {
             .get_instance_proc_address =
                 reinterpret_cast<PFN_vkGetInstanceProcAddr>(proc_addr),
             .get_next_image = vulkan_get_next_image,
+            .get_next_image2 = vulkan_get_next_image2,
             .present_image = vulkan_present_image_callback,
+            .present_image2 = vulkan_present_image2,
         };
 
     std::unique_ptr<flutter::EmbedderSurfaceVulkanImpeller> embedder_surface =
@@ -728,7 +779,10 @@ InferVulkanPlatformViewCreationCallback(
             static_cast<VkDevice>(config->vulkan.device),
             config->vulkan.queue_family_index,
             static_cast<VkQueue>(config->vulkan.queue), vulkan_dispatch_table,
-            view_embedder);
+            view_embedder,
+            impeller_config
+                ? SAFE_ACCESS(impeller_config, enable_root_msaa, true)
+                : true);
 
     return fml::MakeCopyable(
         [embedder_surface = std::move(embedder_surface),
@@ -2419,6 +2473,33 @@ FlutterEngineResult FlutterEngineInitialize(size_t version,
       };
       external_texture_resolver = std::make_unique<ExternalTextureResolver>(
           external_texture_metal_callback);
+    }
+  }
+#endif
+#if defined(SHELL_ENABLE_VULKAN) && IMPELLER_SUPPORTS_RENDERING
+  if (config->type == kVulkan && settings.enable_impeller) {
+    const FlutterVulkanRendererConfig* vulkan_config = &config->vulkan;
+    const FlutterVulkanImpellerRendererConfig* impeller_config =
+        SAFE_ACCESS(vulkan_config, impeller, nullptr);
+    auto callback = impeller_config
+                        ? SAFE_ACCESS(impeller_config,
+                                      external_texture_frame_callback, nullptr)
+                        : nullptr;
+    if (callback) {
+      flutter::EmbedderExternalTextureVK::ExternalTextureCallback
+          vulkan_texture_callback =
+              [ptr = callback, user_data](int64_t texture_identifier,
+                                          size_t width, size_t height)
+          -> std::unique_ptr<FlutterVulkanExternalTexture> {
+        auto texture = std::make_unique<FlutterVulkanExternalTexture>();
+        texture->struct_size = sizeof(FlutterVulkanExternalTexture);
+        if (!ptr(user_data, texture_identifier, width, height, texture.get())) {
+          return nullptr;
+        }
+        return texture;
+      };
+      external_texture_resolver = std::make_unique<ExternalTextureResolver>(
+          std::move(vulkan_texture_callback));
     }
   }
 #endif
