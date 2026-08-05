@@ -10,8 +10,12 @@
 
 #include "flutter/flow/layers/backdrop_filter_layer.h"
 #include "flutter/flow/layers/clip_rect_layer.h"
+#include "flutter/flow/layers/container_layer.h"
+#include "flutter/flow/layers/display_list_layer.h"
 #include "flutter/flow/layers/layer_tree.h"
 #include "flutter/flow/layers/texture_layer.h"
+#include "flutter/impeller/display_list/aiks_context.h"
+#include "flutter/testing/display_list_testing.h"
 #include "gtest/gtest.h"
 
 namespace flutter {
@@ -145,6 +149,58 @@ TEST(RasterDamagePlanTest, ImpellerRejectsLargeComplexDamage) {
       large_damage, kFrameSize, RasterDamagePolicy::kUseDamageRegion,
       RasterBackend::kImpeller);
   ExpectFullRepaint(plan);
+}
+
+TEST(CompositorContextTest,
+     ImpellerPartialRepaintClearsRepairRegionBeforePainting) {
+  const DlRect damage_rect = DlRect::MakeLTRB(10, 20, 30, 40);
+  const DlPath damage_path = DlPath::MakeRect(damage_rect);
+
+  DisplayListBuilder previous_builder;
+  previous_builder.DrawPath(damage_path,
+                            DlPaint(DlColor::ARGB(0x40, 0xff, 0, 0)));
+  auto previous_display_list = previous_builder.Build();
+  auto previous_root = std::make_shared<ContainerLayer>();
+  previous_root->Add(std::make_shared<DisplayListLayer>(
+      DlPoint(), previous_display_list, false, false));
+  LayerTree previous_tree(previous_root, kFrameSize);
+  FrameDamage previous_damage;
+  previous_damage.ComputeDamageRegion(previous_tree, false, true);
+
+  DisplayListBuilder current_builder;
+  current_builder.DrawPath(damage_path,
+                           DlPaint(DlColor::ARGB(0x40, 0, 0, 0xff)));
+  auto current_display_list = current_builder.Build();
+  auto current_root = std::make_shared<ContainerLayer>();
+  current_root->Add(std::make_shared<DisplayListLayer>(
+      DlPoint(), current_display_list, false, false));
+  LayerTree current_tree(current_root, kFrameSize);
+
+  DisplayListBuilder builder(DlRect::MakeSize(kFrameSize));
+  CompositorContext compositor_context;
+  impeller::AiksContext impeller_context(nullptr, nullptr);
+  auto frame =
+      compositor_context.AcquireFrame(nullptr, &builder, nullptr, DlMatrix(),
+                                      false, true, nullptr, &impeller_context);
+
+  FrameDamage current_damage;
+  current_damage.SetPreviousLayerTree(&previous_tree);
+  current_damage.SetExistingDamage(DlRegion());
+  EXPECT_EQ(frame->Raster(current_tree, true, &current_damage),
+            RasterStatus::kSuccess);
+
+  DisplayListBuilder expected_builder(DlRect::MakeSize(kFrameSize));
+  expected_builder.Save();
+  expected_builder.ClipRect(damage_rect, DlClipOp::kIntersect, false);
+  expected_builder.Clear(DlColor::kTransparent());
+  expected_builder.Save();
+  expected_builder.Translate(0, 0);
+  expected_builder.DrawDisplayList(current_display_list);
+  expected_builder.Restore();
+  expected_builder.Restore();
+
+  EXPECT_TRUE(
+      DisplayListsEQ_Verbose(builder.Build(), expected_builder.Build()));
 }
 
 TEST(FrameDamageTest, ReusedTreeDamagesDirtyTextureWithoutDiffingLayers) {

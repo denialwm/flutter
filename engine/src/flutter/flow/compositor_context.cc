@@ -326,6 +326,10 @@ void CompositorContext::ScopedFrame::PaintLayerTreeImpeller(
   if (canvas()) {
     if (clip_region) {
       ClipCanvasToRegion(canvas(), *clip_region);
+      // The render target is loaded for a partial repaint. Replace the
+      // damaged pixels before replaying translucent scene content so that it
+      // does not blend with the previous frame's copy of itself.
+      canvas()->Clear(DlColor::kTransparent());
     }
   }
 
