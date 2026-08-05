@@ -9,12 +9,30 @@
 #include "impeller/core/formats.h"
 #include "impeller/entity/entity_pass_target.h"
 #include "impeller/entity/entity_playground.h"
+#include "impeller/entity/inline_pass_context.h"
 
 namespace impeller {
 namespace testing {
 
 using EntityPassTargetTest = EntityPlayground;
 INSTANTIATE_PLAYGROUND_SUITE(EntityPassTargetTest);
+
+TEST_P(EntityPassTargetTest, FirstPassPreservesCallerLoadAction) {
+  auto content_context = GetContentContext();
+  auto render_target = content_context->GetRenderTargetCache()->CreateOffscreen(
+      *content_context->GetContext(), {100, 100}, /*mip_count=*/1);
+  auto color0 = render_target.GetColorAttachment(0);
+  color0.load_action = LoadAction::kLoad;
+  render_target.SetColorAttachment(color0, 0u);
+
+  EntityPassTarget entity_pass_target(render_target, false, false);
+  InlinePassContext pass_context(*content_context, entity_pass_target);
+  const auto& pass = pass_context.GetRenderPass();
+
+  ASSERT_TRUE(pass);
+  EXPECT_EQ(pass->GetRenderTarget().GetColorAttachment(0).load_action,
+            LoadAction::kLoad);
+}
 
 TEST_P(EntityPassTargetTest, SwapWithMSAATexture) {
   if (GetContentContext()
