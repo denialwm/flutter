@@ -165,18 +165,12 @@ Quad CalculateSnapshotUVs(
   FML_DCHECK(input_snapshot.transform.IsTranslationScaleOnly());
   if (source_expanded_coverage_hint.has_value() &&
       input_snapshot_coverage.has_value()) {
-    // Only process the uvs where the blur is happening, not the whole texture.
-    std::optional<Rect> uvs =
-        MakeReferenceUVs(input_snapshot_coverage.value(),
-                         source_expanded_coverage_hint.value())
-            .Intersection(Rect::MakeSize(Size(1, 1)));
-    FML_DCHECK(uvs.has_value());
-    if (uvs.has_value()) {
-      blur_uvs[0] = uvs->GetLeftTop();
-      blur_uvs[1] = uvs->GetRightTop();
-      blur_uvs[2] = uvs->GetLeftBottom();
-      blur_uvs[3] = uvs->GetRightBottom();
-    }
+    // Only process the UVs where the blur is happening, not the whole texture.
+    // Keep coordinates outside [0, 1] so a clamp sampler can provide the blur
+    // halo when the requested coverage crosses a texture edge.
+    Rect uvs = MakeReferenceUVs(input_snapshot_coverage.value(),
+                                source_expanded_coverage_hint.value());
+    blur_uvs = uvs.GetPoints();
   }
   return blur_uvs;
 }
@@ -198,13 +192,7 @@ Scalar FloorToDivisible(Scalar val, Scalar divisor) {
   if (divisor == 0.0f) {
     return val;
   }
-
-  Scalar remainder = fmod(val, divisor);
-  if (remainder != 0.0f) {
-    return val - remainder;
-  } else {
-    return val;
-  }
+  return std::floor(val / divisor) * divisor;
 }
 
 // If `y_coord_scale` < 0.0, the Y coordinate is flipped. This is useful
@@ -324,7 +312,8 @@ DownsamplePassArgs CalculateDownsamplePassArgs(
     const std::optional<Rect>& source_expanded_coverage_hint,
     const std::optional<Quad>& source_bounds,
     const std::shared_ptr<FilterInput>& input,
-    const Entity& snapshot_entity) {
+    const Entity& snapshot_entity,
+    Entity::TileMode tile_mode) {
   Scalar desired_scalar =
       std::min(GaussianBlurFilterContents::CalculateScale(scaled_sigma.x),
                GaussianBlurFilterContents::CalculateScale(scaled_sigma.y));
@@ -343,15 +332,17 @@ DownsamplePassArgs CalculateDownsamplePassArgs(
   //     .Contains(coverage_hint.value()))
 
   std::optional<Rect> snapshot_coverage = input_snapshot.GetCoverage();
+  const bool can_sample_outside_snapshot =
+      tile_mode == Entity::TileMode::kClamp && !source_bounds.has_value();
   if (input_snapshot.transform.Equals(snapshot_entity.GetTransform()) &&
       source_expanded_coverage_hint.has_value() &&
       snapshot_coverage.has_value() &&
-      snapshot_coverage->Contains(source_expanded_coverage_hint.value())) {
-    // If the snapshot's transform is the identity transform and we have
-    // coverage hint that fits inside of the snapshots coverage that means the
-    // coverage hint was ignored so we will trim out the area we are interested
-    // in the down-sample pass. This usually means we have a backdrop image
-    // filter.
+      (snapshot_coverage->Contains(source_expanded_coverage_hint.value()) ||
+       can_sample_outside_snapshot)) {
+    // If the snapshot's transform matches the requested transform and its
+    // coverage hint was ignored, trim the downsample pass to the area we need.
+    // Clamp mode can also trim when the blur halo crosses a snapshot edge
+    // because the sampler supplies the missing edge pixels.
     //
     // The region we cut out will be aligned with the down-sample divisor to
     // avoid pixel alignment problems that create shimmering.
@@ -914,7 +905,8 @@ std::optional<Entity> GaussianBlurFilterContents::RenderFilter(
 
   DownsamplePassArgs downsample_pass_args = CalculateDownsamplePassArgs(
       blur_info.scaled_sigma, blur_info.padding, input_snapshot.value(),
-      source_expanded_coverage_hint, source_bounds, inputs[0], snapshot_entity);
+      source_expanded_coverage_hint, source_bounds, inputs[0], snapshot_entity,
+      tile_mode_);
 
   fml::StatusOr<RenderTarget> pass1_out = MakeDownsampleSubpass(
       renderer, command_buffer_1, input_snapshot->texture,
