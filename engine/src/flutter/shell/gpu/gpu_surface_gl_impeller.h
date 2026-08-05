@@ -17,6 +17,8 @@ namespace flutter {
 namespace testing {
 FML_TEST_CLASS(EmbedderSurfaceGLImpellerTest,
                ImpellerPresentPreservesFBOAndReportsFullDamage);
+FML_TEST_CLASS(EmbedderSurfaceGLImpellerTest,
+               ImpellerUsesEmbedderRootSurfaceTransformation);
 }  // namespace testing
 
 class GPUSurfaceGLImpeller final : public Surface {
@@ -35,6 +37,8 @@ class GPUSurfaceGLImpeller final : public Surface {
  private:
   FML_FRIEND_TEST(testing::EmbedderSurfaceGLImpellerTest,
                   ImpellerPresentPreservesFBOAndReportsFullDamage);
+  FML_FRIEND_TEST(testing::EmbedderSurfaceGLImpellerTest,
+                  ImpellerUsesEmbedderRootSurfaceTransformation);
   GPUSurfaceGLDelegate* delegate_ = nullptr;
   std::shared_ptr<impeller::Context> impeller_context_;
   bool render_to_surface_ = true;
@@ -49,6 +53,11 @@ class GPUSurfaceGLImpeller final : public Surface {
   static bool PresentFrame(GPUSurfaceGLDelegate* delegate,
                            uint32_t fbo_id,
                            const DlISize& size);
+
+  static DlMatrix RootTransformation(GPUSurfaceGLDelegate* delegate);
+
+  static void ConfigureRootCanvas(DlCanvas* canvas,
+                                  GPUSurfaceGLDelegate* delegate);
 
   // |Surface|
   DlMatrix GetRootTransformation() const override;
