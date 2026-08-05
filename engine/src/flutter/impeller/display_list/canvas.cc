@@ -1746,7 +1746,14 @@ void Canvas::SaveLayer(const Paint& paint,
         renderer_.GetRenderTargetCache()->DisableCache();
         fml::ScopedCleanupClosure restore_render_target_cache(
             [&] { renderer_.GetRenderTargetCache()->EnableCache(); });
-        return backdrop_filter_contents->RenderToSnapshot(renderer_, {}, {});
+        // An ungrouped filter only needs the pixels covered by its saveLayer.
+        // Supplying that output limit also lets filters crop their input work.
+        // Grouped filters still need one snapshot that can serve every member.
+        const std::optional<Rect> coverage_limit =
+            will_cache_backdrop_texture ? std::nullopt
+                                        : std::make_optional(subpass_coverage);
+        return backdrop_filter_contents->RenderToSnapshot(
+            renderer_, {}, {.coverage_limit = coverage_limit});
       };
 
       std::optional<Snapshot> maybe_snapshot;
