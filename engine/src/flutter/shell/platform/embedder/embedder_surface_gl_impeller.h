@@ -10,6 +10,7 @@
 #include "flutter/shell/platform/embedder/embedder_external_view_embedder.h"
 #include "flutter/shell/platform/embedder/embedder_surface.h"
 #include "flutter/shell/platform/embedder/embedder_surface_gl_skia.h"
+#include "impeller/base/flags.h"
 
 namespace impeller {
 class ContextGLES;
