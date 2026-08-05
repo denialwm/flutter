@@ -71,8 +71,6 @@ class ExternalSemaphoreVK {
   ///
   fml::UniqueFD CreateFD() const;
 
-  bool CreateFD(fml::UniqueFD& fd) const;
-
   const vk::Semaphore& GetHandle() const;
 
   const SharedHandleVK<vk::Semaphore>& GetSharedHandle() const;

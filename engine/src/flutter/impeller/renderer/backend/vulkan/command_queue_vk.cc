@@ -24,24 +24,6 @@ fml::Status CommandQueueVK::Submit(
     const std::vector<std::shared_ptr<CommandBuffer>>& buffers,
     const CompletionCallback& completion_callback,
     bool block_on_schedule) {
-  return SubmitInternal(buffers, vk::Semaphore{}, completion_callback);
-}
-
-fml::Status CommandQueueVK::SubmitWithSignalSemaphore(
-    const std::vector<std::shared_ptr<CommandBuffer>>& buffers,
-    vk::Semaphore signal_semaphore,
-    const CompletionCallback& completion_callback) {
-  if (!signal_semaphore) {
-    return fml::Status(fml::StatusCode::kInvalidArgument,
-                       "No signal semaphore provided.");
-  }
-  return SubmitInternal(buffers, signal_semaphore, completion_callback);
-}
-
-fml::Status CommandQueueVK::SubmitInternal(
-    const std::vector<std::shared_ptr<CommandBuffer>>& buffers,
-    vk::Semaphore signal_semaphore,
-    const CompletionCallback& completion_callback) {
   if (buffers.empty()) {
     return fml::Status(fml::StatusCode::kInvalidArgument,
                        "No command buffers provided.");
@@ -80,10 +62,6 @@ fml::Status CommandQueueVK::SubmitInternal(
 
   vk::SubmitInfo submit_info;
   submit_info.setCommandBuffers(vk_buffers);
-  if (signal_semaphore) {
-    submit_info.setPSignalSemaphores(&signal_semaphore);
-    submit_info.setSignalSemaphoreCount(1u);
-  }
   auto status = context->GetGraphicsQueue()->Submit(submit_info, *fence);
   if (status != vk::Result::eSuccess) {
     VALIDATION_LOG << "Failed to submit queue: " << vk::to_string(status);

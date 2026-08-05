@@ -42,27 +42,20 @@ bool ExternalSemaphoreVK::IsValid() const {
 }
 
 fml::UniqueFD ExternalSemaphoreVK::CreateFD() const {
-  fml::UniqueFD fd;
-  CreateFD(fd);
-  return fd;
-}
-
-bool ExternalSemaphoreVK::CreateFD(fml::UniqueFD& fd) const {
   if (!IsValid()) {
-    return false;
+    return {};
   }
   vk::SemaphoreGetFdInfoKHR info;
   info.semaphore = semaphore_->Get();
   info.handleType = vk::ExternalSemaphoreHandleTypeFlagBits::eSyncFd;
-  auto [result, exported_fd] =
+  auto [result, fd] =
       semaphore_->GetUniqueWrapper().getOwner().getSemaphoreFdKHR(info);
   if (result != vk::Result::eSuccess) {
     VALIDATION_LOG << "Could not export external fence FD: "
                    << vk::to_string(result);
-    return false;
+    return {};
   }
-  fd = fml::UniqueFD{exported_fd};
-  return true;
+  return fml::UniqueFD{fd};
 }
 
 const vk::Semaphore& ExternalSemaphoreVK::GetHandle() const {

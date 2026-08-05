@@ -42,7 +42,6 @@ class GPUTracerVK;
 class DescriptorPoolRecyclerVK;
 class CommandQueueVK;
 class DescriptorPoolVK;
-class TextureSourceVK;
 
 class IdleWaiterVK : public IdleWaiter {
  public:
@@ -239,29 +238,6 @@ class ContextVK final : public Context,
   // | Context |
   bool FlushCommandBuffers() override;
 
-  /// Opens one borrowed-image transaction for an embedder root image.
-  bool BeginExternalFrame(std::shared_ptr<const TextureSourceVK> root_image,
-                          vk::ImageLayout external_layout,
-                          uint32_t external_queue_family,
-                          bool external_memory_unmodified);
-
-  /// Adds a borrowed texture which is actually sampled by this frame.
-  bool AddExternalFrameImage(std::shared_ptr<const TextureSourceVK> texture,
-                             vk::ImageLayout external_layout,
-                             uint32_t external_queue_family);
-
-  /// Acquires every borrowed image on the graphics queue before rendering.
-  bool AcquireExternalFrameImages();
-
-  /// Restores external ownership for an abandoned frame.
-  bool CancelExternalFrame();
-
-  /// Releases every borrowed image and exports one sync file after all frame
-  /// work already queued by Impeller.
-  bool SubmitExternalFrame(fml::UniqueFD& fd);
-
-  bool SupportsExternalFrameSync() const;
-
   RuntimeStageBackend GetRuntimeStageBackend() const override;
 
   std::shared_ptr<const IdleWaiter> GetIdleWaiter() const override {
@@ -307,7 +283,7 @@ class ContextVK final : public Context,
   std::string device_name_;
   std::shared_ptr<fml::ConcurrentMessageLoop> raster_message_loop_;
   std::shared_ptr<GPUTracerVK> gpu_tracer_;
-  std::shared_ptr<CommandQueueVK> command_queue_vk_;
+  std::shared_ptr<CommandQueue> command_queue_vk_;
   std::shared_ptr<const IdleWaiter> idle_waiter_vk_;
   WorkaroundsVK workarounds_;
 
@@ -321,23 +297,8 @@ class ContextVK final : public Context,
   bool should_batch_cmd_buffers_ = false;
   std::vector<std::shared_ptr<CommandBuffer>> pending_command_buffers_;
 
-  struct ExternalFrameImage {
-    std::shared_ptr<const TextureSourceVK> source;
-    vk::ImageLayout external_layout;
-    uint32_t external_queue_family;
-    bool render_target;
-    bool external_memory_unmodified;
-  };
-  std::vector<ExternalFrameImage> external_frame_images_;
-  enum class ExternalFrameState { kClosed, kOpen, kAcquired };
-  ExternalFrameState external_frame_state_ = ExternalFrameState::kClosed;
-
-  std::shared_ptr<CommandBuffer> CreateExternalFrameRelease();
-  bool SupportsExternalQueueFamily(uint32_t queue_family) const;
-
   const uint64_t hash_;
 
-  bool uses_embedder_device_ = false;
   bool is_valid_ = false;
 
   explicit ContextVK(const Flags& flags);

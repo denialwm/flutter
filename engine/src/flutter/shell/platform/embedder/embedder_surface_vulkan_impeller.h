@@ -22,14 +22,9 @@ class EmbedderSurfaceVulkanImpeller final : public EmbedderSurface,
   struct VulkanDispatchTable {
     PFN_vkGetInstanceProcAddr get_instance_proc_address;  // required
     std::function<FlutterVulkanImage(const DlISize& frame_size)>
-        get_next_image;  // required by the legacy path
-    std::function<bool(const DlISize& frame_size, FlutterVulkanImage2* image)>
-        get_next_image2;
+        get_next_image;  // required
     std::function<bool(VkImage image, VkFormat format)>
-        present_image;  // required by the legacy path
-    std::function<bool(const FlutterVulkanImage2& image,
-                       fml::UniqueFD release_fence)>
-        present_image2;
+        present_image;  // required
   };
 
   EmbedderSurfaceVulkanImpeller(
@@ -44,8 +39,7 @@ class EmbedderSurfaceVulkanImpeller final : public EmbedderSurface,
       uint32_t queue_family_index,
       VkQueue queue,
       const VulkanDispatchTable& vulkan_dispatch_table,
-      std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder,
-      bool enable_root_msaa);
+      std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder);
 
   ~EmbedderSurfaceVulkanImpeller() override;
 
@@ -59,12 +53,6 @@ class EmbedderSurfaceVulkanImpeller final : public EmbedderSurface,
   bool PresentImage(VkImage image, VkFormat format) override;
 
   // |GPUSurfaceVulkanDelegate|
-  bool SupportsBorrowedImages() const override;
-  bool AcquireImage2(const DlISize& size, FlutterVulkanImage2* image) override;
-  bool PresentImage2(const FlutterVulkanImage2& image,
-                     fml::UniqueFD release_fence) override;
-
-  // |GPUSurfaceVulkanDelegate|
   std::shared_ptr<impeller::Context> CreateImpellerContext() const override;
 
  private:
@@ -73,7 +61,6 @@ class EmbedderSurfaceVulkanImpeller final : public EmbedderSurface,
   VulkanDispatchTable vulkan_dispatch_table_;
   std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder_;
   std::shared_ptr<impeller::ContextVK> context_;
-  bool enable_root_msaa_ = true;
 
   // |EmbedderSurface|
   bool IsValid() const override;

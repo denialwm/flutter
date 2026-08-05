@@ -930,20 +930,6 @@ typedef void* FlutterVulkanQueueHandle;
 /// Alias for VkImage.
 typedef uint64_t FlutterVulkanImageHandle;
 
-typedef uint64_t FlutterVulkanImageFlags;
-
-/// The external owner has not modified the image since Impeller most recently
-/// released it. The engine may use this to avoid redundant external-memory
-/// synchronization when the device supports it.
-static const FlutterVulkanImageFlags
-    kFlutterVulkanImageFlagExternalMemoryUnmodified = 1u << 0;
-
-/// The VkImage handle, allocation, format, and dimensions remain unchanged and
-/// valid until the renderer is destroyed. The engine may retain Vulkan views
-/// and other objects which reference the image across frames.
-static const FlutterVulkanImageFlags kFlutterVulkanImageFlagPersistent = 1u
-                                                                         << 1;
-
 typedef struct {
   /// The size of this struct. Must be sizeof(FlutterVulkanImage).
   size_t struct_size;
@@ -953,87 +939,6 @@ typedef struct {
   /// The VkFormat of the image (for example: VK_FORMAT_R8G8B8A8_UNORM).
   uint32_t format;
 } FlutterVulkanImage;
-
-/// A borrowed Vulkan image with the ownership information required to move it
-/// between an external producer and Impeller's graphics queue.
-typedef struct {
-  /// The size of this struct. Must be sizeof(FlutterVulkanImage2).
-  size_t struct_size;
-  /// VkImage owned by the embedder.
-  FlutterVulkanImageHandle image;
-  /// VkFormat of the image.
-  uint32_t format;
-  /// VkImageLayout while the image is externally owned.
-  uint32_t layout;
-  /// Queue family which owns the image outside Impeller. Use
-  /// VK_QUEUE_FAMILY_EXTERNAL for another API on the same physical device and
-  /// driver, or VK_QUEUE_FAMILY_FOREIGN_EXT for a different device or driver.
-  uint32_t external_queue_family_index;
-  /// Optional FlutterVulkanImageFlags describing external ownership.
-  FlutterVulkanImageFlags flags;
-} FlutterVulkanImage2;
-
-/// A texture supplied for sampling by Vulkan Impeller. Exactly one of `image`
-/// and `pixels` must be populated. The payload remains owned by the embedder
-/// until `destruction_callback` runs.
-typedef struct {
-  /// The size of this struct. Must be sizeof(FlutterVulkanExternalTexture).
-  size_t struct_size;
-  /// Borrowed VkImage, or zero when supplying host pixels.
-  FlutterVulkanImageHandle image;
-  /// VkFormat shared by either payload.
-  uint32_t format;
-  /// External layout and queue family for a borrowed image.
-  uint32_t layout;
-  uint32_t external_queue_family_index;
-  /// Texture dimensions.
-  size_t width;
-  size_t height;
-  /// Whether sampling must force alpha to one.
-  bool opaque;
-  /// Tightly packed host pixels, or nullptr when supplying an image.
-  const uint8_t* pixels;
-  size_t row_bytes;
-  /// Embedder baton and required retirement callback.
-  void* user_data;
-  VoidCallback destruction_callback;
-} FlutterVulkanExternalTexture;
-
-typedef bool (*FlutterVulkanImageCallback2)(
-    void* /* user data */,
-    const FlutterFrameInfo* /* frame info */,
-    FlutterVulkanImage2* /* image out */);
-
-typedef bool (*FlutterVulkanPresentCallback2)(
-    void* /* user data */,
-    const FlutterVulkanImage2* /* image */,
-    int /* release sync-file fd */);
-
-typedef bool (*FlutterVulkanExternalTextureFrameCallback)(
-    void* /* user data */,
-    int64_t /* texture identifier */,
-    size_t /* requested width */,
-    size_t /* requested height */,
-    FlutterVulkanExternalTexture* /* texture out */);
-
-/// Optional Vulkan Impeller callbacks for borrowed Linux images. This is a
-/// direct acquire/render/present seam; frame scheduling remains the embedder's.
-typedef struct {
-  /// The size of this struct. Must be
-  /// sizeof(FlutterVulkanImpellerRendererConfig).
-  size_t struct_size;
-  /// Returns false when the embedder has no render target available. Impeller
-  /// then completes the raster task without submitting GPU work.
-  FlutterVulkanImageCallback2 get_next_image_callback;
-  /// Receives the same image and one sync file covering all rendering and
-  /// sampled borrowed textures. Ownership of a non-negative fd transfers to
-  /// the embedder.
-  FlutterVulkanPresentCallback2 present_image_callback;
-  /// Optional external texture callback.
-  FlutterVulkanExternalTextureFrameCallback external_texture_frame_callback;
-  /// Whether to allocate a multisampled intermediate color attachment.
-  bool enable_root_msaa;
-} FlutterVulkanImpellerRendererConfig;
 
 /// Callback to fetch a Vulkan function pointer for a given instance. Normally,
 /// this should return the results of vkGetInstanceProcAddr.
@@ -1116,10 +1021,6 @@ typedef struct {
   /// without any additional synchronization.
   /// Not used if a FlutterCompositor is supplied in FlutterProjectArgs.
   FlutterVulkanPresentCallback present_image_callback;
-
-  /// Optional Vulkan Impeller borrowed-image contract. Legacy Vulkan
-  /// embedders leave this absent and retain their existing behavior.
-  const FlutterVulkanImpellerRendererConfig* impeller;
 
 } FlutterVulkanRendererConfig;
 

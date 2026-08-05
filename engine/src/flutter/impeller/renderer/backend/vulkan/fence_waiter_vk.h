@@ -30,8 +30,6 @@ class FenceWaiterVK {
 
   bool AddFence(vk::UniqueFence fence, const fml::closure& callback);
 
-  bool TryAddFence(vk::UniqueFence& fence, const fml::closure& callback);
-
  private:
   friend class ContextVK;
 
@@ -41,10 +39,8 @@ class FenceWaiterVK {
   std::condition_variable wait_set_cv_;
   WaitSet wait_set_;
   bool terminate_ = false;
-  const bool wait_indefinitely_;
 
-  FenceWaiterVK(std::weak_ptr<DeviceHolderVK> device_holder,
-                bool wait_indefinitely);
+  explicit FenceWaiterVK(std::weak_ptr<DeviceHolderVK> device_holder);
 
   void Main();
 

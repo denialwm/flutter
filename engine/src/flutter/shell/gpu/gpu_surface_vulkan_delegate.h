@@ -7,7 +7,6 @@
 
 #include "flutter/display_list/geometry/dl_geometry_types.h"
 #include "flutter/fml/memory/ref_ptr.h"
-#include "flutter/fml/unique_fd.h"
 #include "flutter/shell/platform/embedder/embedder.h"
 #include "flutter/vulkan/procs/vulkan_proc_table.h"
 #include "flutter/vulkan/vulkan_device.h"
@@ -44,12 +43,6 @@ class GPUSurfaceVulkanDelegate {
   ///         and it's ready to be bound for further reading/writing.
   ///
   virtual bool PresentImage(VkImage image, VkFormat format) = 0;
-
-  /// Optional borrowed-image contract used by Vulkan Impeller embedders.
-  virtual bool SupportsBorrowedImages() const;
-  virtual bool AcquireImage2(const DlISize& size, FlutterVulkanImage2* image);
-  virtual bool PresentImage2(const FlutterVulkanImage2& image,
-                             fml::UniqueFD release_fence);
 };
 
 }  // namespace flutter

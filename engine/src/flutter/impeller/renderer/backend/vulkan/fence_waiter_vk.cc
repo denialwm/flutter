@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <limits>
 #include <utility>
 
 #include "flutter/fml/cpu_affinity.h"
@@ -53,10 +52,8 @@ class WaitSetEntry {
   WaitSetEntry& operator=(WaitSetEntry&&) = delete;
 };
 
-FenceWaiterVK::FenceWaiterVK(std::weak_ptr<DeviceHolderVK> device_holder,
-                             bool wait_indefinitely)
-    : device_holder_(std::move(device_holder)),
-      wait_indefinitely_(wait_indefinitely) {
+FenceWaiterVK::FenceWaiterVK(std::weak_ptr<DeviceHolderVK> device_holder)
+    : device_holder_(std::move(device_holder)) {
   waiter_thread_ = std::make_unique<std::thread>([&]() { Main(); });
 }
 
@@ -66,11 +63,6 @@ FenceWaiterVK::~FenceWaiterVK() {
 
 bool FenceWaiterVK::AddFence(vk::UniqueFence fence,
                              const fml::closure& callback) {
-  return TryAddFence(fence, callback);
-}
-
-bool FenceWaiterVK::TryAddFence(vk::UniqueFence& fence,
-                                const fml::closure& callback) {
   if (!fence || !callback) {
     return false;
   }
@@ -163,17 +155,11 @@ bool FenceWaiterVK::Wait() {
     return true;
   }
 
-  // Some desktop drivers busy-spin for the duration of a finite Vulkan fence
-  // wait. An embedder-supplied device remains alive until engine shutdown, so
-  // its completion thread can use the driver's genuinely blocking wait path.
-  const uint64_t timeout = wait_indefinitely_
-                               ? std::numeric_limits<uint64_t>::max()
-                               : std::chrono::nanoseconds{100ms}.count();
-  const auto result = device.waitForFences(
+  auto result = device.waitForFences(
       /*fenceCount=*/fences.size(),
       /*pFences=*/fences.data(),
       /*waitAll=*/false,
-      /*timeout=*/timeout);
+      /*timeout=*/std::chrono::nanoseconds{100ms}.count());
   if (!(result == vk::Result::eSuccess || result == vk::Result::eTimeout)) {
     VALIDATION_LOG << "Fence waiter encountered an unexpected error. Tearing "
                       "down the waiter thread.";

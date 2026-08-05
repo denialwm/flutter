@@ -5,7 +5,6 @@
 #include "flutter/shell/gpu/gpu_surface_vulkan_impeller.h"
 
 #include <memory>
-#include <optional>
 
 #include "flow/surface_frame.h"
 #include "flutter/fml/make_copyable.h"
@@ -51,72 +50,10 @@ class WrappedTextureSourceVK : public impeller::TextureSourceVK {
   impeller::vk::UniqueImageView image_view_;
 };
 
-class BorrowedFrame final {
- public:
-  BorrowedFrame(GPUSurfaceVulkanDelegate* delegate,
-                FlutterVulkanImage2 image,
-                std::shared_ptr<impeller::Context> context)
-      : delegate_(delegate), image_(image), context_(std::move(context)) {}
-
-  ~BorrowedFrame() {
-    if (presented_) {
-      return;
-    }
-    auto& context_vk = impeller::ContextVK::Cast(*context_);
-    if (submitted_) {
-      context_vk.GetIdleWaiter()->WaitIdle();
-    } else if (begun_) {
-      context_vk.CancelExternalFrame();
-    }
-  }
-
-  bool Begin(std::shared_ptr<const impeller::TextureSourceVK> root_image) {
-    begun_ = impeller::ContextVK::Cast(*context_).BeginExternalFrame(
-        std::move(root_image),
-        static_cast<impeller::vk::ImageLayout>(image_.layout),
-        image_.external_queue_family_index,
-        (image_.flags & kFlutterVulkanImageFlagExternalMemoryUnmodified) != 0u);
-    return begun_;
-  }
-
-  bool Acquire() {
-    return begun_ &&
-           impeller::ContextVK::Cast(*context_).AcquireExternalFrameImages();
-  }
-
-  bool Submit() {
-    if (!begun_ || submitted_ ||
-        !impeller::ContextVK::Cast(*context_).SubmitExternalFrame(
-            release_fence_)) {
-      return false;
-    }
-    submitted_ = true;
-    return true;
-  }
-
-  bool Present() {
-    if (!submitted_ || presented_) {
-      return false;
-    }
-    presented_ = true;
-    return delegate_->PresentImage2(image_, std::move(release_fence_));
-  }
-
- private:
-  GPUSurfaceVulkanDelegate* delegate_;
-  FlutterVulkanImage2 image_;
-  std::shared_ptr<impeller::Context> context_;
-  fml::UniqueFD release_fence_;
-  bool begun_ = false;
-  bool submitted_ = false;
-  bool presented_ = false;
-};
-
 GPUSurfaceVulkanImpeller::GPUSurfaceVulkanImpeller(
     GPUSurfaceVulkanDelegate* delegate,
-    std::shared_ptr<impeller::Context> context,
-    bool enable_root_msaa)
-    : delegate_(delegate), enable_root_msaa_(enable_root_msaa) {
+    std::shared_ptr<impeller::Context> context)
+    : delegate_(delegate) {
   if (!context || !context->IsValid()) {
     return;
   }
@@ -203,126 +140,6 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
         true      // display list fallback
     );
   } else {
-    if (delegate_->SupportsBorrowedImages()) {
-      FlutterVulkanImage2 image = {
-          .struct_size = sizeof(FlutterVulkanImage2),
-      };
-      if (!delegate_->AcquireImage2(size, &image)) {
-        return nullptr;
-      }
-      if (image.struct_size < sizeof(FlutterVulkanImage2) || !image.image) {
-        FML_LOG(ERROR) << "Invalid borrowed VkImage given by the embedder.";
-        return nullptr;
-      }
-
-      const auto vk_format = static_cast<impeller::vk::Format>(image.format);
-      const auto format = impeller::VkFormatToImpellerFormat(vk_format);
-      if (!format.has_value()) {
-        FML_LOG(ERROR) << "Unsupported pixel format: "
-                       << impeller::vk::to_string(vk_format);
-        return nullptr;
-      }
-
-      auto& context_vk = impeller::ContextVK::Cast(*impeller_context_);
-      context_vk.DisposeThreadLocalCachedResources();
-      const bool persistent =
-          (image.flags & kFlutterVulkanImageFlagPersistent) != 0u;
-      const auto vk_image =
-          impeller::vk::Image(reinterpret_cast<VkImage>(image.image));
-
-      impeller::TextureDescriptor desc;
-      desc.format = format.value();
-      desc.size = impeller::ISize{size.width, size.height};
-      desc.storage_mode = impeller::StorageMode::kDevicePrivate;
-      desc.mip_count = 1;
-      desc.compression_type = impeller::CompressionType::kLossless;
-      desc.usage = impeller::TextureUsage::kRenderTarget;
-
-      if (transients_ == nullptr) {
-        transients_ = std::make_shared<impeller::SwapchainTransientsVK>(
-            impeller_context_, desc, enable_root_msaa_);
-      }
-
-      std::shared_ptr<impeller::TextureSourceVK> wrapped_onscreen;
-      if (persistent) {
-        const auto found = persistent_borrowed_images_.find(image.image);
-        if (found != persistent_borrowed_images_.end()) {
-          wrapped_onscreen = found->second;
-          const auto& cached_desc = wrapped_onscreen->GetTextureDescriptor();
-          if (cached_desc.format != desc.format ||
-              cached_desc.size != desc.size ||
-              wrapped_onscreen->GetLayout() !=
-                  static_cast<impeller::vk::ImageLayout>(image.layout)) {
-            FML_LOG(ERROR) << "Persistent borrowed VkImage metadata changed.";
-            return nullptr;
-          }
-        }
-      }
-      if (!wrapped_onscreen) {
-        impeller::vk::ImageViewCreateInfo view_info = {};
-        view_info.viewType = impeller::vk::ImageViewType::e2D;
-        view_info.format = ToVKImageFormat(desc.format);
-        view_info.subresourceRange.aspectMask =
-            impeller::vk::ImageAspectFlagBits::eColor;
-        view_info.subresourceRange.levelCount = 1;
-        view_info.subresourceRange.layerCount = 1;
-        view_info.image = vk_image;
-        auto [result, image_view] =
-            context_vk.GetDevice().createImageViewUnique(view_info);
-        if (result != impeller::vk::Result::eSuccess) {
-          FML_LOG(ERROR) << "Failed to create borrowed image view: "
-                         << impeller::vk::to_string(result);
-          return nullptr;
-        }
-        wrapped_onscreen = std::make_shared<WrappedTextureSourceVK>(
-            vk_image, std::move(image_view), desc);
-        wrapped_onscreen->SetLayoutWithoutEncoding(
-            static_cast<impeller::vk::ImageLayout>(image.layout));
-        if (persistent) {
-          persistent_borrowed_images_.emplace(image.image, wrapped_onscreen);
-        }
-      }
-      auto frame =
-          std::make_shared<BorrowedFrame>(delegate_, image, impeller_context_);
-      if (!frame->Begin(wrapped_onscreen)) {
-        FML_LOG(ERROR) << "Could not begin the borrowed Vulkan frame.";
-        return nullptr;
-      }
-
-      auto surface = impeller::SurfaceVK::WrapSwapchainImage(
-          transients_, wrapped_onscreen, []() { return true; });
-      if (!surface) {
-        FML_LOG(ERROR) << "Could not wrap the borrowed Vulkan image.";
-        return nullptr;
-      }
-      const auto render_target = surface->GetRenderTarget();
-      const auto cull_rect =
-          impeller::Rect::MakeSize(render_target.GetRenderTargetSize());
-      SurfaceFrame::EncodeCallback encode_callback =
-          [aiks_context = aiks_context_, render_target, cull_rect, frame](
-              SurfaceFrame& surface_frame, DlCanvas*) mutable -> bool {
-        if (!aiks_context) {
-          return false;
-        }
-        auto display_list = surface_frame.BuildDisplayList();
-        if (!display_list || !frame->Acquire()) {
-          return false;
-        }
-        return impeller::RenderToTarget(aiks_context->GetContentContext(),
-                                        render_target, display_list, cull_rect,
-                                        /*reset_host_buffer=*/true) &&
-               frame->Submit();
-      };
-      SurfaceFrame::SubmitCallback submit_callback =
-          [frame](const SurfaceFrame&) {
-            TRACE_EVENT0("flutter", "GPUSurfaceVulkan::PresentBorrowedImage");
-            return frame->Present();
-          };
-      return std::make_unique<SurfaceFrame>(
-          nullptr, SurfaceFrame::FramebufferInfo{.supports_readback = true},
-          encode_callback, submit_callback, size, nullptr, true);
-    }
-
     FlutterVulkanImage flutter_image = delegate_->AcquireImage(size);
     if (!flutter_image.image) {
       FML_LOG(ERROR) << "Invalid VkImage given by the embedder.";

@@ -8,18 +8,4 @@ namespace flutter {
 
 GPUSurfaceVulkanDelegate::~GPUSurfaceVulkanDelegate() = default;
 
-bool GPUSurfaceVulkanDelegate::SupportsBorrowedImages() const {
-  return false;
-}
-
-bool GPUSurfaceVulkanDelegate::AcquireImage2(const DlISize& size,
-                                             FlutterVulkanImage2* image) {
-  return false;
-}
-
-bool GPUSurfaceVulkanDelegate::PresentImage2(const FlutterVulkanImage2& image,
-                                             fml::UniqueFD release_fence) {
-  return false;
-}
-
 }  // namespace flutter

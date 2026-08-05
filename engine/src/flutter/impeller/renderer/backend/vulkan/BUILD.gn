@@ -148,13 +148,6 @@ impeller_component("vulkan") {
     "yuv_conversion_vk.h",
   ]
 
-  if (is_android || is_linux) {
-    sources += [
-      "swapchain/ahb/external_semaphore_vk.cc",
-      "swapchain/ahb/external_semaphore_vk.h",
-    ]
-  }
-
   if (is_android) {
     sources += [
       "android/ahb_texture_source_vk.cc",
@@ -166,6 +159,8 @@ impeller_component("vulkan") {
       "swapchain/ahb/ahb_swapchain_vk.h",
       "swapchain/ahb/ahb_texture_pool_vk.cc",
       "swapchain/ahb/ahb_texture_pool_vk.h",
+      "swapchain/ahb/external_semaphore_vk.cc",
+      "swapchain/ahb/external_semaphore_vk.h",
     ]
   }
 
