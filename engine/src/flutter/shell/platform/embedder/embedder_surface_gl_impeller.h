@@ -10,6 +10,7 @@
 #include "flutter/shell/platform/embedder/embedder_external_view_embedder.h"
 #include "flutter/shell/platform/embedder/embedder_surface.h"
 #include "flutter/shell/platform/embedder/embedder_surface_gl_skia.h"
+#include "impeller/base/flags.h"
 
 namespace impeller {
 class ContextGLES;
@@ -31,7 +32,8 @@ class EmbedderSurfaceGLImpeller final : public EmbedderSurface,
       EmbedderSurfaceGLSkia::GLDispatchTable gl_dispatch_table,
       bool fbo_reset_after_present,
       bool fbo_zero_is_no_target,
-      std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder);
+      std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder,
+      impeller::Flags impeller_flags = {});
 
   ~EmbedderSurfaceGLImpeller() override;
 

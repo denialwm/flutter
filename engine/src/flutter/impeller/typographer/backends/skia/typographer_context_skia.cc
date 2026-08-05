@@ -222,7 +222,7 @@ static void DrawGlyph(SkCanvas* canvas,
       TypefaceSkia::Cast(*scaled_font.font.GetTypeface()).GetSkiaTypeface(),
       metrics.point_size, metrics.scaleX, metrics.skewX);
   sk_font.setEdging(SkFont::Edging::kAntiAlias);
-  sk_font.setHinting(SkFontHinting::kNormal);
+  sk_font.setHinting(SkFontHinting::kSlight);
   sk_font.setEmbolden(metrics.embolden);
   sk_font.setSubpixel(true);
   sk_font.setSize(sk_font.getSize() * static_cast<Scalar>(scaled_font.scale));
@@ -441,7 +441,7 @@ TypographerContextSkia::CollectNewGlyphs(
           TypefaceSkia::Cast(*scaled_font.font.GetTypeface()).GetSkiaTypeface(),
           metrics.point_size, metrics.scaleX, metrics.skewX);
       sk_font.setEdging(SkFont::Edging::kAntiAlias);
-      sk_font.setHinting(SkFontHinting::kNormal);
+      sk_font.setHinting(SkFontHinting::kSlight);
       sk_font.setEmbolden(metrics.embolden);
       // Rather than computing the bounds at the requested point size and
       // scaling up the bounds, we scale up the font size and request the

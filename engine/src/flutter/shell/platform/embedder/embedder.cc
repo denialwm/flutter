@@ -532,13 +532,17 @@ InferOpenGLPlatformViewCreationCallback(
         std::shared_ptr<flutter::EmbedderExternalViewEmbedder> view_embedder =
             std::move(external_view_embedder);
         if (enable_impeller) {
+          impeller::Flags impeller_flags;
+          impeller_flags.use_sdfs = shell.GetSettings().impeller_use_sdfs;
+          impeller_flags.antialiased_lines =
+              shell.GetSettings().impeller_antialiased_lines;
           return std::make_unique<flutter::PlatformViewEmbedder>(
               shell,                   // delegate
               shell.GetTaskRunners(),  // task runners
               std::make_unique<flutter::EmbedderSurfaceGLImpeller>(
                   gl_dispatch_table, fbo_reset_after_present,
-                  fbo_zero_is_no_target,
-                  view_embedder),       // embedder_surface
+                  fbo_zero_is_no_target, view_embedder,
+                  impeller_flags),      // embedder_surface
               platform_dispatch_table,  // embedder platform dispatch table
               view_embedder             // external view embedder
           );
