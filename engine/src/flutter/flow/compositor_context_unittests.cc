@@ -209,6 +209,84 @@ TEST(FrameDamageTest, ReusedTreePreservesReadbackDamageDependencies) {
       {DlIRect::MakeLTRB(10, 10, 30, 30), DlIRect::MakeLTRB(60, 60, 80, 80)});
 }
 
+TEST(FrameDamageTest,
+     ReusedTreeInvalidatesBackdropForLowerTextureButNotItsChild) {
+  auto root = std::make_shared<ContainerLayer>();
+  root->Add(
+      std::make_shared<CountingTextureLayer>(DlPoint(), DlSize(100, 100), 7));
+
+  auto clip = std::make_shared<ClipRectLayer>(DlRect::MakeLTRB(20, 20, 80, 80),
+                                              Clip::kHardEdge);
+  auto backdrop = std::make_shared<BackdropFilterLayer>(
+      DlImageFilter::MakeBlur(6, 6, DlTileMode::kClamp), DlBlendMode::kSrc);
+  backdrop->Add(std::make_shared<CountingTextureLayer>(DlPoint(20, 20),
+                                                       DlSize(60, 60), 8));
+  clip->Add(backdrop);
+  root->Add(clip);
+  LayerTree tree(root, kFrameSize);
+
+  FrameDamage initial_frame;
+  initial_frame.ComputeDamageRegion(tree, true, true);
+  ASSERT_EQ(tree.backdrop_filter_caches().size(), 1u);
+  const auto& cache = tree.backdrop_filter_caches().front();
+  EXPECT_EQ(cache.input_texture_ids, std::vector<int64_t>({7}));
+  const int64_t initial_token = cache.state->token();
+
+  const std::unordered_set<int64_t> dirty_child = {8};
+  FrameDamage child_frame;
+  child_frame.SetPreviousLayerTree(&tree);
+  child_frame.SetDirtyTextureIds(&dirty_child);
+  child_frame.SetExistingDamage(DlRegion());
+  child_frame.ComputeDamageRegion(tree, true, true);
+  EXPECT_EQ(cache.state->token(), initial_token);
+
+  const std::unordered_set<int64_t> dirty_backdrop = {7};
+  FrameDamage backdrop_frame;
+  backdrop_frame.SetPreviousLayerTree(&tree);
+  backdrop_frame.SetDirtyTextureIds(&dirty_backdrop);
+  backdrop_frame.SetExistingDamage(DlRegion());
+  backdrop_frame.ComputeDamageRegion(tree, true, true);
+  EXPECT_NE(cache.state->token(), initial_token);
+}
+
+TEST(FrameDamageTest, GroupedBackdropFiltersShareInvalidationState) {
+  auto root = std::make_shared<ContainerLayer>();
+  root->Add(
+      std::make_shared<CountingTextureLayer>(DlPoint(), DlSize(100, 100), 1));
+
+  auto first_clip = std::make_shared<ClipRectLayer>(
+      DlRect::MakeLTRB(0, 0, 40, 40), Clip::kHardEdge);
+  first_clip->Add(std::make_shared<BackdropFilterLayer>(
+      DlImageFilter::MakeBlur(6, 6, DlTileMode::kClamp), DlBlendMode::kSrc,
+      42));
+  root->Add(first_clip);
+
+  root->Add(std::make_shared<CountingTextureLayer>(DlPoint(60, 60),
+                                                   DlSize(20, 20), 2));
+  auto second_clip = std::make_shared<ClipRectLayer>(
+      DlRect::MakeLTRB(60, 60, 100, 100), Clip::kHardEdge);
+  second_clip->Add(std::make_shared<BackdropFilterLayer>(
+      DlImageFilter::MakeBlur(6, 6, DlTileMode::kClamp), DlBlendMode::kSrc,
+      42));
+  root->Add(second_clip);
+  LayerTree tree(root, kFrameSize);
+
+  FrameDamage initial_frame;
+  initial_frame.ComputeDamageRegion(tree, true, true);
+  ASSERT_EQ(tree.backdrop_filter_caches().size(), 2u);
+  EXPECT_EQ(tree.backdrop_filter_caches()[0].state,
+            tree.backdrop_filter_caches()[1].state);
+
+  const int64_t initial_token = tree.backdrop_filter_caches()[0].state->token();
+  const std::unordered_set<int64_t> dirty_between_group_members = {2};
+  FrameDamage autonomous_frame;
+  autonomous_frame.SetPreviousLayerTree(&tree);
+  autonomous_frame.SetDirtyTextureIds(&dirty_between_group_members);
+  autonomous_frame.SetExistingDamage(DlRegion());
+  autonomous_frame.ComputeDamageRegion(tree, true, true);
+  EXPECT_NE(tree.backdrop_filter_caches()[0].state->token(), initial_token);
+}
+
 }  // namespace
 }  // namespace testing
 }  // namespace flutter

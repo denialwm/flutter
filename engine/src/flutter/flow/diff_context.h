@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include "display_list/geometry/dl_region.h"
@@ -57,6 +59,30 @@ struct ReadbackRegion {
 };
 
 using ReadbackRegionList = std::vector<ReadbackRegion>;
+
+// Identifies one semantic version of a backdrop. A new token is allocated
+// whenever content below the filter changes; changes inside the filter's own
+// subtree intentionally keep the token stable.
+class BackdropFilterCacheState {
+ public:
+  BackdropFilterCacheState();
+
+  int64_t token() const { return token_; }
+  void Invalidate();
+
+ private:
+  int64_t token_;
+};
+
+// Reusable ordering metadata for autonomous external-texture frames. Only
+// textures painted before a backdrop filter can invalidate its cached input.
+struct BackdropFilterCacheMetadata {
+  std::shared_ptr<BackdropFilterCacheState> state;
+  std::vector<int64_t> input_texture_ids;
+};
+
+using BackdropFilterCacheMetadataList =
+    std::vector<BackdropFilterCacheMetadata>;
 
 // Tracks state during tree diffing process and computes resulting damage
 class DiffContext {
@@ -149,6 +175,13 @@ class DiffContext {
   void AddReadbackRegion(const DlIRect& paint_rect,
                          const DlIRect& readback_rect);
 
+  bool BackdropInputIsDirty(const DlIRect& readback_rect) const;
+
+  std::shared_ptr<BackdropFilterCacheState> RegisterBackdropFilterCache(
+      std::optional<int64_t> group_id,
+      std::shared_ptr<BackdropFilterCacheState> state,
+      const DlIRect& readback_rect);
+
   // Returns the paint region for current subtree; Each rect in paint region is
   // in screen coordinates; Once a layer accumulates the paint regions of its
   // children, this PaintRegion value can be associated with the current layer
@@ -198,8 +231,10 @@ class DiffContext {
 
   // Captures texture paint regions and readback dependencies while diffing a
   // new layer tree. The supplied containers are cleared before use.
-  void SetDiffMetadataCache(TexturePaintRegionList* texture_regions,
-                            ReadbackRegionList* readback_regions);
+  void SetDiffMetadataCache(
+      TexturePaintRegionList* texture_regions,
+      ReadbackRegionList* readback_regions,
+      BackdropFilterCacheMetadataList* backdrop_filter_caches);
 
   // Records the paint region for a TextureLayer in the active metadata cache.
   void CacheTexturePaintRegion(int64_t texture_id,
@@ -295,7 +330,10 @@ class DiffContext {
   const std::unordered_set<int64_t>* dirty_texture_ids_;
   TexturePaintRegionList* texture_region_cache_ = nullptr;
   ReadbackRegionList* readback_region_cache_ = nullptr;
+  BackdropFilterCacheMetadataList* backdrop_filter_cache_ = nullptr;
   const ReadbackRegionList* cached_readback_regions_ = nullptr;
+  std::unordered_map<int64_t, std::shared_ptr<BackdropFilterCacheState>>
+      backdrop_group_states_;
 
   void AddDamage(const DlRect& rect);
 

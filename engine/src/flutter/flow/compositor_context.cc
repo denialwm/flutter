@@ -118,6 +118,14 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
     context.PushCullRect(DlRect::MakeSize(layer_tree.frame_size()));
     if (reuse_diff_metadata) {
       context.UseCachedReadbackRegions(&layer_tree.readback_regions());
+      for (const auto& cache : layer_tree.backdrop_filter_caches()) {
+        if (std::any_of(cache.input_texture_ids.begin(),
+                        cache.input_texture_ids.end(), [&](int64_t texture_id) {
+                          return dirty_texture_ids_->contains(texture_id);
+                        })) {
+          cache.state->Invalidate();
+        }
+      }
       for (const int64_t texture_id : *dirty_texture_ids_) {
         const auto& regions = layer_tree.texture_paint_regions();
         auto region =
@@ -132,7 +140,8 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
       }
     } else {
       context.SetDiffMetadataCache(&layer_tree.texture_paint_regions(),
-                                   &layer_tree.readback_regions());
+                                   &layer_tree.readback_regions(),
+                                   &layer_tree.backdrop_filter_caches());
       DiffContext::AutoSubtreeRestore subtree(&context);
       const Layer* prev_root_layer = nullptr;
       if (!prev_layer_tree_ ||
