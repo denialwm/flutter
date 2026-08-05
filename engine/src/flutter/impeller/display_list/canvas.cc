@@ -1386,6 +1386,7 @@ void Canvas::DrawAtlas(const std::shared_ptr<AtlasContents>& atlas_contents,
 /////////////////////////////////////////
 
 void Canvas::SetupRenderPass() {
+  requires_readback_ = true;
   renderer_.GetRenderTargetCache()->Start();
   ColorAttachment color0 = render_target_.GetColorAttachment(0);
 
