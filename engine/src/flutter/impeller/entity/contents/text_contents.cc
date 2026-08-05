@@ -18,9 +18,23 @@
 #include "impeller/typographer/glyph_atlas.h"
 
 namespace impeller {
+namespace {
+
+// On Linux, FreeType rasterizes glyph coverage in gamma space while Impeller
+// composites it in linear space. Correct the coverage in the glyph shader so
+// light text does not appear washed out on dark backgrounds.
+constexpr bool kPlatformGammaCorrectionDefault =
+#if FML_OS_LINUX
+    true;
+#else
+    false;
+#endif
+
 Point SizeToPoint(Size size) {
   return Point(size.width, size.height);
 }
+
+}  // namespace
 
 using VS = GlyphAtlasPipeline::VertexShader;
 using FS = GlyphAtlasPipeline::FragmentShader;
@@ -261,6 +275,14 @@ bool TextContents::Render(const ContentContext& renderer,
   frag_info.use_text_color = force_text_color_ ? 1.0 : 0.0;
   frag_info.text_color = ToVector(color.Premultiply());
   frag_info.is_color_glyph = type == GlyphAtlas::Type::kColorBitmap;
+  if (kPlatformGammaCorrectionDefault) {
+    const Scalar luma =
+        color.red * 0.2126f + color.green * 0.7152f + color.blue * 0.0722f;
+    constexpr Scalar kMaxGammaCorrection = 1.2f;
+    frag_info.text_contrast = 1.0f + luma * kMaxGammaCorrection;
+  } else {
+    frag_info.text_contrast = 1.0f;
+  }
 
   FS::BindFragInfo(
       pass, renderer.GetTransientsDataBuffer().EmplaceUniform(frag_info));
