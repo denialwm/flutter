@@ -16,7 +16,8 @@ std::unique_ptr<Surface> SurfaceGLES::WrapFBO(
     SwapCallback swap_callback,
     GLuint fbo,
     PixelFormat color_format,
-    ISize fbo_size) {
+    ISize fbo_size,
+    bool enable_readback) {
   TRACE_EVENT0("impeller", "SurfaceGLES::WrapOnScreenFBO");
 
   if (context == nullptr || !context->IsValid() || !swap_callback) {
@@ -34,8 +35,35 @@ std::unique_ptr<Surface> SurfaceGLES::WrapFBO(
   color0_tex.storage_mode = StorageMode::kDevicePrivate;
 
   ColorAttachment color0;
-  color0.texture =
-      TextureGLES::WrapFBO(gl_context.GetReactor(), color0_tex, fbo);
+  if (enable_readback && fbo != GL_NONE) {
+    const auto& gl = gl_context.GetReactor()->GetProcTable();
+    gl.BindFramebuffer(GL_FRAMEBUFFER, fbo);
+    GLint attachment_type = GL_NONE;
+    GLint attachment_name = GL_NONE;
+    GLint attachment_level = -1;
+    gl.GetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+        GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &attachment_type);
+    if (attachment_type == GL_TEXTURE) {
+      gl.GetFramebufferAttachmentParameteriv(
+          GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+          GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &attachment_name);
+      gl.GetFramebufferAttachmentParameteriv(
+          GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+          GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL, &attachment_level);
+    }
+    if (attachment_name > GL_NONE && attachment_level == 0) {
+      color0_tex.usage =
+          TextureUsage::kRenderTarget | TextureUsage::kShaderRead;
+      color0.texture = TextureGLES::WrapFBOTexture(
+          gl_context.GetReactor(), color0_tex, fbo, attachment_name);
+    }
+  }
+  if (!color0.texture) {
+    color0_tex.usage = TextureUsage::kRenderTarget;
+    color0.texture =
+        TextureGLES::WrapFBO(gl_context.GetReactor(), color0_tex, fbo);
+  }
   color0.clear_color = Color::DarkSlateGray();
   color0.load_action = LoadAction::kClear;
   color0.store_action = StoreAction::kStore;

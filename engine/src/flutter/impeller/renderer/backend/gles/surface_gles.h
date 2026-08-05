@@ -23,7 +23,8 @@ class SurfaceGLES final : public Surface {
       SwapCallback swap_callback,
       GLuint fbo,
       PixelFormat color_format,
-      ISize fbo_size);
+      ISize fbo_size,
+      bool enable_readback = false);
 
   // |Surface|
   ~SurfaceGLES() override;
