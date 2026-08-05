@@ -1651,7 +1651,9 @@ void Canvas::SaveLayer(const Paint& paint,
       input_texture = backdrop_data->texture_slot;
     }
 
-    if (g_denial_backdrop_filter_logs.fetch_add(1) < 16) {
+    const bool is_large_backdrop = subpass_coverage.GetWidth() >= 300.0f &&
+                                   subpass_coverage.GetHeight() >= 100.0f;
+    if (is_large_backdrop && g_denial_backdrop_filter_logs.fetch_add(1) < 16) {
       const auto* blur = backdrop_filter->asBlur();
       FML_LOG(IMPORTANT) << "Denial Impeller backdrop filter: subpass="
                          << subpass_coverage.GetX() << ","
