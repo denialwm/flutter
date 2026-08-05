@@ -18,6 +18,7 @@
 #include "display_list/effects/dl_image_filter.h"
 #include "display_list/effects/image_filters/dl_blur_image_filter.h"
 #include "display_list/image/dl_image.h"
+#include "flutter/fml/closure.h"
 #include "flutter/fml/logging.h"
 #include "flutter/fml/trace_event.h"
 #include "impeller/base/validation.h"
@@ -1596,6 +1597,7 @@ void Canvas::SaveLayer(const Paint& paint,
 
   // Backdrop filter state, ignored if there is no BDF.
   std::shared_ptr<FilterContents> backdrop_filter_contents;
+  std::optional<Snapshot> isolated_backdrop_snapshot;
   Point local_position = Point(0, 0);
   if (backdrop_filter) {
     local_position = subpass_coverage.GetOrigin() - GetGlobalPassPosition();
@@ -1631,8 +1633,54 @@ void Canvas::SaveLayer(const Paint& paint,
       }
     }
 
-    if (!will_cache_backdrop_texture || !backdrop_data->texture_slot) {
-      backdrop_count_ -= backdrop_count;
+    auto consume_backdrop_count = [&]() {
+      if (!backdrop_data || !backdrop_data->backdrop_count_consumed) {
+        backdrop_count_ -= backdrop_count;
+        if (backdrop_data) {
+          backdrop_data->backdrop_count_consumed = true;
+        }
+      }
+    };
+
+    auto render_backdrop_snapshot = [&](const Snapshot& snapshot) {
+      std::shared_ptr<TextureContents> contents = TextureContents::MakeRect(
+          subpass_coverage.Shift(-GetGlobalPassPosition()));
+      auto scaled =
+          subpass_coverage.TransformBounds(snapshot.transform.Invert());
+      contents->SetTexture(snapshot.texture);
+      contents->SetSourceRect(scaled);
+      contents->SetSamplerDescriptor(snapshot.sampler_descriptor);
+
+      Entity backdrop_entity;
+      backdrop_entity.SetContents(std::move(contents));
+      backdrop_entity.SetClipDepth(++current_depth_);
+      backdrop_entity.SetBlendMode(paint.blend_mode);
+      backdrop_entity.Render(renderer_, GetCurrentRenderPass());
+      Save(0);
+    };
+
+    const bool can_cache_across_frames = backdrop_id.has_value() &&
+                                         backdrop_data &&
+                                         backdrop_data->all_filters_equal;
+    if (can_cache_across_frames) {
+      auto cached = renderer_.GetCachedBackdropSnapshot(backdrop_id.value());
+      const auto cached_coverage =
+          cached.has_value() ? cached->GetCoverage() : std::nullopt;
+      if (cached_coverage.has_value() &&
+          cached_coverage->Contains(subpass_coverage)) {
+        consume_backdrop_count();
+        if (will_cache_backdrop_texture) {
+          backdrop_data->shared_filter_snapshot = cached;
+          render_backdrop_snapshot(cached.value());
+          return;
+        }
+        isolated_backdrop_snapshot = std::move(cached);
+      }
+    }
+
+    if (!isolated_backdrop_snapshot.has_value() &&
+        (!will_cache_backdrop_texture || !backdrop_data->texture_slot)) {
+      consume_backdrop_count();
 
       // The onscreen texture can be flipped to if:
       // 1. The device supports framebuffer fetch
@@ -1654,74 +1702,76 @@ void Canvas::SaveLayer(const Paint& paint,
       if (will_cache_backdrop_texture) {
         backdrop_data->texture_slot = input_texture;
       }
-    } else {
+    } else if (!isolated_backdrop_snapshot.has_value()) {
       input_texture = backdrop_data->texture_slot;
     }
 
-    const bool is_large_backdrop = subpass_coverage.GetWidth() >= 300.0f &&
-                                   subpass_coverage.GetHeight() >= 100.0f;
-    if (is_large_backdrop && g_denial_backdrop_filter_logs.fetch_add(1) < 16) {
-      const auto* blur = backdrop_filter->asBlur();
-      FML_LOG(IMPORTANT) << "Denial Impeller backdrop filter: subpass="
-                         << subpass_coverage.GetX() << ","
-                         << subpass_coverage.GetY() << " "
-                         << subpass_coverage.GetWidth() << "x"
-                         << subpass_coverage.GetHeight()
-                         << " local=" << local_position.x << ","
-                         << local_position.y << " transform=["
-                         << transform_stack_.back().transform.m[0] << ","
-                         << transform_stack_.back().transform.m[5] << ","
-                         << transform_stack_.back().transform.m[12] << ","
-                         << transform_stack_.back().transform.m[13]
-                         << "] input=" << input_texture->GetSize().width << "x"
-                         << input_texture->GetSize().height
-                         << " input_y_scale=" << input_texture->GetYCoordScale()
-                         << " blur_bounds="
-                         << (blur && blur->bounds().has_value() ? "yes" : "no");
-    }
-
-    backdrop_filter_contents = backdrop_filter_proc(
-        FilterInput::Make(std::move(input_texture)),
-        transform_stack_.back().transform.Basis(),
-        // When the subpass has a translation that means the math with
-        // the snapshot has to be different.
-        transform_stack_.back().transform.HasTranslation()
-            ? Entity::RenderingMode::kSubpassPrependSnapshotTransform
-            : Entity::RenderingMode::kSubpassAppendSnapshotTransform);
-
-    if (will_cache_backdrop_texture) {
-      FML_DCHECK(backdrop_data);
-      // If all filters on the shared backdrop layer are equal, process the
-      // layer once.
-      if (backdrop_data->all_filters_equal &&
-          !backdrop_data->shared_filter_snapshot.has_value()) {
-        // TODO(157110): compute minimum input hint.
-        backdrop_data->shared_filter_snapshot =
-            backdrop_filter_contents->RenderToSnapshot(renderer_, {}, {});
+    if (!isolated_backdrop_snapshot.has_value()) {
+      const bool is_large_backdrop = subpass_coverage.GetWidth() >= 300.0f &&
+                                     subpass_coverage.GetHeight() >= 100.0f;
+      if (is_large_backdrop &&
+          g_denial_backdrop_filter_logs.fetch_add(1) < 16) {
+        const auto* blur = backdrop_filter->asBlur();
+        FML_LOG(IMPORTANT) << "Denial Impeller backdrop filter: subpass="
+                           << subpass_coverage.GetX() << ","
+                           << subpass_coverage.GetY() << " "
+                           << subpass_coverage.GetWidth() << "x"
+                           << subpass_coverage.GetHeight()
+                           << " local=" << local_position.x << ","
+                           << local_position.y << " transform=["
+                           << transform_stack_.back().transform.m[0] << ","
+                           << transform_stack_.back().transform.m[5] << ","
+                           << transform_stack_.back().transform.m[12] << ","
+                           << transform_stack_.back().transform.m[13]
+                           << "] input=" << input_texture->GetSize().width
+                           << "x" << input_texture->GetSize().height
+                           << " input_y_scale="
+                           << input_texture->GetYCoordScale() << " blur_bounds="
+                           << (blur && blur->bounds().has_value() ? "yes"
+                                                                  : "no");
       }
 
-      std::optional<Snapshot> maybe_snapshot =
-          backdrop_data->shared_filter_snapshot;
+      backdrop_filter_contents = backdrop_filter_proc(
+          FilterInput::Make(std::move(input_texture)),
+          transform_stack_.back().transform.Basis(),
+          // When the subpass has a translation that means the math with
+          // the snapshot has to be different.
+          transform_stack_.back().transform.HasTranslation()
+              ? Entity::RenderingMode::kSubpassPrependSnapshotTransform
+              : Entity::RenderingMode::kSubpassAppendSnapshotTransform);
+
+      auto render_persistent_snapshot = [&]() {
+        // A cross-frame snapshot must own its texture exclusively. Otherwise
+        // Impeller's per-frame render-target pool may recycle and overwrite it.
+        renderer_.GetRenderTargetCache()->DisableCache();
+        fml::ScopedCleanupClosure restore_render_target_cache(
+            [&] { renderer_.GetRenderTargetCache()->EnableCache(); });
+        return backdrop_filter_contents->RenderToSnapshot(renderer_, {}, {});
+      };
+
+      std::optional<Snapshot> maybe_snapshot;
+      if (will_cache_backdrop_texture) {
+        FML_DCHECK(backdrop_data);
+        if (backdrop_data->all_filters_equal &&
+            !backdrop_data->shared_filter_snapshot.has_value()) {
+          // TODO(157110): compute minimum input hint.
+          backdrop_data->shared_filter_snapshot = render_persistent_snapshot();
+        }
+        maybe_snapshot = backdrop_data->shared_filter_snapshot;
+      } else if (can_cache_across_frames) {
+        maybe_snapshot = render_persistent_snapshot();
+      }
+
       if (maybe_snapshot.has_value()) {
-        const Snapshot& snapshot = maybe_snapshot.value();
-        std::shared_ptr<TextureContents> contents = TextureContents::MakeRect(
-            subpass_coverage.Shift(-GetGlobalPassPosition()));
-        auto scaled =
-            subpass_coverage.TransformBounds(snapshot.transform.Invert());
-        contents->SetTexture(snapshot.texture);
-        contents->SetSourceRect(scaled);
-        contents->SetSamplerDescriptor(snapshot.sampler_descriptor);
-
-        // This backdrop entity sets a depth value as it is written to the newly
-        // flipped backdrop and not into a new saveLayer.
-        Entity backdrop_entity;
-        backdrop_entity.SetContents(std::move(contents));
-        backdrop_entity.SetClipDepth(++current_depth_);
-        backdrop_entity.SetBlendMode(paint.blend_mode);
-
-        backdrop_entity.Render(renderer_, GetCurrentRenderPass());
-        Save(0);
-        return;
+        if (can_cache_across_frames) {
+          renderer_.CacheBackdropSnapshot(backdrop_id.value(),
+                                          maybe_snapshot.value());
+        }
+        if (will_cache_backdrop_texture) {
+          render_backdrop_snapshot(maybe_snapshot.value());
+          return;
+        }
+        isolated_backdrop_snapshot = std::move(maybe_snapshot);
       }
     }
   }
@@ -1758,15 +1808,23 @@ void Canvas::SaveLayer(const Paint& paint,
   // the subpass will affect in the parent pass.
   clip_coverage_stack_.PushSubpass(subpass_coverage, GetClipHeight());
 
-  if (!backdrop_filter_contents) {
+  if (!backdrop_filter_contents && !isolated_backdrop_snapshot.has_value()) {
     return;
   }
 
   // Render the backdrop entity.
   Entity backdrop_entity;
-  backdrop_entity.SetContents(std::move(backdrop_filter_contents));
-  backdrop_entity.SetTransform(
-      Matrix::MakeTranslation(Vector3(-local_position)));
+  if (isolated_backdrop_snapshot.has_value()) {
+    const Snapshot& snapshot = isolated_backdrop_snapshot.value();
+    backdrop_entity = Entity::FromSnapshot(snapshot, BlendMode::kSrcOver);
+    backdrop_entity.SetTransform(
+        Matrix::MakeTranslation(Vector3(-local_position)) *
+        backdrop_entity.GetTransform());
+  } else {
+    backdrop_entity.SetContents(std::move(backdrop_filter_contents));
+    backdrop_entity.SetTransform(
+        Matrix::MakeTranslation(Vector3(-local_position)));
+  }
   backdrop_entity.SetClipDepth(std::numeric_limits<uint32_t>::max());
   backdrop_entity.Render(renderer_, GetCurrentRenderPass());
 }

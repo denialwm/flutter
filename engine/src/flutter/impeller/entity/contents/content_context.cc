@@ -30,6 +30,9 @@ namespace impeller {
 
 namespace {
 
+constexpr size_t kBackdropSnapshotCacheMaxEntries = 64u;
+constexpr size_t kBackdropSnapshotCacheMaxBytes = 64u * 1024u * 1024u;
+
 /// A generic version of `Variants` which mostly exists to reduce code size.
 class GenericVariants {
  public:
@@ -1013,6 +1016,56 @@ void ContentContext::ResetTransientsBuffers() {
   // buffer twice.
   if (data_host_buffer_ != indexes_host_buffer_) {
     indexes_host_buffer_->Reset();
+  }
+}
+
+std::optional<Snapshot> ContentContext::GetCachedBackdropSnapshot(int64_t key) {
+  auto found = backdrop_snapshot_cache_.find(key);
+  if (found == backdrop_snapshot_cache_.end()) {
+    return std::nullopt;
+  }
+  found->second.last_access = ++backdrop_snapshot_cache_access_;
+  return found->second.snapshot;
+}
+
+void ContentContext::CacheBackdropSnapshot(int64_t key,
+                                           const Snapshot& snapshot) {
+  if (!snapshot.texture) {
+    return;
+  }
+  const size_t byte_size =
+      snapshot.texture->GetTextureDescriptor().GetByteSizeOfBaseMipLevel();
+
+  auto found = backdrop_snapshot_cache_.find(key);
+  if (found != backdrop_snapshot_cache_.end()) {
+    backdrop_snapshot_cache_bytes_ -= found->second.byte_size;
+    found->second = BackdropSnapshotCacheEntry{
+        snapshot, byte_size, ++backdrop_snapshot_cache_access_};
+  } else {
+    backdrop_snapshot_cache_.emplace(
+        key, BackdropSnapshotCacheEntry{snapshot, byte_size,
+                                        ++backdrop_snapshot_cache_access_});
+  }
+  backdrop_snapshot_cache_bytes_ += byte_size;
+
+  while (backdrop_snapshot_cache_.size() > kBackdropSnapshotCacheMaxEntries ||
+         backdrop_snapshot_cache_bytes_ > kBackdropSnapshotCacheMaxBytes) {
+    auto oldest = backdrop_snapshot_cache_.end();
+    for (auto candidate = backdrop_snapshot_cache_.begin();
+         candidate != backdrop_snapshot_cache_.end(); ++candidate) {
+      if (candidate->first == key) {
+        continue;
+      }
+      if (oldest == backdrop_snapshot_cache_.end() ||
+          candidate->second.last_access < oldest->second.last_access) {
+        oldest = candidate;
+      }
+    }
+    if (oldest == backdrop_snapshot_cache_.end()) {
+      break;
+    }
+    backdrop_snapshot_cache_bytes_ -= oldest->second.byte_size;
+    backdrop_snapshot_cache_.erase(oldest);
   }
 }
 

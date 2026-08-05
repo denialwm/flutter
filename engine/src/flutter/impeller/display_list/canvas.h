@@ -40,6 +40,7 @@ namespace impeller {
 struct BackdropData {
   size_t backdrop_count = 0;
   bool all_filters_equal = true;
+  bool backdrop_count_consumed = false;
   std::shared_ptr<Texture> texture_slot;
   // A single snapshot of the backdrop filter that is used when there are
   // multiple backdrops that share an identical filter.

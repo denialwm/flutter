@@ -25,6 +25,12 @@ class BackdropFilterLayer : public ContainerLayer {
   std::shared_ptr<DlImageFilter> filter_;
   DlBlendMode blend_mode_;
   std::optional<int64_t> backdrop_id_;
+  std::shared_ptr<BackdropFilterCacheState> backdrop_cache_state_ =
+      std::make_shared<BackdropFilterCacheState>();
+  DlIRect backdrop_cache_target_;
+  DlIRect backdrop_cache_input_;
+  DlMatrix backdrop_cache_matrix_;
+  bool backdrop_cache_prepared_ = false;
 
   FML_DISALLOW_COPY_AND_ASSIGN(BackdropFilterLayer);
 };

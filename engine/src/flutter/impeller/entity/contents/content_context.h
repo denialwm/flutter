@@ -23,6 +23,7 @@
 #include "impeller/renderer/pipeline.h"
 #include "impeller/renderer/pipeline_descriptor.h"
 #include "impeller/renderer/render_target.h"
+#include "impeller/renderer/snapshot.h"
 #include "impeller/typographer/lazy_glyph_atlas.h"
 #include "impeller/typographer/typographer_context.h"
 
@@ -304,6 +305,12 @@ class ContentContext {
 
   TextShadowCache& GetTextShadowCache() const { return *text_shadow_cache_; }
 
+  // Backdrop snapshots are semantic, cross-frame cache entries. Their keys
+  // are versioned by Flutter's ordered layer diff, so a hit means the pixels
+  // sampled below the filter are unchanged even if its child repaints.
+  std::optional<Snapshot> GetCachedBackdropSnapshot(int64_t key);
+  void CacheBackdropSnapshot(int64_t key, const Snapshot& snapshot);
+
  protected:
   // Visible for testing.
   void SetTransientsIndexesBuffer(std::shared_ptr<HostBuffer> host_buffer) {
@@ -363,6 +370,16 @@ class ContentContext {
   std::shared_ptr<HostBuffer> indexes_host_buffer_;
   std::shared_ptr<Texture> empty_texture_;
   std::unique_ptr<TextShadowCache> text_shadow_cache_;
+
+  struct BackdropSnapshotCacheEntry {
+    Snapshot snapshot;
+    size_t byte_size;
+    uint64_t last_access;
+  };
+  std::unordered_map<int64_t, BackdropSnapshotCacheEntry>
+      backdrop_snapshot_cache_;
+  size_t backdrop_snapshot_cache_bytes_ = 0u;
+  uint64_t backdrop_snapshot_cache_access_ = 0u;
 
   ContentContext(const ContentContext&) = delete;
 

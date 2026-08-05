@@ -15,24 +15,43 @@ BackdropFilterLayer::BackdropFilterLayer(
 void BackdropFilterLayer::Diff(DiffContext* context, const Layer* old_layer) {
   DiffContext::AutoSubtreeRestore subtree(context);
   auto* prev = static_cast<const BackdropFilterLayer*>(old_layer);
-  if (!context->IsSubtreeDirty()) {
-    FML_DCHECK(prev);
-    if (NotEquals(filter_, prev->filter_)) {
-      context->MarkSubtreeDirty(context->GetOldLayerPaintRegion(old_layer));
-    }
-  }
+  const bool filter_changed = prev && NotEquals(filter_, prev->filter_);
 
   // Backdrop filter paints everywhere in cull rect
   auto paint_bounds = context->GetCullRect();
-  context->AddLayerBounds(paint_bounds);
 
   if (filter_) {
-    paint_bounds = context->MapRect(paint_bounds);
-    auto filter_target_bounds = DlIRect::RoundOut(paint_bounds);
+    auto mapped_paint_bounds = context->MapRect(paint_bounds);
+    auto filter_target_bounds = DlIRect::RoundOut(mapped_paint_bounds);
     DlIRect filter_input_bounds;  // in screen coordinates
     filter_->get_input_device_bounds(filter_target_bounds, context->GetMatrix(),
                                      filter_input_bounds);
+
+    const bool compatible =
+        prev && prev->backdrop_cache_prepared_ && !filter_changed &&
+        filter_target_bounds == prev->backdrop_cache_target_ &&
+        filter_input_bounds == prev->backdrop_cache_input_ &&
+        context->GetMatrix() == prev->backdrop_cache_matrix_;
+    if (compatible) {
+      backdrop_cache_state_ = prev->backdrop_cache_state_;
+    }
+    backdrop_cache_state_ = context->RegisterBackdropFilterCache(
+        backdrop_id_, std::move(backdrop_cache_state_), filter_input_bounds);
+    if (!compatible || context->BackdropInputIsDirty(filter_input_bounds)) {
+      backdrop_cache_state_->Invalidate();
+    }
+    backdrop_cache_target_ = filter_target_bounds;
+    backdrop_cache_input_ = filter_input_bounds;
+    backdrop_cache_matrix_ = context->GetMatrix();
+    backdrop_cache_prepared_ = true;
+
+    if (filter_changed && !context->IsSubtreeDirty()) {
+      context->MarkSubtreeDirty(context->GetOldLayerPaintRegion(old_layer));
+    }
+    context->AddLayerBounds(paint_bounds);
     context->AddReadbackRegion(filter_target_bounds, filter_input_bounds);
+  } else {
+    context->AddLayerBounds(paint_bounds);
   }
 
   DiffChildren(context, prev);
@@ -59,8 +78,11 @@ void BackdropFilterLayer::Paint(PaintContext& context) const {
   FML_DCHECK(needs_painting(context));
 
   auto mutator = context.state_stack.save();
-  mutator.applyBackdropFilter(paint_bounds(), filter_, blend_mode_,
-                              backdrop_id_);
+  mutator.applyBackdropFilter(
+      paint_bounds(), filter_, blend_mode_,
+      backdrop_cache_prepared_
+          ? std::make_optional(backdrop_cache_state_->token())
+          : backdrop_id_);
 
   PaintChildren(context);
 }

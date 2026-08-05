@@ -5,12 +5,19 @@
 #include "flutter/flow/diff_context.h"
 
 #include <algorithm>
+#include <atomic>
 
 #include "flutter/flow/layers/layer.h"
 #include "flutter/flow/raster_cache_util.h"
 
 namespace flutter {
 namespace {
+
+std::atomic<int64_t> g_next_backdrop_cache_token = 1;
+
+int64_t NextBackdropCacheToken() {
+  return g_next_backdrop_cache_token.fetch_add(1, std::memory_order_relaxed);
+}
 
 bool RegionsEqual(const DlRegion& a, const DlRegion& b) {
   return a.getRects(false) == b.getRects(false);
@@ -21,6 +28,13 @@ DlRegion RegionFromRects(std::initializer_list<DlIRect> rects) {
 }
 
 }  // namespace
+
+BackdropFilterCacheState::BackdropFilterCacheState()
+    : token_(NextBackdropCacheToken()) {}
+
+void BackdropFilterCacheState::Invalidate() {
+  token_ = NextBackdropCacheToken();
+}
 
 DiffContext::DiffContext(DlISize frame_size,
                          PaintRegionMap& this_frame_paint_region_map,
@@ -287,15 +301,57 @@ void DiffContext::AddReadbackRegion(const DlIRect& paint_rect,
   }
 }
 
-void DiffContext::SetDiffMetadataCache(TexturePaintRegionList* texture_regions,
-                                       ReadbackRegionList* readback_regions) {
+bool DiffContext::BackdropInputIsDirty(const DlIRect& readback_rect) const {
+  return damage_.intersects(DlRegion(readback_rect));
+}
+
+std::shared_ptr<BackdropFilterCacheState>
+DiffContext::RegisterBackdropFilterCache(
+    std::optional<int64_t> group_id,
+    std::shared_ptr<BackdropFilterCacheState> state,
+    const DlIRect& readback_rect) {
+  if (group_id.has_value()) {
+    auto [entry, inserted] =
+        backdrop_group_states_.try_emplace(group_id.value(), state);
+    if (!inserted) {
+      state = entry->second;
+    }
+  }
+
+  if (backdrop_filter_cache_) {
+    BackdropFilterCacheMetadata metadata{.state = state};
+    std::unordered_set<int64_t> seen;
+    for (const auto& texture : *texture_region_cache_) {
+      bool intersects = false;
+      for (const DlRect& rect : texture.paint_region) {
+        if (DlIRect::RoundOut(rect).IntersectsWithRect(readback_rect)) {
+          intersects = true;
+          break;
+        }
+      }
+      if (intersects && seen.insert(texture.texture_id).second) {
+        metadata.input_texture_ids.push_back(texture.texture_id);
+      }
+    }
+    backdrop_filter_cache_->push_back(std::move(metadata));
+  }
+  return state;
+}
+
+void DiffContext::SetDiffMetadataCache(
+    TexturePaintRegionList* texture_regions,
+    ReadbackRegionList* readback_regions,
+    BackdropFilterCacheMetadataList* backdrop_filter_caches) {
   FML_DCHECK(texture_regions);
   FML_DCHECK(readback_regions);
+  FML_DCHECK(backdrop_filter_caches);
   FML_DCHECK(!cached_readback_regions_);
   texture_regions->clear();
   readback_regions->clear();
+  backdrop_filter_caches->clear();
   texture_region_cache_ = texture_regions;
   readback_region_cache_ = readback_regions;
+  backdrop_filter_cache_ = backdrop_filter_caches;
 }
 
 void DiffContext::CacheTexturePaintRegion(int64_t texture_id,
