@@ -132,7 +132,9 @@ CapabilitiesGLES::CapabilitiesGLES(const ProcTableGLES& gl) {
   }
 
   if (desc->HasExtension(kMultisampledRenderToTextureExt)) {
-    supports_implicit_msaa_ = true;
+    // GLES 3 can use core multisample renderbuffers and explicit resolves.
+    // Keep the extension path only for GLES 2, where those APIs are absent.
+    supports_implicit_msaa_ = desc->GetGlVersion().major_version < 3;
 
     if (desc->HasExtension(kMultisampledRenderToTexture2Ext)) {
       // We hard-code 4x MSAA, so let's make sure it's supported.
