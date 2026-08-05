@@ -81,7 +81,7 @@ TEST(EmbedderSurfaceGLImpellerTest, GLES2ContextDoesNotHaveGLES3Shaders) {
 }
 
 TEST(EmbedderSurfaceGLImpellerTest,
-     ImpellerPresentPreservesFBOAndReportsFullDamage) {
+     ImpellerPresentPreservesFBOAndReportsDamage) {
   auto gl_dispatch_table = StubDispatchTable(/* version */ "OpenGL ES 3.0");
   uint32_t presented_fbo = 0u;
   std::optional<DlRegion> frame_damage;
@@ -98,13 +98,19 @@ TEST(EmbedderSurfaceGLImpellerTest,
       /* external_view_embedder */ nullptr);
 
   const DlISize frame_size = DlISize(64, 32);
+  const DlRegion expected_frame_damage(DlIRect::MakeLTRB(4, 5, 20, 16));
+  const DlRegion expected_buffer_damage(DlIRect::MakeLTRB(2, 3, 24, 18));
+  SurfaceFrame::SubmitInfo submit_info = {
+      .frame_damage = expected_frame_damage,
+      .buffer_damage = expected_buffer_damage,
+  };
   EXPECT_TRUE(GPUSurfaceGLImpeller::PresentFrame(&surface, /* fbo_id */ 73u,
-                                                 frame_size));
+                                                 frame_size, submit_info));
   EXPECT_EQ(presented_fbo, 73u);
   ASSERT_TRUE(frame_damage.has_value());
   ASSERT_TRUE(buffer_damage.has_value());
-  EXPECT_EQ(frame_damage->bounds(), DlIRect::MakeSize(frame_size));
-  EXPECT_EQ(buffer_damage->bounds(), DlIRect::MakeSize(frame_size));
+  EXPECT_EQ(frame_damage->getRects(), expected_frame_damage.getRects());
+  EXPECT_EQ(buffer_damage->getRects(), expected_buffer_damage.getRects());
 }
 
 TEST(EmbedderSurfaceGLImpellerTest,

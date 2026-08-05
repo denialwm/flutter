@@ -201,11 +201,10 @@ EmbedderSurfaceGLImpeller::GetGLProcResolver() const {
 // |GPUSurfaceGLDelegate|
 SurfaceFrame::FramebufferInfo
 EmbedderSurfaceGLImpeller::GLContextFramebufferInfo() const {
-  // SurfaceGLES clears the color attachment on every frame. Do not advertise
-  // partial repaint until it can preserve the selected rotating FBO.
   auto info = SurfaceFrame::FramebufferInfo{};
   info.supports_readback = true;
-  info.supports_partial_repaint = false;
+  info.supports_partial_repaint =
+      gl_dispatch_table_.gl_populate_existing_damage != nullptr;
   return info;
 }
 
