@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "fml/trace_event.h"
+#include "flutter/common/backdrop_filter_cache_key.h"
 #include "impeller/base/validation.h"
 #include "impeller/core/formats.h"
 #include "impeller/core/texture_descriptor.h"
@@ -1033,6 +1034,23 @@ void ContentContext::CacheBackdropSnapshot(int64_t key,
   if (!snapshot.texture) {
     return;
   }
+
+  const uint32_t family = flutter::GetBackdropFilterCacheFamily(key);
+  if (family != 0u) {
+    // A filter's previous generations can never become valid again. Retiring
+    // them here prevents moving filters from evicting unrelated snapshots.
+    for (auto existing = backdrop_snapshot_cache_.begin();
+         existing != backdrop_snapshot_cache_.end();) {
+      if (existing->first != key &&
+          flutter::GetBackdropFilterCacheFamily(existing->first) == family) {
+        backdrop_snapshot_cache_bytes_ -= existing->second.byte_size;
+        existing = backdrop_snapshot_cache_.erase(existing);
+      } else {
+        existing++;
+      }
+    }
+  }
+
   const size_t byte_size =
       snapshot.texture->GetTextureDescriptor().GetByteSizeOfBaseMipLevel();
 

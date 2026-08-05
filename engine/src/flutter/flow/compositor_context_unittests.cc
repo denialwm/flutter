@@ -246,7 +246,10 @@ TEST(FrameDamageTest,
   backdrop_frame.SetDirtyTextureIds(&dirty_backdrop);
   backdrop_frame.SetExistingDamage(DlRegion());
   backdrop_frame.ComputeDamageRegion(tree, true, true);
-  EXPECT_NE(cache.state->token(), initial_token);
+  const int64_t invalidated_token = cache.state->token();
+  EXPECT_NE(invalidated_token, initial_token);
+  EXPECT_EQ(GetBackdropFilterCacheFamily(invalidated_token),
+            GetBackdropFilterCacheFamily(initial_token));
 }
 
 TEST(FrameDamageTest, GroupedBackdropFiltersShareInvalidationState) {

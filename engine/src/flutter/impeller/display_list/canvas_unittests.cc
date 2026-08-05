@@ -4,6 +4,7 @@
 
 #include <unordered_map>
 
+#include "flutter/common/backdrop_filter_cache_key.h"
 #include "flutter/display_list/dl_tile_mode.h"
 #include "flutter/display_list/effects/dl_image_filter.h"
 #include "flutter/display_list/geometry/dl_geometry_types.h"
@@ -67,6 +68,30 @@ std::unique_ptr<Canvas> CreateTestCanvas(
   }
   return std::make_unique<Canvas>(context, render_target, /*is_onscreen=*/false,
                                   /*requires_readback=*/requires_readback);
+}
+
+TEST_P(AiksTest, BackdropSnapshotCacheReplacesOlderFamilyGeneration) {
+  ContentContext context(GetContext(), nullptr);
+  TextureDescriptor texture_descriptor;
+  texture_descriptor.size = {4, 4};
+  texture_descriptor.format =
+      context.GetDeviceCapabilities().GetDefaultColorFormat();
+  texture_descriptor.usage = TextureUsage::kRenderTarget;
+  texture_descriptor.storage_mode = StorageMode::kDevicePrivate;
+
+  auto texture = context.GetContext()->GetResourceAllocator()->CreateTexture(
+      texture_descriptor);
+  ASSERT_TRUE(texture);
+  Snapshot snapshot{.texture = texture};
+
+  const int64_t first = flutter::MakeBackdropFilterCacheKey(7u, 1u);
+  const int64_t second = flutter::MakeBackdropFilterCacheKey(7u, 2u);
+  context.CacheBackdropSnapshot(first, snapshot);
+  EXPECT_TRUE(context.GetCachedBackdropSnapshot(first).has_value());
+
+  context.CacheBackdropSnapshot(second, snapshot);
+  EXPECT_FALSE(context.GetCachedBackdropSnapshot(first).has_value());
+  EXPECT_TRUE(context.GetCachedBackdropSnapshot(second).has_value());
 }
 
 TEST_P(AiksTest, TransformMultipliesCorrectly) {
