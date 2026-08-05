@@ -130,8 +130,8 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
       swap_callback,                             // swap_callback
       fbo_info.fbo_id,                           // fbo
       impeller::PixelFormat::kR8G8B8A8UNormInt,  // color_format
-      impeller::ISize{size.width, size.height}   // fbo_size
-  );
+      impeller::ISize{size.width, size.height},  // fbo_size
+      delegate_->GLContextFramebufferInfo().supports_readback);
   if (!surface) {
     FML_LOG(ERROR) << "Could not wrap Impeller OpenGL FBO " << fbo_info.fbo_id
                    << ".";

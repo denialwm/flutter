@@ -1386,7 +1386,6 @@ void Canvas::DrawAtlas(const std::shared_ptr<AtlasContents>& atlas_contents,
 /////////////////////////////////////////
 
 void Canvas::SetupRenderPass() {
-  requires_readback_ = true;
   renderer_.GetRenderTargetCache()->Start();
   ColorAttachment color0 = render_target_.GetColorAttachment(0);
 
@@ -1408,6 +1407,13 @@ void Canvas::SetupRenderPass() {
   // Set up the clear color of the root pass.
   color0.clear_color = Color::BlackTransparent();
   render_target_.SetColorAttachment(color0, 0);
+
+  const TextureDescriptor& root_texture =
+      color0.texture->GetTextureDescriptor();
+  if (requires_readback_ && (root_texture.usage & TextureUsage::kShaderRead) &&
+      root_texture.sample_count == SampleCount::kCount1) {
+    requires_readback_ = false;
+  }
 
   // If requires_readback is true, then there is a backdrop filter or emulated
   // advanced blend in the first save layer. This requires a readback, which
@@ -1676,7 +1682,7 @@ void Canvas::SaveLayer(const Paint& paint,
 
     backdrop_filter_contents = backdrop_filter_proc(
         FilterInput::Make(std::move(input_texture)),
-        transform_stack_.back().transform,
+        transform_stack_.back().transform.Basis(),
         // When the subpass has a translation that means the math with
         // the snapshot has to be different.
         transform_stack_.back().transform.HasTranslation()
@@ -2320,27 +2326,30 @@ std::shared_ptr<Texture> Canvas::FlipBackdrop(Point global_pass_position,
                        << " remove=" << should_remove_texture;
   }
 
-  // Eagerly restore the BDF contents.
+  const ColorAttachment current_color = render_passes_.back()
+                                            .GetEntityPassTarget()
+                                            ->GetRenderTarget()
+                                            .GetColorAttachment(0);
+  if (current_color.resolve_texture) {
+    // MSAA attachments cannot load their single-sample resolve texture. Copy
+    // the resolved backdrop into the new attachment instead. Single-sample
+    // targets preserve the same storage with LoadAction::kLoad and need no
+    // restore draw.
+    Rect size_rect = Rect::MakeSize(input_texture->GetSize());
+    auto msaa_backdrop_contents = TextureContents::MakeRect(size_rect);
+    msaa_backdrop_contents->SetStencilEnabled(false);
+    msaa_backdrop_contents->SetLabel("MSAA backdrop");
+    msaa_backdrop_contents->SetSourceRect(size_rect);
+    msaa_backdrop_contents->SetTexture(input_texture);
 
-  // If the pass context returns a backdrop texture, we need to draw it to the
-  // current pass. We do this because it's faster and takes significantly less
-  // memory than storing/loading large MSAA textures. Also, it's not possible
-  // to blit the non-MSAA resolve texture of the previous pass to MSAA
-  // textures (let alone a transient one).
-  Rect size_rect = Rect::MakeSize(input_texture->GetSize());
-  auto msaa_backdrop_contents = TextureContents::MakeRect(size_rect);
-  msaa_backdrop_contents->SetStencilEnabled(false);
-  msaa_backdrop_contents->SetLabel("MSAA backdrop");
-  msaa_backdrop_contents->SetSourceRect(size_rect);
-  msaa_backdrop_contents->SetTexture(input_texture);
-
-  Entity msaa_backdrop_entity;
-  msaa_backdrop_entity.SetContents(std::move(msaa_backdrop_contents));
-  msaa_backdrop_entity.SetBlendMode(BlendMode::kSrc);
-  msaa_backdrop_entity.SetClipDepth(std::numeric_limits<uint32_t>::max());
-  if (!msaa_backdrop_entity.Render(renderer_, current_render_pass)) {
-    VALIDATION_LOG << "Failed to render MSAA backdrop entity.";
-    return nullptr;
+    Entity msaa_backdrop_entity;
+    msaa_backdrop_entity.SetContents(std::move(msaa_backdrop_contents));
+    msaa_backdrop_entity.SetBlendMode(BlendMode::kSrc);
+    msaa_backdrop_entity.SetClipDepth(std::numeric_limits<uint32_t>::max());
+    if (!msaa_backdrop_entity.Render(renderer_, current_render_pass)) {
+      VALIDATION_LOG << "Failed to render MSAA backdrop entity.";
+      return nullptr;
+    }
   }
 
   // Restore any clips that were recorded before the backdrop filter was

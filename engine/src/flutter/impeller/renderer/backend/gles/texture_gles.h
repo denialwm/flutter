@@ -46,6 +46,18 @@ class TextureGLES final : public Texture,
       GLuint fbo);
 
   //----------------------------------------------------------------------------
+  /// @brief      Wrap an external framebuffer and its borrowed color texture.
+  ///
+  ///             Rendering continues to use the caller-owned framebuffer,
+  ///             while shader reads bind the caller-owned texture directly.
+  ///             Neither GL object is deleted by Impeller.
+  static std::shared_ptr<TextureGLES> WrapFBOTexture(
+      std::shared_ptr<ReactorGLES> reactor,
+      TextureDescriptor desc,
+      GLuint fbo,
+      GLuint texture);
+
+  //----------------------------------------------------------------------------
   /// @brief      Create a texture by wrapping an external OpenGL texture
   ///             handle. Ownership of the texture handle is assumed by the
   ///             reactor.

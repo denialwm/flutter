@@ -87,6 +87,28 @@ std::shared_ptr<TextureGLES> TextureGLES::WrapFBO(
   return texture;
 }
 
+std::shared_ptr<TextureGLES> TextureGLES::WrapFBOTexture(
+    std::shared_ptr<ReactorGLES> reactor,
+    TextureDescriptor desc,
+    GLuint fbo,
+    GLuint texture_name) {
+  if (!reactor || texture_name == GL_NONE) {
+    return nullptr;
+  }
+  HandleGLES texture_handle =
+      reactor->CreateHandle(HandleType::kTexture, texture_name);
+  if (!reactor->RegisterCleanupCallback(texture_handle, [] {})) {
+    reactor->CollectHandle(texture_handle);
+    return nullptr;
+  }
+  auto texture = std::shared_ptr<TextureGLES>(
+      new TextureGLES(std::move(reactor), desc, false, fbo, texture_handle));
+  if (!texture->IsValid()) {
+    return nullptr;
+  }
+  return texture;
+}
+
 std::shared_ptr<TextureGLES> TextureGLES::WrapTexture(
     std::shared_ptr<ReactorGLES> reactor,
     TextureDescriptor desc,
