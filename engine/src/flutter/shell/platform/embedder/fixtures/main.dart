@@ -1597,6 +1597,49 @@ void render_texture_impeller_test() {
 
 @pragma('vm:entry-point')
 // ignore: non_constant_identifier_names
+void render_impeller_bounded_backdrop_test() {
+  PlatformDispatcher.instance.onBeginFrame = (Duration duration) {
+    const size = Size(800.0, 600.0);
+    final backgroundRecorder = PictureRecorder();
+    final background = Canvas(backgroundRecorder);
+    background.drawRect(
+      const Rect.fromLTWH(0, 0, 400, 600),
+      Paint()..color = const Color(0xFFFF0000),
+    );
+    background.drawRect(
+      const Rect.fromLTWH(400, 0, 400, 600),
+      Paint()..color = const Color(0xFF0000FF),
+    );
+
+    final foregroundRecorder = PictureRecorder();
+    final foreground = Canvas(foregroundRecorder);
+    foreground.drawRect(
+      const Rect.fromLTWH(200, 100, 400, 400),
+      Paint()..color = const Color(0x40FFFFFF),
+    );
+
+    final builder = SceneBuilder();
+    builder.addPicture(Offset.zero, backgroundRecorder.endRecording());
+    builder.pushClipRect(const Rect.fromLTWH(200, 100, 400, 400));
+    builder.pushBackdropFilter(
+      ImageFilter.blur(
+        sigmaX: 20,
+        sigmaY: 20,
+        tileMode: TileMode.clamp,
+        bounds: const Rect.fromLTWH(200, 100, 400, 400),
+      ),
+      blendMode: BlendMode.src,
+    );
+    builder.addPicture(Offset.zero, foregroundRecorder.endRecording());
+    builder.pop();
+    builder.pop();
+    PlatformDispatcher.instance.views.first.render(builder.build());
+  };
+  PlatformDispatcher.instance.scheduleFrame();
+}
+
+@pragma('vm:entry-point')
+// ignore: non_constant_identifier_names
 void render_impeller_text_test() {
   PlatformDispatcher.instance.onBeginFrame = (Duration duration) {
     final builder = SceneBuilder();

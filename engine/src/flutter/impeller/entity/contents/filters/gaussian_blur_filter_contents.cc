@@ -259,7 +259,11 @@ Quad RemapQuadCoords(const Quad& input, Scalar texture_sampler_y_coord_scale) {
 // [Top-Left, Top-Right, Bottom-Left, Bottom-Right] (a "Z-order" layout,
 // conforming to the return format of Rect::GetPoints()).
 Matrix PrecomputeQuadLineParameters(const Quad& bounds) {
-  auto computeLine = [](const Point& p0, const Point& p1) -> Vector4 {
+  // Reflections reverse the quad's winding. Keep the signed distances positive
+  // on the inside regardless of the transform that produced the bounds.
+  const Scalar winding =
+      Point::Cross(bounds[0], bounds[1], bounds[2]) < 0.0f ? -1.0f : 1.0f;
+  auto computeLine = [winding](const Point& p0, const Point& p1) -> Vector4 {
     // We are deriving the 2D line equation Ax + By + C = 0.
 
     // The normal vector N = (A, B) is perpendicular to the line's
@@ -274,7 +278,7 @@ Matrix PrecomputeQuadLineParameters(const Quad& bounds) {
     // The constant C is solved by ensuring the line passes through p0:
     // A*p0.x + B*p0.y + C = 0
     Scalar C = -(A * p0.x + B * p0.y);
-    return Vector4(A, B, C, 0.0);
+    return Vector4(A * winding, B * winding, C * winding, 0.0);
   };
 
   const Point& topLeft = bounds[0];

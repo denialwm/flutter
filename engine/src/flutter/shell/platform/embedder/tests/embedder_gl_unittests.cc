@@ -4979,6 +4979,41 @@ TEST_F(EmbedderTest, RenderTextureWithImpellerOpenGL) {
   }
 }
 
+TEST_F(EmbedderTest, RenderBoundedBackdropWithImpellerOpenGLAndRootTransform) {
+  constexpr int kWidth = 800;
+  constexpr int kHeight = 600;
+  auto& context = GetEmbedderContext<EmbedderTestContextGL>();
+  EmbedderConfigBuilder builder(context);
+  fml::AutoResetWaitableEvent latch;
+  context.SetGLPresentCallback(
+      [&](FlutterPresentInfo present_info) { latch.Signal(); });
+  context.SetRootSurfaceTransformation(DlMatrix::MakeTranslation({0, kHeight}) *
+                                       DlMatrix::MakeScale({1, -1, 1}));
+  builder.AddCommandLineArgument("--enable-impeller");
+  builder.SetDartEntrypoint("render_impeller_bounded_backdrop_test");
+  builder.SetSurface(DlISize(kWidth, kHeight));
+
+  auto rendered_scene = context.GetNextSceneImage();
+  auto engine = builder.LaunchEngine();
+  ASSERT_TRUE(engine.is_valid());
+
+  FlutterWindowMetricsEvent event = {};
+  event.struct_size = sizeof(event);
+  event.width = kWidth;
+  event.height = kHeight;
+  event.pixel_ratio = 1.0;
+  ASSERT_EQ(FlutterEngineSendWindowMetricsEvent(engine.get(), &event),
+            kSuccess);
+  latch.Wait();
+
+  auto image = rendered_scene.get();
+  ASSERT_TRUE(image);
+  SkPixmap pixels;
+  ASSERT_TRUE(image->peekPixels(&pixels));
+  const auto panel = pixels.getColor(300, 300);
+  EXPECT_GT(SkColorGetR(panel), SkColorGetG(panel) + 80u);
+}
+
 TEST_F(EmbedderTest, RenderTextureWithImpellerOpenGLDestructCallback) {
   constexpr int kWidth = 800;
   constexpr int kHeight = 600;

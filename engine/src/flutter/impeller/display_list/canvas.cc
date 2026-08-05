@@ -1635,7 +1635,7 @@ void Canvas::SaveLayer(const Paint& paint,
 
     backdrop_filter_contents = backdrop_filter_proc(
         FilterInput::Make(std::move(input_texture)),
-        transform_stack_.back().transform.Basis(),
+        transform_stack_.back().transform,
         // When the subpass has a translation that means the math with
         // the snapshot has to be different.
         transform_stack_.back().transform.HasTranslation()
