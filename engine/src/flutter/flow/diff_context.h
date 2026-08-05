@@ -15,6 +15,7 @@
 #include <vector>
 #include "display_list/geometry/dl_region.h"
 #include "display_list/utils/dl_matrix_clip_tracker.h"
+#include "flutter/common/backdrop_filter_cache_key.h"
 #include "flutter/flow/paint_region.h"
 #include "flutter/fml/macros.h"
 
@@ -60,18 +61,21 @@ struct ReadbackRegion {
 
 using ReadbackRegionList = std::vector<ReadbackRegion>;
 
-// Identifies one semantic version of a backdrop. A new token is allocated
-// whenever content below the filter changes; changes inside the filter's own
-// subtree intentionally keep the token stable.
+// Identifies one semantic version of a backdrop. The stable family identifies
+// the filter and its generation advances whenever content below it changes;
+// changes inside the filter's own subtree intentionally keep the token stable.
 class BackdropFilterCacheState {
  public:
   BackdropFilterCacheState();
 
-  int64_t token() const { return token_; }
+  int64_t token() const {
+    return MakeBackdropFilterCacheKey(family_, generation_);
+  }
   void Invalidate();
 
  private:
-  int64_t token_;
+  uint32_t family_;
+  uint32_t generation_ = 1u;
 };
 
 // Reusable ordering metadata for autonomous external-texture frames. Only

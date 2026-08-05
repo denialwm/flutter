@@ -13,10 +13,15 @@
 namespace flutter {
 namespace {
 
-std::atomic<int64_t> g_next_backdrop_cache_token = 1;
+std::atomic<uint32_t> g_next_backdrop_cache_family = 1u;
 
-int64_t NextBackdropCacheToken() {
-  return g_next_backdrop_cache_token.fetch_add(1, std::memory_order_relaxed);
+uint32_t NextBackdropCacheFamily() {
+  uint32_t family;
+  do {
+    family =
+        g_next_backdrop_cache_family.fetch_add(1u, std::memory_order_relaxed);
+  } while (family == 0u);
+  return family;
 }
 
 bool RegionsEqual(const DlRegion& a, const DlRegion& b) {
@@ -30,10 +35,14 @@ DlRegion RegionFromRects(std::initializer_list<DlIRect> rects) {
 }  // namespace
 
 BackdropFilterCacheState::BackdropFilterCacheState()
-    : token_(NextBackdropCacheToken()) {}
+    : family_(NextBackdropCacheFamily()) {}
 
 void BackdropFilterCacheState::Invalidate() {
-  token_ = NextBackdropCacheToken();
+  generation_++;
+  if (generation_ == 0u) {
+    family_ = NextBackdropCacheFamily();
+    generation_ = 1u;
+  }
 }
 
 DiffContext::DiffContext(DlISize frame_size,
