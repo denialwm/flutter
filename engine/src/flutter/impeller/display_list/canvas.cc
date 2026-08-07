@@ -4,7 +4,6 @@
 
 #include "impeller/display_list/canvas.h"
 
-#include <atomic>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -66,10 +65,6 @@ namespace impeller {
 namespace {
 
 constexpr Scalar kAntialiasPadding = 1.0f;
-
-std::atomic_uint32_t g_denial_backdrop_setup_logs = 0;
-std::atomic_uint32_t g_denial_backdrop_filter_logs = 0;
-std::atomic_uint32_t g_denial_backdrop_flip_logs = 0;
 
 bool IsPipelineBlendOrMatrixFilter(const flutter::DlColorFilter* filter) {
   return filter->type() == flutter::DlColorFilterType::kMatrix ||
@@ -1422,18 +1417,6 @@ void Canvas::SetupRenderPass() {
   // a second save layer with the same dimensions as the onscreen. When
   // rendering is completed, we must blit this saveLayer to the onscreen.
   if (requires_readback_) {
-    if (g_denial_backdrop_setup_logs.fetch_add(1) < 4) {
-      const auto& capabilities = renderer_.GetDeviceCapabilities();
-      FML_LOG(IMPORTANT) << "Denial Impeller backdrop setup: size="
-                         << color0.texture->GetSize().width << "x"
-                         << color0.texture->GetSize().height
-                         << " onscreen=" << is_onscreen_ << " offscreen_msaa="
-                         << capabilities.SupportsOffscreenMSAA()
-                         << " implicit_msaa="
-                         << capabilities.SupportsImplicitResolvingMSAA()
-                         << " framebuffer_fetch="
-                         << capabilities.SupportsFramebufferFetch();
-    }
     auto entity_pass_target =
         CreateRenderTarget(renderer_,                  //
                            color0.texture->GetSize(),  //
@@ -1707,30 +1690,6 @@ void Canvas::SaveLayer(const Paint& paint,
     }
 
     if (!isolated_backdrop_snapshot.has_value()) {
-      const bool is_large_backdrop = subpass_coverage.GetWidth() >= 300.0f &&
-                                     subpass_coverage.GetHeight() >= 100.0f;
-      if (is_large_backdrop &&
-          g_denial_backdrop_filter_logs.fetch_add(1) < 16) {
-        const auto* blur = backdrop_filter->asBlur();
-        FML_LOG(IMPORTANT) << "Denial Impeller backdrop filter: subpass="
-                           << subpass_coverage.GetX() << ","
-                           << subpass_coverage.GetY() << " "
-                           << subpass_coverage.GetWidth() << "x"
-                           << subpass_coverage.GetHeight()
-                           << " local=" << local_position.x << ","
-                           << local_position.y << " transform=["
-                           << transform_stack_.back().transform.m[0] << ","
-                           << transform_stack_.back().transform.m[5] << ","
-                           << transform_stack_.back().transform.m[12] << ","
-                           << transform_stack_.back().transform.m[13]
-                           << "] input=" << input_texture->GetSize().width
-                           << "x" << input_texture->GetSize().height
-                           << " input_y_scale="
-                           << input_texture->GetYCoordScale() << " blur_bounds="
-                           << (blur && blur->bounds().has_value() ? "yes"
-                                                                  : "no");
-      }
-
       backdrop_filter_contents = backdrop_filter_proc(
           FilterInput::Make(std::move(input_texture)),
           transform_stack_.back().transform.Basis(),
@@ -2369,27 +2328,6 @@ std::shared_ptr<Texture> Canvas::FlipBackdrop(Point global_pass_position,
   }
   RenderPass& current_render_pass =
       *render_passes_.back().GetInlinePassContext()->GetRenderPass();
-
-  if (g_denial_backdrop_flip_logs.fetch_add(1) < 16) {
-    const ColorAttachment next_color = render_passes_.back()
-                                           .GetEntityPassTarget()
-                                           ->GetRenderTarget()
-                                           .GetColorAttachment(0);
-    FML_LOG(IMPORTANT) << "Denial Impeller backdrop flip: prior_msaa="
-                       << (prior_color.resolve_texture != nullptr)
-                       << " input_is_prior_color="
-                       << (input_texture == prior_color.texture)
-                       << " input_is_prior_resolve="
-                       << (input_texture == prior_color.resolve_texture)
-                       << " next_msaa="
-                       << (next_color.resolve_texture != nullptr)
-                       << " input_is_next_color="
-                       << (input_texture == next_color.texture)
-                       << " input_is_next_resolve="
-                       << (input_texture == next_color.resolve_texture)
-                       << " should_use_onscreen=" << should_use_onscreen
-                       << " remove=" << should_remove_texture;
-  }
 
   const ColorAttachment current_color = render_passes_.back()
                                             .GetEntityPassTarget()
