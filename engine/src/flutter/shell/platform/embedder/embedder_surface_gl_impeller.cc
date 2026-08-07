@@ -117,18 +117,6 @@ EmbedderSurfaceGLImpeller::EmbedderSurfaceGLImpeller(
     return;
   }
 
-  const std::shared_ptr<impeller::Context> diagnostic_context =
-      impeller_context_;
-  const auto& capabilities = diagnostic_context->GetCapabilities();
-  FML_LOG(IMPORTANT) << "Denial Impeller GLES capabilities: offscreen_msaa="
-                     << capabilities->SupportsOffscreenMSAA()
-                     << " implicit_msaa="
-                     << capabilities->SupportsImplicitResolvingMSAA()
-                     << " framebuffer_fetch="
-                     << capabilities->SupportsFramebufferFetch()
-                     << " read_from_resolve="
-                     << capabilities->SupportsReadFromResolve();
-
   auto worker_id = impeller_context_->AddReactorWorker(worker_);
   if (!worker_id.has_value()) {
     FML_LOG(ERROR) << "Could not add reactor worker.";
