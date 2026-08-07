@@ -139,8 +139,24 @@ sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTextureImpeller(
     int64_t texture_id,
     impeller::AiksContext* aiks_context,
     const SkISize& size) {
+  const std::shared_ptr<impeller::Context>& impeller_context =
+      aiks_context->GetContext();
+  impeller::ContextGLES& context =
+      impeller::ContextGLES::Cast(*impeller_context);
+  const bool callback_may_modify_gl =
+      !external_texture_gl_state_callback_ ||
+      external_texture_gl_state_callback_(texture_id);
+  if (callback_may_modify_gl && !impeller_context->FlushCommandBuffers()) {
+    FML_LOG(ERROR) << "Could not flush Impeller before resolving an external "
+                      "texture";
+    return nullptr;
+  }
+
   std::unique_ptr<FlutterOpenGLTexture> texture =
       external_texture_callback_(texture_id, size.width(), size.height());
+  if (callback_may_modify_gl) {
+    impeller_context->ResetThreadLocalState();
+  }
 
   if (!texture) {
     return nullptr;
@@ -162,8 +178,6 @@ sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTextureImpeller(
   desc.size = impeller::ISize(texture->width, texture->height);
   desc.format = impeller::PixelFormat::kR8G8B8A8UNormInt;
 
-  impeller::ContextGLES& context =
-      impeller::ContextGLES::Cast(*aiks_context->GetContext());
   impeller::HandleGLES handle = context.GetReactor()->CreateHandle(
       impeller::HandleType::kTexture, texture->name);
   std::shared_ptr<impeller::TextureGLES> image =
