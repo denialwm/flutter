@@ -42,11 +42,17 @@ class LineContents : public Contents {
 
   std::optional<Rect> GetCoverage(const Entity& entity) const override;
 
+  // |Contents|
+  void SetInheritedOpacity(Scalar opacity) override;
+
+  Color GetColor() const;
+
  private:
   explicit LineContents(std::unique_ptr<LineGeometry> geometry, Color color);
 
   std::unique_ptr<LineGeometry> geometry_;
   Color color_;
+  Scalar inherited_opacity_ = 1.0f;
 };
 }  // namespace impeller
 

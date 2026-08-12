@@ -56,6 +56,22 @@ TEST(LineContents, Create) {
   }
 }
 
+TEST(LineContents, InheritsOpacity) {
+  auto geometry = std::make_unique<LineGeometry>(
+      /*p0=*/Point{0, 0},      //
+      /*p1=*/Point{100, 100},  //
+      StrokeParameters{
+          .width = 5.0f,
+          .cap = Cap::kSquare,
+      });
+  std::unique_ptr<LineContents> contents =
+      LineContents::Make(std::move(geometry), Color(0.25f, 0.5f, 0.75f, 0.8f));
+
+  EXPECT_EQ(contents->GetColor(), Color(0.25f, 0.5f, 0.75f, 0.8f));
+  contents->SetInheritedOpacity(0.5f);
+  EXPECT_EQ(contents->GetColor(), Color(0.25f, 0.5f, 0.75f, 0.4f));
+}
+
 TEST(LineContents, CalculatePerVertex) {
   LineVertexShader::PerVertexData per_vertex[4];
   auto geometry = std::make_unique<LineGeometry>(
