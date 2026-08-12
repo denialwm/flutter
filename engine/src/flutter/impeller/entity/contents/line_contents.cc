@@ -149,7 +149,7 @@ bool LineContents::Render(const ContentContext& renderer,
 
   VS::FrameInfo frame_info;
   FS::FragInfo frag_info;
-  frag_info.color = color_;
+  frag_info.color = GetColor();
   frag_info.cap_type = (geometry_->GetCap() == Cap::kRound) ? 1.0f : 0.0f;
 
   Scalar scale = entity.GetTransform().GetMaxBasisLengthXY();
@@ -192,6 +192,14 @@ bool LineContents::Render(const ContentContext& renderer,
 
 std::optional<Rect> LineContents::GetCoverage(const Entity& entity) const {
   return geometry_->GetCoverage(entity.GetTransform());
+}
+
+void LineContents::SetInheritedOpacity(Scalar opacity) {
+  inherited_opacity_ = opacity;
+}
+
+Color LineContents::GetColor() const {
+  return color_.WithAlpha(color_.alpha * inherited_opacity_);
 }
 
 std::vector<uint8_t> LineContents::CreateCurveData(Scalar width,
