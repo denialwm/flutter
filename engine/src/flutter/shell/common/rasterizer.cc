@@ -48,6 +48,42 @@
 
 namespace flutter {
 
+namespace {
+
+// The implicit Flutter view's root is normally diffed directly and therefore
+// does not need an EngineLayer identity. Denial places that root below an
+// output projection, where an ordinary ContainerLayer would instead compare
+// its identity as a child and conservatively damage the complete scene.
+// Preserve root semantics while keeping the normal TransformLayer behavior.
+class DenialRenderOutputTransformLayer final : public TransformLayer {
+ public:
+  explicit DenialRenderOutputTransformLayer(const DlMatrix& transform)
+      : TransformLayer(transform) {}
+
+  void DiffChildren(DiffContext* context,
+                    const ContainerLayer* old_layer) override {
+    if (old_layer == nullptr) {
+      if (!context->IsSubtreeDirty()) {
+        context->MarkSubtreeDirty();
+      }
+      ContainerLayer::DiffChildren(context, nullptr);
+      return;
+    }
+
+    const auto& current_children = layers();
+    const auto& previous_children = old_layer->layers();
+    if (context->IsSubtreeDirty() || current_children.size() != 1u ||
+        previous_children.size() != 1u) {
+      ContainerLayer::DiffChildren(context, old_layer);
+      return;
+    }
+
+    current_children.front()->Diff(context, previous_children.front().get());
+  }
+};
+
+}  // namespace
+
 // The rasterizer will tell Skia to purge cached resources that have not been
 // used within this interval.
 [[maybe_unused]] static constexpr std::chrono::milliseconds
@@ -326,12 +362,34 @@ Rasterizer::ExpandDenialRenderOutputTasks(
           DlMatrix::MakeScale({scale_x, scale_y, 1.0f}) *
           DlMatrix::MakeTranslation({-source.GetX(), -source.GetY(), 0.0f});
 
-      auto transform = std::make_shared<TransformLayer>(projection);
+      auto transform =
+          std::make_shared<DenialRenderOutputTransformLayer>(projection);
       transform->Add(source_root);
       auto clip = std::make_shared<ClipRectLayer>(
           DlRect::MakeWH(output.target_size.width, output.target_size.height),
           Clip::kHardEdge);
       clip->Add(transform);
+
+      // These layers are synthesized after SceneBuilder has established the
+      // framework layer identities. Link them to the previous projection for
+      // this output so damage diffing can reach the actual Flutter scene.
+      auto previous_view = view_records_.find(output.render_view_id);
+      if (previous_view != view_records_.end() &&
+          previous_view->second.last_successful_task &&
+          previous_view->second.last_successful_task
+                  ->render_output_configuration_generation ==
+              output.configuration_generation) {
+        Layer* previous_clip = previous_view->second.last_successful_task
+                                   ->layer_tree->root_layer();
+        const ContainerLayer* previous_clip_container =
+            previous_clip->as_container_layer();
+        if (previous_clip_container &&
+            previous_clip_container->layers().size() == 1u) {
+          clip->AssignOldLayer(previous_clip);
+          transform->AssignOldLayer(
+              previous_clip_container->layers().front().get());
+        }
+      }
 
       auto output_task = std::make_unique<LayerTreeTask>(
           output.render_view_id,

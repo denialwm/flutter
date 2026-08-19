@@ -10,8 +10,11 @@
 #include <memory>
 #include <optional>
 
+#include "flutter/display_list/dl_builder.h"
+#include "flutter/flow/compositor_context.h"
 #include "flutter/flow/frame_timings.h"
 #include "flutter/flow/layers/clip_rect_layer.h"
+#include "flutter/flow/layers/display_list_layer.h"
 #include "flutter/flow/layers/transform_layer.h"
 #include "flutter/fml/synchronization/count_down_latch.h"
 #include "flutter/fml/time/time_point.h"
@@ -153,6 +156,20 @@ class RasterizerTestPeer {
                ? nullptr
                : found->second.get();
   }
+
+  static void SetLastSuccessfulTask(Rasterizer& rasterizer,
+                                    std::unique_ptr<LayerTreeTask> task) {
+    const int64_t view_id = task->view_id;
+    rasterizer.EnsureViewRecord(view_id).last_successful_task = std::move(task);
+  }
+
+  static const LayerTreeTask* LastSuccessfulTask(const Rasterizer& rasterizer,
+                                                 int64_t view_id) {
+    auto found = rasterizer.view_records_.find(view_id);
+    return found == rasterizer.view_records_.end()
+               ? nullptr
+               : found->second.last_successful_task.get();
+  }
 };
 
 TEST(RasterizerTest, create) {
@@ -268,6 +285,74 @@ TEST(RasterizerTest, DenialSyntheticRenderTasksAreNeverExpandedAgain) {
   EXPECT_EQ(expanded.front()->view_id, -1);
   EXPECT_EQ(expanded.front()->layer_tree->root_layer_shared(), root);
   EXPECT_TRUE(expanded.front()->is_reused_layer_tree);
+}
+
+TEST(RasterizerTest, DenialRenderOutputProjectionPreservesSceneDamage) {
+  NiceMock<MockDelegate> delegate;
+  Settings settings;
+  ON_CALL(delegate, GetSettings()).WillByDefault(ReturnRef(settings));
+  Rasterizer rasterizer(delegate);
+
+  constexpr int64_t kRenderViewId = -1;
+  constexpr uint64_t kGeneration = 23;
+  rasterizer.SetDenialRenderOutputs({{
+      .render_view_id = kRenderViewId,
+      .configuration_generation = kGeneration,
+      .source_physical_bounds = DlRect::MakeWH(100, 100),
+      .target_size = DlISize(200, 200),
+      .scale_120 = 240,
+      .transform = DenialRenderOutputTransform::kNormal,
+  }});
+
+  DisplayListBuilder wallpaper_builder;
+  wallpaper_builder.DrawRect(DlRect::MakeWH(100, 100), DlPaint());
+  auto wallpaper = std::make_shared<DisplayListLayer>(
+      DlPoint(), wallpaper_builder.Build(), false, false);
+  DisplayListBuilder cursor_builder;
+  cursor_builder.DrawRect(DlRect::MakeWH(10, 10), DlPaint());
+  auto cursor = cursor_builder.Build();
+  auto first_root = std::make_shared<ContainerLayer>();
+  first_root->Add(wallpaper);
+  first_root->Add(std::make_shared<DisplayListLayer>(DlPoint(10, 10), cursor,
+                                                     false, false));
+  auto first = RasterizerTestPeer::ExpandRenderOutputs(
+      rasterizer,
+      SingleLayerTreeList(
+          kImplicitViewId,
+          std::make_unique<LayerTree>(first_root, DlISize(100, 100)), 1.0f));
+  ASSERT_EQ(first.size(), 1u);
+
+  FrameDamage initial_damage;
+  initial_damage.SetExistingDamage(DlRegion());
+  initial_damage.ComputeDamageRegion(*first.front()->layer_tree, false, true);
+  RasterizerTestPeer::SetLastSuccessfulTask(rasterizer,
+                                            std::move(first.front()));
+
+  auto second_root = std::make_shared<ContainerLayer>();
+  second_root->Add(wallpaper);
+  second_root->Add(std::make_shared<DisplayListLayer>(DlPoint(30, 30), cursor,
+                                                      false, false));
+  auto second = RasterizerTestPeer::ExpandRenderOutputs(
+      rasterizer,
+      SingleLayerTreeList(
+          kImplicitViewId,
+          std::make_unique<LayerTree>(second_root, DlISize(100, 100)), 1.0f));
+  ASSERT_EQ(second.size(), 1u);
+
+  const LayerTreeTask* previous =
+      RasterizerTestPeer::LastSuccessfulTask(rasterizer, kRenderViewId);
+  ASSERT_NE(previous, nullptr);
+  FrameDamage moved_cursor_damage;
+  moved_cursor_damage.SetPreviousLayerTree(previous->layer_tree.get());
+  moved_cursor_damage.SetExistingDamage(DlRegion());
+  moved_cursor_damage.ComputeDamageRegion(*second.front()->layer_tree, false,
+                                          true);
+
+  ASSERT_TRUE(moved_cursor_damage.GetFrameDamage().has_value());
+  EXPECT_THAT(
+      moved_cursor_damage.GetFrameDamage()->getRects(),
+      ::testing::UnorderedElementsAre(DlIRect::MakeLTRB(20, 20, 40, 40),
+                                      DlIRect::MakeLTRB(60, 60, 80, 80)));
 }
 
 TEST(RasterizerTest, DenialRenderSelectionDefersOtherOutputs) {
