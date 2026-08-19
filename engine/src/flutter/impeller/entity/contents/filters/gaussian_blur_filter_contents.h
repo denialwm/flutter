@@ -54,10 +54,10 @@ GaussianBlurPipeline::FragmentShader::KernelSamples LerpHackKernelSamples(
 //
 // ## Implementation notes
 //
-// The blur is implemented as a three-pass process:
-// 1. A downsampling pass. This is used for performance optimization on large
-//    blurs.
-// 2. A Y-direction blur pass (in canvas coordinates).
+// The blur is implemented as a separable process:
+// 1. The input is downsampled when beneficial. On GLES, moderate unbounded
+//    blurs fuse this work into the Y-direction blur.
+// 2. A Y-direction blur pass (in canvas coordinates), unless fused above.
 // 3. An X-direction blur pass (in canvas coordinates).
 //
 // ### Lerp Hack
