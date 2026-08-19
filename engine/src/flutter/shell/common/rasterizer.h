@@ -10,6 +10,7 @@
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "flutter/common/settings.h"
 #include "flutter/common/task_runners.h"
@@ -84,6 +85,37 @@ enum class DrawSurfaceStatus {
   // Layer tree was discarded because its size does not match the view size.
   // This typically occurs during resizing.
   kDiscarded,
+};
+
+enum class DenialRenderOutputTransform : uint8_t {
+  kNormal,
+  kRotate90,
+  kRotate180,
+  kRotate270,
+  kFlipped,
+  kFlipped90,
+  kFlipped180,
+  kFlipped270,
+};
+
+/// An immutable physical-output projection installed by Denial. Source bounds
+/// use the implicit view's physical pixels; the target size is the output's
+/// transformed physical extent. KMS applies `transform` without scaling.
+struct DenialRenderOutput {
+  int64_t render_view_id;
+  uint64_t configuration_generation;
+  DlRect source_physical_bounds;
+  DlISize target_size;
+  uint32_t scale_120;
+  DenialRenderOutputTransform transform;
+
+  bool operator==(const DenialRenderOutput& other) const {
+    return render_view_id == other.render_view_id &&
+           configuration_generation == other.configuration_generation &&
+           source_physical_bounds == other.source_physical_bounds &&
+           target_size == other.target_size && scale_120 == other.scale_120 &&
+           transform == other.transform;
+  }
 };
 
 // The information to draw to all views of a frame.
@@ -273,6 +305,20 @@ class Rasterizer final : public SnapshotDelegate,
   /// @param[in]  view_id  The ID of the view.
   ///
   void CollectView(int64_t view_id);
+
+  /// Atomically replaces Denial's physical raster-output snapshot. This method
+  /// runs only on the raster task runner between queued frame transactions.
+  void SetDenialRenderOutputs(std::vector<DenialRenderOutput> outputs);
+
+  /// Selects the physical outputs for the next framework-produced scene.
+  void PrepareDenialRenderOutputs(std::vector<int64_t> render_view_ids,
+                                  std::vector<int64_t> texture_identifiers);
+
+  /// Draws the latest scene directly to the selected physical outputs.
+  void DrawDenialRenderOutputs(
+      std::vector<int64_t> render_view_ids,
+      std::vector<int64_t> texture_identifiers,
+      std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder);
 
   //----------------------------------------------------------------------------
   /// @brief      Returns the last successfully drawn layer tree for the given
@@ -608,6 +654,8 @@ class Rasterizer final : public SnapshotDelegate,
   std::optional<DrawSurfaceStatus> GetLastDrawStatus(int64_t view_id);
 
  private:
+  friend class RasterizerTestPeer;
+
   // The result status of DoDraw, DrawToSurfaces, and DrawToSurfacesUnsafe.
   enum class DoDrawStatus {
     // The drawing was done without any specified status.
@@ -751,6 +799,11 @@ class Rasterizer final : public SnapshotDelegate,
       FrameTimingsRecorder& frame_timings_recorder,
       std::vector<std::unique_ptr<LayerTreeTask>> tasks);
 
+  std::vector<std::unique_ptr<LayerTreeTask>> ExpandDenialRenderOutputTasks(
+      std::vector<std::unique_ptr<LayerTreeTask>> tasks);
+
+  const DenialRenderOutput* FindDenialRenderOutput(int64_t view_id) const;
+
   // Draws the layer tree to the specified view, assuming we have access to the
   // GPU.
   //
@@ -779,6 +832,12 @@ class Rasterizer final : public SnapshotDelegate,
   std::unique_ptr<SnapshotSurfaceProducer> snapshot_surface_producer_;
   std::unique_ptr<flutter::CompositorContext> compositor_context_;
   std::unordered_map<int64_t, ViewRecord> view_records_;
+  std::vector<DenialRenderOutput> denial_render_outputs_;
+  uint64_t denial_render_output_generation_ = 0;
+  std::unordered_map<int64_t, std::unique_ptr<LayerTreeTask>>
+      denial_pending_output_tasks_;
+  std::unordered_set<int64_t> denial_selected_render_view_ids_;
+  bool denial_render_selection_pending_ = false;
   std::unordered_set<int64_t> pending_texture_ids_;
   fml::closure next_frame_callback_;
   bool user_override_resource_cache_bytes_ = false;

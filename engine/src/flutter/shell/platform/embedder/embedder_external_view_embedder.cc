@@ -38,6 +38,41 @@ void EmbedderExternalViewEmbedder::SetSurfaceTransformationCallback(
   surface_transformation_callback_ = std::move(surface_transformation_callback);
 }
 
+void EmbedderExternalViewEmbedder::SetExistingDamageCallback(
+    ExistingDamageCallback existing_damage_callback) {
+  existing_damage_callback_ = std::move(existing_damage_callback);
+}
+
+std::optional<ExternalViewEmbedder::PreparedRenderTarget>
+EmbedderExternalViewEmbedder::PrepareDenialRenderTarget(
+    int64_t flutter_view_id,
+    GrDirectContext* context,
+    const std::shared_ptr<impeller::AiksContext>& aiks_context) {
+  FML_DCHECK(flutter_view_id < kFlutterImplicitViewId);
+  FML_DCHECK(!pending_denial_render_target_);
+
+  FlutterBackingStoreConfig config = {};
+  config.struct_size = sizeof(config);
+  config.size.width = pending_frame_size_.width;
+  config.size.height = pending_frame_size_.height;
+  config.view_id = flutter_view_id;
+  auto target = create_render_target_callback_(context, aiks_context, config);
+  if (!target) {
+    return std::nullopt;
+  }
+
+  std::optional<DlRegion> existing_damage;
+  const FlutterBackingStore* backing_store = target->GetBackingStore();
+  if (existing_damage_callback_ && backing_store &&
+      backing_store->type == kFlutterBackingStoreTypeOpenGL &&
+      backing_store->open_gl.type == kFlutterOpenGLTargetTypeFramebuffer) {
+    existing_damage =
+        existing_damage_callback_(backing_store->open_gl.framebuffer.name);
+  }
+  pending_denial_render_target_ = std::move(target);
+  return PreparedRenderTarget{.existing_damage = std::move(existing_damage)};
+}
+
 DlMatrix EmbedderExternalViewEmbedder::GetSurfaceTransformation() const {
   if (!surface_transformation_callback_) {
     return DlMatrix{};
@@ -47,6 +82,7 @@ DlMatrix EmbedderExternalViewEmbedder::GetSurfaceTransformation() const {
 }
 
 void EmbedderExternalViewEmbedder::Reset() {
+  pending_denial_render_target_.reset();
   pending_views_.clear();
   composition_order_.clear();
 }
@@ -65,11 +101,28 @@ void EmbedderExternalViewEmbedder::BeginFrame(
 void EmbedderExternalViewEmbedder::PrepareFlutterView(
     DlISize frame_size,
     double device_pixel_ratio) {
+  PrepareFlutterView(kFlutterImplicitViewId, frame_size, device_pixel_ratio);
+}
+
+// |ExternalViewEmbedder|
+void EmbedderExternalViewEmbedder::PrepareFlutterView(
+    int64_t flutter_view_id,
+    DlISize frame_size,
+    double device_pixel_ratio) {
   Reset();
 
   pending_frame_size_ = frame_size;
   pending_device_pixel_ratio_ = device_pixel_ratio;
-  pending_surface_transformation_ = GetSurfaceTransformation();
+  if (flutter_view_id < kFlutterImplicitViewId) {
+    // Denial reserves negative view IDs for physical render targets. OpenGL
+    // backing stores have a bottom-left origin, so each target needs its own
+    // height in the root flip instead of inheriting the implicit atlas height.
+    pending_surface_transformation_ = DlMatrix(
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, static_cast<DlScalar>(frame_size.height), 0.0f, 1.0f);
+  } else {
+    pending_surface_transformation_ = GetSurfaceTransformation();
+  }
 
   pending_views_[kRootViewIdentifier] = std::make_unique<EmbedderExternalView>(
       pending_frame_size_, pending_surface_transformation_);
@@ -428,6 +481,48 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
     GrDirectContext* context,
     const std::shared_ptr<impeller::AiksContext>& aiks_context,
     std::unique_ptr<SurfaceFrame> frame) {
+  if (flutter_view_id < kFlutterImplicitViewId &&
+      pending_denial_render_target_) {
+    FML_DCHECK(composition_order_.size() == 1u);
+    auto root = pending_views_.find(kRootViewIdentifier);
+    FML_DCHECK(root != pending_views_.end());
+
+    const auto& buffer_damage = frame->submit_info().buffer_damage;
+    const bool full_repaint =
+        !buffer_damage.has_value() ||
+        (!buffer_damage->isEmpty() && buffer_damage->isSimple() &&
+         buffer_damage->bounds() == DlIRect::MakeSize(pending_frame_size_));
+    if (!buffer_damage.has_value() || !buffer_damage->isEmpty()) {
+      if (!root->second->Render(*pending_denial_render_target_, full_repaint,
+                                full_repaint)) {
+        pending_denial_render_target_.reset();
+        frame->Submit();
+        return;
+      }
+    }
+
+    const auto presentation_time_optional =
+        frame->submit_info().presentation_time;
+    const uint64_t presentation_time =
+        presentation_time_optional.has_value()
+            ? presentation_time_optional->ToEpochDelta().ToNanoseconds()
+            : 0;
+    EmbedderLayers presented_layers(
+        pending_frame_size_, pending_device_pixel_ratio_,
+        pending_surface_transformation_, presentation_time);
+    presented_layers.PushBackingStoreLayer(
+        pending_denial_render_target_->GetBackingStore(),
+        root->second->GetDlRegion().getRects());
+    presented_layers.InvokePresentCallback(flutter_view_id, present_callback_);
+
+    // The embedder owns the FBO allocation. Releasing this temporary wrapper
+    // only ends Flutter's borrow; the root frame then delivers the exact frame
+    // and buffer damage through present-with-info.
+    pending_denial_render_target_.reset();
+    frame->Submit();
+    return;
+  }
+
   // The unordered_map render_target_cache creates a new entry if the view ID is
   // unrecognized.
   EmbedderRenderTargetCache& render_target_cache =

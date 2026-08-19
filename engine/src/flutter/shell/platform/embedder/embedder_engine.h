@@ -89,8 +89,18 @@ class EmbedderEngine {
 
   bool ScheduleFrame();
 
+  bool RequestFrameForExternalTextures();
+
   bool ScheduleFrameForExternalTextures(
       std::vector<int64_t> texture_identifiers);
+
+  bool RenderOutputs(std::vector<int64_t> render_view_ids,
+                     std::vector<int64_t> texture_identifiers,
+                     bool rebuild_scene,
+                     uint64_t frame_start_time_nanos,
+                     uint64_t frame_target_time_nanos);
+
+  bool SetRenderOutputs(std::vector<DenialRenderOutput> outputs);
 
 #ifdef SHELL_ENABLE_GL
   bool SetExternalTextureGlStateCallback(

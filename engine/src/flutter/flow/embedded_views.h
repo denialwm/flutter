@@ -6,6 +6,7 @@
 #define FLUTTER_FLOW_EMBEDDED_VIEWS_H_
 
 #include <memory>
+#include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -14,6 +15,7 @@
 #include "display_list/geometry/dl_path.h"
 #include "flutter/display_list/dl_builder.h"
 #include "flutter/display_list/geometry/dl_geometry_conversions.h"
+#include "flutter/display_list/geometry/dl_region.h"
 #include "flutter/flow/surface_frame.h"
 #include "flutter/fml/memory/ref_counted.h"
 #include "flutter/fml/raster_thread_merger.h"
@@ -433,6 +435,12 @@ class ExternalViewEmbedder {
   // TODO(cyanglaz): Make embedder own the `EmbeddedViewParams`.
 
  public:
+  struct PreparedRenderTarget {
+    // nullopt means that the selected backing store's contents are unknown.
+    // An empty region means that it already represents the current scene.
+    std::optional<DlRegion> existing_damage;
+  };
+
   ExternalViewEmbedder() = default;
 
   virtual ~ExternalViewEmbedder() = default;
@@ -481,8 +489,26 @@ class ExternalViewEmbedder {
   virtual DlCanvas* CompositeEmbeddedView(int64_t platform_view_id) = 0;
 
   // Prepare for a view to be drawn.
+  virtual void PrepareFlutterView(int64_t flutter_view_id,
+                                  DlISize frame_size,
+                                  double device_pixel_ratio) {
+    PrepareFlutterView(frame_size, device_pixel_ratio);
+  }
+
+  // Legacy preparation entry point retained for embedders whose root-surface
+  // state is independent of the target Flutter view.
   virtual void PrepareFlutterView(DlISize frame_size,
                                   double device_pixel_ratio) = 0;
+
+  // Denial's synthetic output tasks must select their persistent FBO before
+  // layer-tree diffing because buffer-age repair is specific to that target.
+  // Other external-view embedders retain their ordinary late acquisition.
+  virtual std::optional<PreparedRenderTarget> PrepareDenialRenderTarget(
+      int64_t flutter_view_id,
+      GrDirectContext* context,
+      const std::shared_ptr<impeller::AiksContext>& aiks_context) {
+    return std::nullopt;
+  }
 
   // Submits the content stored since |PrepareFlutterView| to the specified
   // Flutter view.

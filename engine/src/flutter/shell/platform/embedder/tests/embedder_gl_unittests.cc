@@ -25,6 +25,8 @@
 #include "flutter/fml/thread.h"
 #include "flutter/lib/ui/painting/image.h"
 #include "flutter/runtime/dart_vm.h"
+#include "flutter/shell/platform/embedder/embedder_external_view_embedder.h"
+#include "flutter/shell/platform/embedder/embedder_render_target.h"
 #include "flutter/shell/platform/embedder/embedder_surface_gl_impeller.h"
 #include "flutter/shell/platform/embedder/tests/embedder_assertions.h"
 #include "flutter/shell/platform/embedder/tests/embedder_config_builder.h"
@@ -40,9 +42,49 @@
 // CREATE_NATIVE_ENTRY is leaky by design
 // NOLINTBEGIN(clang-analyzer-core.StackAddressEscape)
 
+namespace flutter {
+
+class EmbedderExternalViewEmbedderTestPeer {
+ public:
+  static void Prepare(EmbedderExternalViewEmbedder& embedder,
+                      int64_t view_id,
+                      DlISize frame_size) {
+    embedder.PrepareFlutterView(view_id, frame_size, 1.0);
+  }
+
+  static const DlMatrix& PendingSurfaceTransformation(
+      const EmbedderExternalViewEmbedder& embedder) {
+    return embedder.pending_surface_transformation_;
+  }
+};
+
+}  // namespace flutter
+
 namespace flutter::testing {
 
 using EmbedderTest = testing::EmbedderTest;
+
+namespace {
+
+class DamageTestRenderTarget final : public EmbedderRenderTarget {
+ public:
+  DamageTestRenderTarget(FlutterBackingStore backing_store, DlISize size)
+      : EmbedderRenderTarget(backing_store, nullptr), size_(size) {}
+
+  sk_sp<SkSurface> GetSkiaSurface() const override { return nullptr; }
+  impeller::RenderTarget* GetImpellerRenderTarget() const override {
+    return nullptr;
+  }
+  std::shared_ptr<impeller::AiksContext> GetAiksContext() const override {
+    return nullptr;
+  }
+  DlISize GetRenderTargetSize() const override { return size_; }
+
+ private:
+  DlISize size_;
+};
+
+}  // namespace
 
 TEST_F(EmbedderTest, CanCreateOpenGLRenderingEngine) {
   auto& context = GetEmbedderContext<EmbedderTestContextGL>();
@@ -50,6 +92,81 @@ TEST_F(EmbedderTest, CanCreateOpenGLRenderingEngine) {
   builder.SetSurface(DlISize(1, 1));
   auto engine = builder.LaunchEngine();
   ASSERT_TRUE(engine.is_valid());
+}
+
+TEST(EmbedderExternalViewEmbedderTest,
+     DenialRenderViewsUseTheirOwnHeightForOpenGLOriginConversion) {
+  EmbedderExternalViewEmbedder embedder(
+      true,
+      [](GrDirectContext*, const std::shared_ptr<impeller::AiksContext>&,
+         const FlutterBackingStoreConfig&) {
+        return std::unique_ptr<EmbedderRenderTarget>();
+      },
+      [](FlutterViewId, const std::vector<const FlutterLayer*>&) {
+        return true;
+      });
+  const DlMatrix implicit_transform =
+      DlMatrix::MakeTranslation({12.0f, 34.0f, 0.0f});
+  embedder.SetSurfaceTransformationCallback(
+      [implicit_transform] { return implicit_transform; });
+
+  EmbedderExternalViewEmbedderTestPeer::Prepare(embedder, 0,
+                                                DlISize(1600, 900));
+  EXPECT_EQ(EmbedderExternalViewEmbedderTestPeer::PendingSurfaceTransformation(
+                embedder),
+            implicit_transform);
+
+  EmbedderExternalViewEmbedderTestPeer::Prepare(embedder, -1,
+                                                DlISize(800, 600));
+  auto transform =
+      EmbedderExternalViewEmbedderTestPeer::PendingSurfaceTransformation(
+          embedder);
+  EXPECT_EQ(transform * DlPoint(0, 0), DlPoint(0, 600));
+  EXPECT_EQ(transform * DlPoint(800, 600), DlPoint(800, 0));
+
+  EmbedderExternalViewEmbedderTestPeer::Prepare(embedder, -2,
+                                                DlISize(1200, 900));
+  transform =
+      EmbedderExternalViewEmbedderTestPeer::PendingSurfaceTransformation(
+          embedder);
+  EXPECT_EQ(transform * DlPoint(0, 0), DlPoint(0, 900));
+  EXPECT_EQ(transform * DlPoint(1200, 900), DlPoint(1200, 0));
+}
+
+TEST(EmbedderExternalViewEmbedderTest,
+     DenialSelectsBackingStoreBeforeReadingItsRepairDamage) {
+  const DlISize size(800, 600);
+  FlutterBackingStore backing_store = {};
+  backing_store.struct_size = sizeof(backing_store);
+  backing_store.type = kFlutterBackingStoreTypeOpenGL;
+  backing_store.open_gl.type = kFlutterOpenGLTargetTypeFramebuffer;
+  backing_store.open_gl.framebuffer.name = 73u;
+
+  EmbedderExternalViewEmbedder embedder(
+      true,
+      [backing_store, size](GrDirectContext*,
+                            const std::shared_ptr<impeller::AiksContext>&,
+                            const FlutterBackingStoreConfig& config) {
+        EXPECT_EQ(config.view_id, -1);
+        EXPECT_EQ(config.size.width, size.width);
+        EXPECT_EQ(config.size.height, size.height);
+        return std::make_unique<DamageTestRenderTarget>(backing_store, size);
+      },
+      [](FlutterViewId, const std::vector<const FlutterLayer*>&) {
+        return true;
+      });
+  const DlRegion expected_damage(DlIRect::MakeLTRB(4, 5, 20, 16));
+  embedder.SetExistingDamageCallback([&](intptr_t framebuffer) {
+    EXPECT_EQ(framebuffer, 73);
+    return std::make_optional(expected_damage);
+  });
+
+  EmbedderExternalViewEmbedderTestPeer::Prepare(embedder, -1, size);
+  auto prepared = embedder.PrepareDenialRenderTarget(-1, nullptr, nullptr);
+
+  ASSERT_TRUE(prepared.has_value());
+  ASSERT_TRUE(prepared->existing_damage.has_value());
+  EXPECT_EQ(prepared->existing_damage->getRects(), expected_damage.getRects());
 }
 
 //------------------------------------------------------------------------------
@@ -4745,9 +4862,7 @@ TEST_F(EmbedderTest, InvalidExistingDamageForcesFullBufferRepaint) {
   latch.Wait();
 }
 
-TEST_F(
-    EmbedderTest,
-    PresentInfoPreservesDamageRegionWhenExistingDamageContainsMultipleRects) {
+TEST_F(EmbedderTest, PresentInfoConservativelyBoundsComplexGaneshBufferDamage) {
   auto& context = GetEmbedderContext<EmbedderTestContextGL>();
   context.GetRendererConfig().open_gl.populate_existing_damage =
       [](void* context, const intptr_t id,
@@ -4806,21 +4921,17 @@ TEST_F(
   latch.Wait();
 
   // Because it's the same as the first frame, the second frame damage is empty.
-  // Buffer repair must preserve both existing rectangles instead of replacing
-  // them with their bounding box.
+  // Ganesh deliberately uses one conservative scissor for a complex repair
+  // region so every draw avoids repeated path-clip analysis.
   context.SetGLPresentCallback([&](FlutterPresentInfo present_info) {
     ASSERT_EQ(present_info.frame_damage.num_rects, 0u);
     ASSERT_EQ(present_info.frame_damage.damage, nullptr);
 
-    ASSERT_EQ(present_info.buffer_damage.num_rects, 2u);
+    ASSERT_EQ(present_info.buffer_damage.num_rects, 1u);
     ASSERT_EQ(present_info.buffer_damage.damage[0].left, 100);
     ASSERT_EQ(present_info.buffer_damage.damage[0].top, 150);
-    ASSERT_EQ(present_info.buffer_damage.damage[0].right, 200);
-    ASSERT_EQ(present_info.buffer_damage.damage[0].bottom, 250);
-    ASSERT_EQ(present_info.buffer_damage.damage[1].left, 400);
-    ASSERT_EQ(present_info.buffer_damage.damage[1].top, 350);
-    ASSERT_EQ(present_info.buffer_damage.damage[1].right, 500);
-    ASSERT_EQ(present_info.buffer_damage.damage[1].bottom, 450);
+    ASSERT_EQ(present_info.buffer_damage.damage[0].right, 500);
+    ASSERT_EQ(present_info.buffer_damage.damage[0].bottom, 450);
 
     latch.Signal();
   });

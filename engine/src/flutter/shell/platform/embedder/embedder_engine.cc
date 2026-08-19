@@ -344,6 +344,14 @@ bool EmbedderEngine::ScheduleFrame() {
   return true;
 }
 
+bool EmbedderEngine::RequestFrameForExternalTextures() {
+  if (!IsValid()) {
+    return false;
+  }
+  shell_->RequestFrameForExternalTextures();
+  return true;
+}
+
 bool EmbedderEngine::ScheduleFrameForExternalTextures(
     std::vector<int64_t> texture_identifiers) {
   if (!IsValid() || texture_identifiers.empty()) {
@@ -351,6 +359,35 @@ bool EmbedderEngine::ScheduleFrameForExternalTextures(
   }
   shell_->ScheduleFrameForExternalTextures(std::move(texture_identifiers));
   return true;
+}
+
+bool EmbedderEngine::RenderOutputs(std::vector<int64_t> render_view_ids,
+                                   std::vector<int64_t> texture_identifiers,
+                                   bool rebuild_scene,
+                                   uint64_t frame_start_time_nanos,
+                                   uint64_t frame_target_time_nanos) {
+  if (!IsValid() || render_view_ids.empty()) {
+    return false;
+  }
+  shell_->RenderOutputs(std::move(render_view_ids),
+                        std::move(texture_identifiers), rebuild_scene,
+                        frame_start_time_nanos, frame_target_time_nanos);
+  return true;
+}
+
+bool EmbedderEngine::SetRenderOutputs(std::vector<DenialRenderOutput> outputs) {
+  if (!IsValid()) {
+    return false;
+  }
+
+  auto rasterizer = shell_->GetRasterizer();
+  shell_->GetTaskRunners().GetRasterTaskRunner()->PostTask(
+      [rasterizer, outputs = std::move(outputs)]() mutable {
+        if (rasterizer) {
+          rasterizer->SetDenialRenderOutputs(std::move(outputs));
+        }
+      });
+  return ScheduleFrame();
 }
 
 #ifdef SHELL_ENABLE_GL

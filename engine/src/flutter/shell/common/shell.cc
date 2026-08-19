@@ -1308,6 +1308,18 @@ void Shell::OnPlatformViewMarkTextureFrameAvailable(int64_t texture_id) {
   ScheduleFrameForExternalTextures({texture_id});
 }
 
+void Shell::RequestFrameForExternalTextures() {
+  FML_DCHECK(is_set_up_);
+  FML_DCHECK(task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread());
+
+  fml::TaskRunner::RunNowOrPostTask(task_runners_.GetUITaskRunner(),
+                                    [engine = engine_->GetWeakPtr()]() {
+                                      if (engine) {
+                                        engine->ScheduleFrame(false);
+                                      }
+                                    });
+}
+
 void Shell::ScheduleFrameForExternalTextures(
     std::vector<int64_t> texture_identifiers) {
   FML_DCHECK(is_set_up_);
@@ -1328,12 +1340,52 @@ void Shell::ScheduleFrameForExternalTextures(
 
   // Request exactly one raster transaction. Animator coalescing preserves a
   // framework-requested layer-tree rebuild if one is already pending.
-  fml::TaskRunner::RunNowOrPostTask(task_runners_.GetUITaskRunner(),
-                                    [engine = engine_->GetWeakPtr()]() {
-                                      if (engine) {
-                                        engine->ScheduleFrame(false);
-                                      }
-                                    });
+  RequestFrameForExternalTextures();
+}
+
+void Shell::RenderOutputs(std::vector<int64_t> render_view_ids,
+                          std::vector<int64_t> texture_identifiers,
+                          bool rebuild_scene,
+                          uint64_t frame_start_time_nanos,
+                          uint64_t frame_target_time_nanos) {
+  FML_DCHECK(is_set_up_);
+  FML_DCHECK(task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread());
+  FML_DCHECK(!render_view_ids.empty());
+
+  if (rebuild_scene) {
+    task_runners_.GetRasterTaskRunner()->PostTask(
+        [rasterizer = rasterizer_->GetWeakPtr(),
+         render_view_ids = std::move(render_view_ids),
+         texture_identifiers = std::move(texture_identifiers)]() mutable {
+          if (rasterizer) {
+            rasterizer->PrepareDenialRenderOutputs(
+                std::move(render_view_ids), std::move(texture_identifiers));
+          }
+        });
+    return;
+  }
+
+  const auto frame_start = fml::TimePoint::FromEpochDelta(
+      fml::TimeDelta::FromNanoseconds(frame_start_time_nanos));
+  const auto frame_target = fml::TimePoint::FromEpochDelta(
+      fml::TimeDelta::FromNanoseconds(frame_target_time_nanos));
+  task_runners_.GetRasterTaskRunner()->PostTask(
+      [rasterizer = rasterizer_->GetWeakPtr(),
+       render_view_ids = std::move(render_view_ids),
+       texture_identifiers = std::move(texture_identifiers), frame_start,
+       frame_target]() mutable {
+        if (!rasterizer) {
+          return;
+        }
+        auto recorder = std::make_unique<FrameTimingsRecorder>();
+        recorder->RecordVsync(frame_start, frame_target);
+        const auto now = fml::TimePoint::Now();
+        recorder->RecordBuildStart(now);
+        recorder->RecordBuildEnd(now);
+        rasterizer->DrawDenialRenderOutputs(std::move(render_view_ids),
+                                            std::move(texture_identifiers),
+                                            std::move(recorder));
+      });
 }
 
 // |PlatformView::Delegate|

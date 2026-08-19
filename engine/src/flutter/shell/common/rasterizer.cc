@@ -12,7 +12,9 @@
 #include "flow/frame_timings.h"
 #include "flutter/common/constants.h"
 #include "flutter/common/graphics/persistent_cache.h"
+#include "flutter/flow/layers/clip_rect_layer.h"
 #include "flutter/flow/layers/offscreen_surface.h"
+#include "flutter/flow/layers/transform_layer.h"
 #include "flutter/fml/time/time_delta.h"
 #include "flutter/fml/time/time_point.h"
 #include "flutter/shell/common/base64.h"
@@ -194,6 +196,167 @@ void Rasterizer::CollectView(int64_t view_id) {
     external_view_embedder_->CollectView(view_id);
   }
   view_records_.erase(view_id);
+}
+
+void Rasterizer::SetDenialRenderOutputs(
+    std::vector<DenialRenderOutput> outputs) {
+  std::sort(outputs.begin(), outputs.end(),
+            [](const auto& left, const auto& right) {
+              return left.render_view_id < right.render_view_id;
+            });
+  if (outputs == denial_render_outputs_) {
+    return;
+  }
+
+  // Configuration is installed only between raster-runner tasks. Collect all
+  // old synthetic views as one transaction so neither retained layer trees nor
+  // backing-store caches can cross topology generations.
+  for (const auto& output : denial_render_outputs_) {
+    CollectView(output.render_view_id);
+  }
+  if (!outputs.empty()) {
+    CollectView(kFlutterImplicitViewId);
+  }
+
+  denial_render_output_generation_ =
+      outputs.empty() ? 0 : outputs.front().configuration_generation;
+  denial_render_outputs_ = std::move(outputs);
+  denial_pending_output_tasks_.clear();
+  denial_selected_render_view_ids_.clear();
+  denial_render_selection_pending_ = false;
+}
+
+void Rasterizer::PrepareDenialRenderOutputs(
+    std::vector<int64_t> render_view_ids,
+    std::vector<int64_t> texture_identifiers) {
+  denial_selected_render_view_ids_.clear();
+  denial_selected_render_view_ids_.insert(render_view_ids.begin(),
+                                          render_view_ids.end());
+  denial_render_selection_pending_ = true;
+  for (int64_t texture_id : texture_identifiers) {
+    MarkTextureFrameAvailable(texture_id);
+  }
+}
+
+void Rasterizer::DrawDenialRenderOutputs(
+    std::vector<int64_t> render_view_ids,
+    std::vector<int64_t> texture_identifiers,
+    std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder) {
+  if (!surface_) {
+    return;
+  }
+  for (int64_t texture_id : texture_identifiers) {
+    MarkTextureFrameAvailable(texture_id);
+  }
+
+  auto dirty_texture_ids = std::move(pending_texture_ids_);
+  pending_texture_ids_.clear();
+  std::vector<std::unique_ptr<LayerTreeTask>> tasks;
+  tasks.reserve(render_view_ids.size());
+  for (int64_t view_id : render_view_ids) {
+    std::unique_ptr<LayerTreeTask> task;
+    auto pending = denial_pending_output_tasks_.find(view_id);
+    if (pending != denial_pending_output_tasks_.end()) {
+      task = std::move(pending->second);
+      denial_pending_output_tasks_.erase(pending);
+    } else {
+      auto view = view_records_.find(view_id);
+      if (view == view_records_.end() || !view->second.last_successful_task) {
+        continue;
+      }
+      task = std::move(view->second.last_successful_task);
+      task->is_reused_layer_tree = true;
+    }
+    task->dirty_texture_ids = dirty_texture_ids;
+    tasks.push_back(std::move(task));
+  }
+  if (tasks.empty()) {
+    pending_texture_ids_ = std::move(dirty_texture_ids);
+    return;
+  }
+
+  DoDrawResult result =
+      DrawToSurfaces(*frame_timings_recorder, std::move(tasks));
+  if (external_view_embedder_ && external_view_embedder_->GetUsedThisFrame()) {
+    bool should_resubmit_frame = ShouldResubmitFrame(result);
+    external_view_embedder_->SetUsedThisFrame(false);
+    external_view_embedder_->EndFrame(should_resubmit_frame,
+                                      raster_thread_merger_);
+  }
+}
+
+const DenialRenderOutput* Rasterizer::FindDenialRenderOutput(
+    int64_t view_id) const {
+  auto found = std::lower_bound(
+      denial_render_outputs_.begin(), denial_render_outputs_.end(), view_id,
+      [](const DenialRenderOutput& output, int64_t candidate) {
+        return output.render_view_id < candidate;
+      });
+  return found != denial_render_outputs_.end() &&
+                 found->render_view_id == view_id
+             ? &*found
+             : nullptr;
+}
+
+std::vector<std::unique_ptr<LayerTreeTask>>
+Rasterizer::ExpandDenialRenderOutputTasks(
+    std::vector<std::unique_ptr<LayerTreeTask>> tasks) {
+  if (denial_render_outputs_.empty()) {
+    return tasks;
+  }
+
+  std::vector<std::unique_ptr<LayerTreeTask>> expanded;
+  expanded.reserve(tasks.size() + denial_render_outputs_.size());
+  bool expanded_implicit_view = false;
+  for (auto& task : tasks) {
+    if (task->view_id != kFlutterImplicitViewId) {
+      expanded.push_back(std::move(task));
+      continue;
+    }
+
+    expanded_implicit_view = true;
+    const auto source_root = task->layer_tree->root_layer_shared();
+    for (const auto& output : denial_render_outputs_) {
+      const auto& source = output.source_physical_bounds;
+      const auto scale_x =
+          static_cast<DlScalar>(output.target_size.width) / source.GetWidth();
+      const auto scale_y =
+          static_cast<DlScalar>(output.target_size.height) / source.GetHeight();
+      const DlMatrix projection =
+          DlMatrix::MakeScale({scale_x, scale_y, 1.0f}) *
+          DlMatrix::MakeTranslation({-source.GetX(), -source.GetY(), 0.0f});
+
+      auto transform = std::make_shared<TransformLayer>(projection);
+      transform->Add(source_root);
+      auto clip = std::make_shared<ClipRectLayer>(
+          DlRect::MakeWH(output.target_size.width, output.target_size.height),
+          Clip::kHardEdge);
+      clip->Add(transform);
+
+      auto output_task = std::make_unique<LayerTreeTask>(
+          output.render_view_id,
+          std::make_unique<LayerTree>(clip, output.target_size),
+          static_cast<float>(output.scale_120) / 120.0f);
+      output_task->render_output_configuration_generation =
+          output.configuration_generation;
+      output_task->dirty_texture_ids = task->dirty_texture_ids;
+      const bool selected =
+          !denial_render_selection_pending_ ||
+          denial_selected_render_view_ids_.contains(output.render_view_id);
+      if (selected) {
+        denial_pending_output_tasks_.erase(output.render_view_id);
+        expanded.push_back(std::move(output_task));
+      } else {
+        denial_pending_output_tasks_[output.render_view_id] =
+            std::move(output_task);
+      }
+    }
+  }
+  if (expanded_implicit_view) {
+    denial_selected_render_view_ids_.clear();
+    denial_render_selection_pending_ = false;
+  }
+  return expanded;
 }
 
 std::shared_ptr<flutter::TextureRegistry> Rasterizer::GetTextureRegistry() {
@@ -648,6 +811,8 @@ Rasterizer::DoDrawResult Rasterizer::DrawToSurfaces(
 std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
     FrameTimingsRecorder& frame_timings_recorder,
     std::vector<std::unique_ptr<LayerTreeTask>> tasks) {
+  tasks = ExpandDenialRenderOutputTasks(std::move(tasks));
+
   compositor_context_->ui_time().SetLapTime(
       frame_timings_recorder.GetBuildDuration());
 
@@ -655,7 +820,12 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
   auto task_iter = tasks.begin();
   while (task_iter != tasks.end()) {
     LayerTreeTask& task = **task_iter;
-    if (delegate_.ShouldDiscardLayerTree(task.view_id, *task.layer_tree)) {
+    const bool stale_denial_output =
+        task.render_output_configuration_generation.has_value() &&
+        task.render_output_configuration_generation !=
+            denial_render_output_generation_;
+    if (stale_denial_output ||
+        delegate_.ShouldDiscardLayerTree(task.view_id, *task.layer_tree)) {
       EnsureViewRecord(task.view_id).last_draw_status =
           DrawSurfaceStatus::kDiscarded;
       task_iter = tasks.erase(task_iter);
@@ -712,11 +882,15 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
     if (status == DrawSurfaceStatus::kSuccess) {
       view_record.last_successful_task = std::make_unique<LayerTreeTask>(
           view_id, std::move(layer_tree), device_pixel_ratio);
+      view_record.last_successful_task->render_output_configuration_generation =
+          task->render_output_configuration_generation;
     } else if (status == DrawSurfaceStatus::kRetry) {
       auto retry_task = std::make_unique<LayerTreeTask>(
           view_id, std::move(layer_tree), device_pixel_ratio);
       retry_task->is_reused_layer_tree = is_reused_layer_tree;
       retry_task->dirty_texture_ids = std::move(dirty_texture_ids);
+      retry_task->render_output_configuration_generation =
+          task->render_output_configuration_generation;
       resubmitted_tasks.push_back(std::move(retry_task));
     }
   }
@@ -752,11 +926,12 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     float device_pixel_ratio,
     std::optional<fml::TimePoint> presentation_time) {
   FML_DCHECK(surface_);
+  const bool denial_output_task = FindDenialRenderOutput(view_id) != nullptr;
 
   DlCanvas* embedder_root_canvas = nullptr;
   if (external_view_embedder_) {
-    external_view_embedder_->PrepareFlutterView(layer_tree.frame_size(),
-                                                device_pixel_ratio);
+    external_view_embedder_->PrepareFlutterView(
+        view_id, layer_tree.frame_size(), device_pixel_ratio);
     // TODO(dkwingsmt): Add view ID here.
     embedder_root_canvas = external_view_embedder_->GetRootCanvas();
   }
@@ -768,6 +943,19 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
   auto frame = surface_->AcquireFrame(layer_tree.frame_size());
   if (frame == nullptr) {
     return DrawSurfaceStatus::kFailed;
+  }
+
+  std::optional<DlRegion> denial_existing_damage;
+  if (denial_output_task) {
+    if (!external_view_embedder_) {
+      return DrawSurfaceStatus::kFailed;
+    }
+    auto prepared_target = external_view_embedder_->PrepareDenialRenderTarget(
+        view_id, surface_->GetContext(), surface_->GetAiksContext());
+    if (!prepared_target.has_value()) {
+      return DrawSurfaceStatus::kFailed;
+    }
+    denial_existing_damage = std::move(prepared_target->existing_damage);
   }
 
   // If the external view embedder has specified an optional root surface, the
@@ -796,7 +984,8 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     RasterDamagePolicy damage_policy = RasterDamagePolicy::kFullRepaint;
     // when leaf layer tracing is enabled we wish to repaint the whole frame
     // for accurate performance metrics.
-    if (frame->framebuffer_info().supports_partial_repaint) {
+    if (denial_output_task ||
+        frame->framebuffer_info().supports_partial_repaint) {
       // Disable partial repaint if external_view_embedder_ SubmitFlutterView is
       // involved - ExternalViewEmbedder unconditionally clears the entire
       // surface and also partial repaint with platform view present is
@@ -808,18 +997,24 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
       damage = std::make_unique<FrameDamage>();
       damage->SetPreviousLayerTree(previous_layer_tree);
       damage->SetDirtyTextureIds(dirty_texture_ids);
-      damage->SetExistingDamage(frame->framebuffer_info().existing_damage);
+      damage->SetExistingDamage(
+          denial_output_task ? denial_existing_damage
+                             : frame->framebuffer_info().existing_damage);
       damage->SetClipAlignment(
           frame->framebuffer_info().horizontal_clip_alignment,
           frame->framebuffer_info().vertical_clip_alignment);
-      if (frame->framebuffer_info().existing_damage.has_value() &&
-          !platform_requires_full_repaint) {
+      const bool has_known_existing_damage =
+          denial_output_task
+              ? denial_existing_damage.has_value()
+              : frame->framebuffer_info().existing_damage.has_value();
+      if (has_known_existing_damage &&
+          (denial_output_task || !platform_requires_full_repaint)) {
         damage_policy = RasterDamagePolicy::kUseDamageRegion;
       }
     }
 
     bool ignore_raster_cache = true;
-    if (surface_->EnableRasterCache()) {
+    if (!denial_output_task && surface_->EnableRasterCache()) {
       ignore_raster_cache = false;
     }
 

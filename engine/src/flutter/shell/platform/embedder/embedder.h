@@ -3588,6 +3588,23 @@ FlutterEngineResult FlutterEngineScheduleFrame(FLUTTER_API_SYMBOL(FlutterEngine)
                                                    engine);
 
 //------------------------------------------------------------------------------
+/// @brief      Requests a texture-only frame without publishing any dirty
+///             texture identifiers.
+///
+///             This Denial extension lets the compositor prepare AwaitVSync
+///             while the preceding raster transaction is still finishing.
+///             Texture identifiers are published only after that transaction
+///             ends and the next client-buffer generation becomes current.
+///
+/// @param[in]  engine     A running engine instance.
+///
+/// @return the result of the call made to the engine.
+///
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineRequestFrameForExternalTextures(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine);
+
+//------------------------------------------------------------------------------
 /// @brief      Records a set of updated external textures and schedules one
 ///             frame which reuses the previous layer tree unless the Flutter
 ///             framework has independently requested a rebuild.
@@ -3607,6 +3624,77 @@ FlutterEngineResult DenialFlutterEngineScheduleFrameForExternalTextures(
     FLUTTER_API_SYMBOL(FlutterEngine) engine,
     const int64_t* texture_identifiers,
     size_t texture_count);
+
+//------------------------------------------------------------------------------
+/// @brief      Authorizes one raster transaction for selected Denial physical
+///             outputs. Arrays are copied synchronously. A texture array may
+///             be null only when `texture_count` is zero.
+///
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineRenderOutputs(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const int64_t* render_view_ids,
+    size_t render_view_count,
+    const int64_t* texture_identifiers,
+    size_t texture_count,
+    bool rebuild_scene,
+    uint64_t frame_start_time_nanos,
+    uint64_t frame_target_time_nanos);
+
+//------------------------------------------------------------------------------
+/// Physical-output transforms understood by Denial's raster fan-out. The
+/// transform remains part of the configuration identity even when KMS applies
+/// the corresponding rotation after Flutter has rendered the output's
+/// transformed pixel extent.
+typedef enum {
+  kDenialFlutterOutputTransformNormal,
+  kDenialFlutterOutputTransformRotate90,
+  kDenialFlutterOutputTransformRotate180,
+  kDenialFlutterOutputTransformRotate270,
+  kDenialFlutterOutputTransformFlipped,
+  kDenialFlutterOutputTransformFlipped90,
+  kDenialFlutterOutputTransformFlipped180,
+  kDenialFlutterOutputTransformFlipped270,
+} DenialFlutterOutputTransform;
+
+//------------------------------------------------------------------------------
+/// One physical raster target projected from the implicit Flutter view.
+/// Source coordinates are in the implicit view's physical-pixel coordinate
+/// space. Target dimensions are the output's transformed physical extent.
+typedef struct {
+  size_t struct_size;
+  int64_t render_view_id;
+  uint64_t configuration_generation;
+  double source_physical_x;
+  double source_physical_y;
+  double source_physical_width;
+  double source_physical_height;
+  size_t target_width;
+  size_t target_height;
+  uint32_t scale_120;
+  DenialFlutterOutputTransform transform;
+} DenialFlutterRenderOutput;
+
+//------------------------------------------------------------------------------
+/// @brief      Atomically replaces Denial's physical raster-target snapshot.
+///
+///             The array is copied synchronously and installed on the raster
+///             thread between frame transactions. Synthetic render view IDs
+///             must be negative and unique. Every entry must belong to the
+///             same non-zero configuration generation. An empty array removes
+///             every physical target.
+///
+/// @param[in]  engine        A running engine instance.
+/// @param[in]  outputs       Complete output snapshot, or null when count is 0.
+/// @param[in]  output_count  Number of entries in `outputs`.
+///
+/// @return the result of the call made to the engine.
+///
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineSetRenderOutputs(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const DenialFlutterRenderOutput* outputs,
+    size_t output_count);
 
 //------------------------------------------------------------------------------
 /// Callback used to declare whether an external-texture resolve may mutate GL

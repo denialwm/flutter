@@ -326,6 +326,10 @@ void CompositorContext::ScopedFrame::PaintLayerTreeImpeller(
   if (canvas()) {
     if (clip_region) {
       ClipCanvasToRegion(canvas(), *clip_region);
+      // Partial repaint preserves the target outside the clip. Clear the
+      // repaired pixels themselves so transparent content removed by this
+      // frame cannot survive from an older buffer generation.
+      canvas()->Clear(DlColor::kTransparent());
     }
   }
 

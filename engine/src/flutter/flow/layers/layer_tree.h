@@ -53,6 +53,9 @@ class LayerTree {
       GrDirectContext* gr_context = nullptr);
 
   Layer* root_layer() const { return root_layer_.get(); }
+  const std::shared_ptr<Layer>& root_layer_shared() const {
+    return root_layer_;
+  }
   const DlISize& frame_size() const { return frame_size_; }
 
   const PaintRegionMap& paint_region_map() const { return paint_region_map_; }
@@ -118,6 +121,9 @@ struct LayerTreeTask {
   /// Texture IDs that requested this autonomous redraw. A missing value keeps
   /// Flutter's conservative behavior and damages every TextureLayer.
   std::optional<std::unordered_set<int64_t>> dirty_texture_ids;
+  /// Denial's physical-output configuration generation for a synthetic
+  /// render-view task. The implicit Dart view leaves this unset.
+  std::optional<uint64_t> render_output_configuration_generation;
 
  private:
   FML_DISALLOW_COPY_AND_ASSIGN(LayerTreeTask);

@@ -66,6 +66,7 @@ bool EmbedderExternalView::HasPlatformView() const {
 }
 
 const DlRegion& EmbedderExternalView::GetDlRegion() const {
+  TryEndRecording();
   return slice_->getRegion();
 }
 
@@ -112,17 +113,20 @@ static void InvalidateApiState(SkSurface& skia_surface) {
 #endif
 
 bool EmbedderExternalView::Render(const EmbedderRenderTarget& render_target,
-                                  bool clear_surface) {
+                                  bool clear_surface,
+                                  bool clear_impeller_surface) {
   TRACE_EVENT0("flutter", "EmbedderExternalView::Render");
   TryEndRecording();
-  FML_DCHECK(HasEngineRenderedContents())
-      << "Unnecessarily asked to render into a render target when there was "
-         "nothing to render.";
 
 #ifdef IMPELLER_SUPPORTS_RENDERING
   auto* impeller_target = render_target.GetImpellerRenderTarget();
   if (impeller_target) {
     auto aiks_context = render_target.GetAiksContext();
+
+    auto color0 = impeller_target->GetColorAttachment(0u);
+    color0.load_action = clear_impeller_surface ? impeller::LoadAction::kClear
+                                                : impeller::LoadAction::kLoad;
+    impeller_target->SetColorAttachment(color0, 0u);
 
     auto dl_builder = DisplayListBuilder();
     dl_builder.SetTransform(surface_transformation_);

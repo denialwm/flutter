@@ -84,18 +84,24 @@ sk_sp<GrDirectContext> GPUSurfaceGLSkia::MakeGLContext(
 }
 
 GPUSurfaceGLSkia::GPUSurfaceGLSkia(GPUSurfaceGLDelegate* delegate,
-                                   bool render_to_surface)
-    : GPUSurfaceGLSkia(MakeGLContext(delegate), delegate, render_to_surface) {
+                                   bool render_to_surface,
+                                   bool forward_external_view_damage)
+    : GPUSurfaceGLSkia(MakeGLContext(delegate),
+                       delegate,
+                       render_to_surface,
+                       forward_external_view_damage) {
   context_owner_ = true;
 }
 
 GPUSurfaceGLSkia::GPUSurfaceGLSkia(const sk_sp<GrDirectContext>& gr_context,
                                    GPUSurfaceGLDelegate* delegate,
-                                   bool render_to_surface)
+                                   bool render_to_surface,
+                                   bool forward_external_view_damage)
     : delegate_(delegate),
       context_(gr_context),
       gl_interface_(delegate->GetGLInterface()),
       render_to_surface_(render_to_surface),
+      forward_external_view_damage_(forward_external_view_damage),
       weak_factory_(this) {
   auto context_switch = delegate_->GLContextMakeCurrent();
   if (!context_switch->GetResult()) {
@@ -342,7 +348,13 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLSkia::AcquireFrame(
         [](const SurfaceFrame& surface_frame, DlCanvas* canvas) {
           return true;
         },
-        [](const SurfaceFrame& surface_frame) { return true; }, size);
+        [weak = weak_factory_.GetWeakPtr(),
+         forward_damage =
+             forward_external_view_damage_](const SurfaceFrame& surface_frame) {
+          return !forward_damage ||
+                 (weak && weak->PresentExternalViewDamage(surface_frame));
+        },
+        size);
   }
 
   const auto root_surface_transformation = GetRootTransformation();
@@ -378,6 +390,22 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLSkia::AcquireFrame(
   return std::make_unique<SurfaceFrame>(surface, framebuffer_info,
                                         encode_callback, submit_callback, size,
                                         std::move(context_switch));
+}
+
+bool GPUSurfaceGLSkia::PresentExternalViewDamage(const SurfaceFrame& frame) {
+  if (delegate_ == nullptr) {
+    return false;
+  }
+  const auto& buffer_damage = frame.submit_info().buffer_damage;
+  delegate_->GLContextSetDamageRegion(
+      buffer_damage ? std::make_optional(buffer_damage->bounds())
+                    : std::nullopt);
+  return delegate_->GLContextPresent({
+      .fbo_id = 0u,
+      .frame_damage = frame.submit_info().frame_damage,
+      .presentation_time = frame.submit_info().presentation_time,
+      .buffer_damage = buffer_damage,
+  });
 }
 
 bool GPUSurfaceGLSkia::PresentSurface(const SurfaceFrame& frame) {

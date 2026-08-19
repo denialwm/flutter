@@ -222,17 +222,33 @@ class Shell final : public PlatformView::Delegate,
                  const std::function<void(Engine::RunStatus)>& result_callback);
 
   //----------------------------------------------------------------------------
+  /// @brief      Asks the animator for a texture-only frame without publishing
+  ///             any dirty texture identifiers.
+  ///
+  ///             Calls made before an already-pending frame are coalesced.
+  ///
+  void RequestFrameForExternalTextures();
+
   /// @brief      Records one compositor-owned texture transaction and asks the
   ///             animator to raster it without forcing a Dart layer-tree
   ///             rebuild.
   ///
-  ///             Calls made before an already-pending framework frame are
-  ///             coalesced into that frame. The texture identifiers are copied
-  ///             into one raster-runner task before the UI-runner request is
-  ///             posted.
+  ///             The texture identifiers are copied into one raster-runner
+  ///             task before the UI-runner request is posted. Callers which
+  ///             requested the frame early may publish them at display
+  ///             authorization; Animator coalescing retains that AwaitVSync.
   ///
   void ScheduleFrameForExternalTextures(
       std::vector<int64_t> texture_identifiers);
+
+  /// @brief      Authorizes one raster transaction for selected physical
+  ///             outputs. A rebuilt scene comes from the next Dart frame;
+  ///             otherwise the rasterizer consumes its latest retained scene.
+  void RenderOutputs(std::vector<int64_t> render_view_ids,
+                     std::vector<int64_t> texture_identifiers,
+                     bool rebuild_scene,
+                     uint64_t frame_start_time_nanos,
+                     uint64_t frame_target_time_nanos);
 
   //------------------------------------------------------------------------------
   /// @return     The settings used to launch this shell.

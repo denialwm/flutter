@@ -465,6 +465,13 @@ InferOpenGLPlatformViewCreationCallback(
     };
   };
 
+  if (external_view_embedder) {
+    external_view_embedder->SetExistingDamageCallback(
+        [gl_populate_existing_damage](intptr_t framebuffer) {
+          return gl_populate_existing_damage(framebuffer).existing_damage;
+        });
+  }
+
   const FlutterOpenGLRendererConfig* open_gl_config = &config->open_gl;
   std::function<bool()> gl_make_resource_current_callback = nullptr;
   if (SAFE_ACCESS(open_gl_config, make_resource_current, nullptr) != nullptr) {
@@ -551,10 +558,10 @@ InferOpenGLPlatformViewCreationCallback(
             shell,                   // delegate
             shell.GetTaskRunners(),  // task runners
             std::make_unique<flutter::EmbedderSurfaceGLSkia>(
-                gl_dispatch_table, fbo_reset_after_present,
-                view_embedder),       // embedder_surface
-            platform_dispatch_table,  // embedder platform dispatch table
-            view_embedder             // external view embedder
+                gl_dispatch_table, fbo_reset_after_present, view_embedder,
+                fbo_zero_is_no_target),  // embedder_surface
+            platform_dispatch_table,     // embedder platform dispatch table
+            view_embedder                // external view embedder
         );
       });
 #else   // SHELL_ENABLE_GL
@@ -1205,7 +1212,12 @@ MakeRenderTargetFromBackingStoreImpeller(
 
   const auto& gl_context =
       impeller::ContextGLES::Cast(*aiks_context->GetContext());
-  const bool implicit_msaa = aiks_context->GetContext()
+  // Denial's negative render views wrap compositor-owned, persistent,
+  // single-sample FBOs. Describing those FBOs as multisample would both add
+  // unnecessary resolve work and make LoadAction::kLoad unable to preserve
+  // their previous color contents during a partial repaint.
+  const bool implicit_msaa = config.view_id >= kFlutterImplicitViewId &&
+                             aiks_context->GetContext()
                                  ->GetCapabilities()
                                  ->SupportsImplicitResolvingMSAA();
   const auto size = impeller::ISize(config.size.width, config.size.height);
@@ -1225,8 +1237,45 @@ MakeRenderTargetFromBackingStoreImpeller(
   color0_tex.storage_mode = impeller::StorageMode::kDevicePrivate;
 
   impeller::ColorAttachment color0;
-  color0.texture = impeller::TextureGLES::WrapFBO(
-      gl_context.GetReactor(), color0_tex, framebuffer->name);
+  if (config.view_id < kFlutterImplicitViewId) {
+    // Denial's output FBOs are persistent and always have a level-zero color
+    // texture. Expose that texture to Impeller so backdrop reads can stay on
+    // the output target instead of allocating and copying a full-size
+    // intermediate surface. The compositor retains ownership of both names.
+    const auto& gl = gl_context.GetReactor()->GetProcTable();
+    gl.BindFramebuffer(GL_FRAMEBUFFER, framebuffer->name);
+    GLint attachment_type = GL_NONE;
+    GLint attachment_name = GL_NONE;
+    GLint attachment_level = -1;
+    gl.GetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+        GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &attachment_type);
+    if (attachment_type == GL_TEXTURE) {
+      gl.GetFramebufferAttachmentParameteriv(
+          GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+          GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &attachment_name);
+      gl.GetFramebufferAttachmentParameteriv(
+          GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+          GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL, &attachment_level);
+    }
+    if (attachment_name <= GL_NONE || attachment_level != 0) {
+      FML_LOG(ERROR) << "Denial output FBO " << framebuffer->name
+                     << " has no level-zero color texture.";
+      return nullptr;
+    }
+    color0_tex.usage = impeller::TextureUsage::kRenderTarget |
+                       impeller::TextureUsage::kShaderRead;
+    color0.texture = impeller::TextureGLES::WrapFBOTexture(
+        gl_context.GetReactor(), color0_tex, framebuffer->name,
+        attachment_name);
+  } else {
+    color0.texture = impeller::TextureGLES::WrapFBO(
+        gl_context.GetReactor(), color0_tex, framebuffer->name);
+  }
+  if (!color0.texture) {
+    FML_LOG(ERROR) << "Could not wrap embedder supplied OpenGL framebuffer.";
+    return nullptr;
+  }
   color0.clear_color = impeller::Color::DarkSlateGray();
   color0.load_action = impeller::LoadAction::kClear;
   if (implicit_msaa) {
@@ -3747,6 +3796,21 @@ FlutterEngineResult FlutterEngineScheduleFrame(FLUTTER_API_SYMBOL(FlutterEngine)
 }
 
 FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineRequestFrameForExternalTextures(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine) {
+  if (engine == nullptr) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments, "Invalid engine handle.");
+  }
+
+  return reinterpret_cast<flutter::EmbedderEngine*>(engine)
+                 ->RequestFrameForExternalTextures()
+             ? kSuccess
+             : LOG_EMBEDDER_ERROR(
+                   kInternalInconsistency,
+                   "Could not request Denial external-texture frame.");
+}
+
+FLUTTER_EXPORT
 FlutterEngineResult DenialFlutterEngineScheduleFrameForExternalTextures(
     FLUTTER_API_SYMBOL(FlutterEngine) engine,
     const int64_t* texture_identifiers,
@@ -3772,6 +3836,157 @@ FlutterEngineResult DenialFlutterEngineScheduleFrameForExternalTextures(
              : LOG_EMBEDDER_ERROR(
                    kInternalInconsistency,
                    "Could not schedule Denial external-texture frame.");
+}
+
+namespace {
+
+constexpr size_t kMaximumDenialRenderOutputCount = 128;
+constexpr size_t kMaximumDenialRenderTargetDimension = 32768;
+
+static std::optional<flutter::DenialRenderOutputTransform>
+ToDenialRenderOutputTransform(DenialFlutterOutputTransform transform) {
+  using Internal = flutter::DenialRenderOutputTransform;
+  switch (transform) {
+    case kDenialFlutterOutputTransformNormal:
+      return Internal::kNormal;
+    case kDenialFlutterOutputTransformRotate90:
+      return Internal::kRotate90;
+    case kDenialFlutterOutputTransformRotate180:
+      return Internal::kRotate180;
+    case kDenialFlutterOutputTransformRotate270:
+      return Internal::kRotate270;
+    case kDenialFlutterOutputTransformFlipped:
+      return Internal::kFlipped;
+    case kDenialFlutterOutputTransformFlipped90:
+      return Internal::kFlipped90;
+    case kDenialFlutterOutputTransformFlipped180:
+      return Internal::kFlipped180;
+    case kDenialFlutterOutputTransformFlipped270:
+      return Internal::kFlipped270;
+  }
+  return std::nullopt;
+}
+
+}  // namespace
+
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineRenderOutputs(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const int64_t* render_view_ids,
+    size_t render_view_count,
+    const int64_t* texture_identifiers,
+    size_t texture_count,
+    bool rebuild_scene,
+    uint64_t frame_start_time_nanos,
+    uint64_t frame_target_time_nanos) {
+  if (engine == nullptr || render_view_ids == nullptr ||
+      render_view_count == 0 ||
+      render_view_count > kMaximumDenialRenderOutputCount ||
+      (texture_identifiers == nullptr && texture_count != 0) ||
+      frame_start_time_nanos > frame_target_time_nanos ||
+      frame_target_time_nanos >
+          static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Invalid Denial output-render transaction.");
+  }
+
+  std::set<int64_t> unique_render_views;
+  std::vector<int64_t> render_views;
+  render_views.reserve(render_view_count);
+  for (size_t index = 0; index < render_view_count; index++) {
+    const int64_t view_id = render_view_ids[index];
+    if (view_id >= 0 || !unique_render_views.insert(view_id).second) {
+      return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                                "Invalid Denial render-view identifier.");
+    }
+    render_views.push_back(view_id);
+  }
+
+  std::set<int64_t> unique_textures;
+  std::vector<int64_t> textures;
+  textures.reserve(texture_count);
+  for (size_t index = 0; index < texture_count; index++) {
+    const int64_t texture_id = texture_identifiers[index];
+    if (texture_id == 0 || !unique_textures.insert(texture_id).second) {
+      return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                                "Invalid Denial texture identifier.");
+    }
+    textures.push_back(texture_id);
+  }
+
+  return reinterpret_cast<flutter::EmbedderEngine*>(engine)->RenderOutputs(
+             std::move(render_views), std::move(textures), rebuild_scene,
+             frame_start_time_nanos, frame_target_time_nanos)
+             ? kSuccess
+             : LOG_EMBEDDER_ERROR(
+                   kInternalInconsistency,
+                   "Could not authorize Denial output-render transaction.");
+}
+
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineSetRenderOutputs(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const DenialFlutterRenderOutput* outputs,
+    size_t output_count) {
+  if (engine == nullptr || (outputs == nullptr && output_count != 0) ||
+      output_count > kMaximumDenialRenderOutputCount) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Invalid Denial render-output snapshot.");
+  }
+
+  std::vector<flutter::DenialRenderOutput> render_outputs;
+  render_outputs.reserve(output_count);
+  std::set<int64_t> render_view_ids;
+  std::optional<uint64_t> configuration_generation;
+  for (size_t index = 0; index < output_count; index++) {
+    const auto& output = outputs[index];
+    const auto transform = ToDenialRenderOutputTransform(output.transform);
+    const bool finite_source = std::isfinite(output.source_physical_x) &&
+                               std::isfinite(output.source_physical_y) &&
+                               std::isfinite(output.source_physical_width) &&
+                               std::isfinite(output.source_physical_height);
+    if (output.struct_size < sizeof(DenialFlutterRenderOutput) ||
+        output.render_view_id >= 0 ||
+        !render_view_ids.insert(output.render_view_id).second ||
+        output.configuration_generation == 0 || !finite_source ||
+        output.source_physical_x < 0.0 || output.source_physical_y < 0.0 ||
+        output.source_physical_width <= 0.0 ||
+        output.source_physical_height <= 0.0 || output.target_width == 0 ||
+        output.target_height == 0 ||
+        output.target_width > kMaximumDenialRenderTargetDimension ||
+        output.target_height > kMaximumDenialRenderTargetDimension ||
+        output.scale_120 == 0 || !transform.has_value()) {
+      return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                                "Invalid Denial render-output entry.");
+    }
+    if (configuration_generation.has_value() &&
+        configuration_generation.value() != output.configuration_generation) {
+      return LOG_EMBEDDER_ERROR(
+          kInvalidArguments,
+          "Denial render outputs span multiple configuration generations.");
+    }
+    configuration_generation = output.configuration_generation;
+
+    render_outputs.push_back({
+        .render_view_id = output.render_view_id,
+        .configuration_generation = output.configuration_generation,
+        .source_physical_bounds = flutter::DlRect::MakeXYWH(
+            output.source_physical_x, output.source_physical_y,
+            output.source_physical_width, output.source_physical_height),
+        .target_size =
+            flutter::DlISize(static_cast<int32_t>(output.target_width),
+                             static_cast<int32_t>(output.target_height)),
+        .scale_120 = output.scale_120,
+        .transform = transform.value(),
+    });
+  }
+
+  return reinterpret_cast<flutter::EmbedderEngine*>(engine)->SetRenderOutputs(
+             std::move(render_outputs))
+             ? kSuccess
+             : LOG_EMBEDDER_ERROR(
+                   kInternalInconsistency,
+                   "Could not install Denial render-output snapshot.");
 }
 
 #ifdef SHELL_ENABLE_GL

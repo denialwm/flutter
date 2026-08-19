@@ -7,6 +7,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 
 #include "flutter/flow/embedded_views.h"
@@ -37,6 +38,8 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   using PresentCallback =
       std::function<bool(FlutterViewId view_id,
                          const std::vector<const FlutterLayer*>& layers)>;
+  using ExistingDamageCallback =
+      std::function<std::optional<DlRegion>(intptr_t framebuffer)>;
   using SurfaceTransformationCallback = std::function<DlMatrix(void)>;
 
   //----------------------------------------------------------------------------
@@ -80,7 +83,20 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   void SetSurfaceTransformationCallback(
       SurfaceTransformationCallback surface_transformation_callback);
 
+  /// Selects the persistent backing store for one synthetic Denial output
+  /// before layer-tree diffing. Buffer-age repair belongs to this exact FBO,
+  /// so the rasterizer must know it before choosing the repaint region.
+  std::optional<PreparedRenderTarget> PrepareDenialRenderTarget(
+      int64_t flutter_view_id,
+      GrDirectContext* context,
+      const std::shared_ptr<impeller::AiksContext>& aiks_context) override;
+
+  void SetExistingDamageCallback(
+      ExistingDamageCallback existing_damage_callback);
+
  private:
+  friend class EmbedderExternalViewEmbedderTestPeer;
+
   // |ExternalViewEmbedder|
   void CancelFrame() override;
 
@@ -88,6 +104,11 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   void BeginFrame(GrDirectContext* context,
                   const fml::RefPtr<fml::RasterThreadMerger>&
                       raster_thread_merger) override;
+
+  // |ExternalViewEmbedder|
+  void PrepareFlutterView(int64_t flutter_view_id,
+                          DlISize frame_size,
+                          double device_pixel_ratio) override;
 
   // |ExternalViewEmbedder|
   void PrepareFlutterView(DlISize frame_size,
@@ -115,7 +136,9 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   const bool avoid_backing_store_cache_;
   const CreateRenderTargetCallback create_render_target_callback_;
   const PresentCallback present_callback_;
+  ExistingDamageCallback existing_damage_callback_;
   SurfaceTransformationCallback surface_transformation_callback_;
+  std::unique_ptr<EmbedderRenderTarget> pending_denial_render_target_;
   DlISize pending_frame_size_;
   double pending_device_pixel_ratio_ = 1.0;
   DlMatrix pending_surface_transformation_;
