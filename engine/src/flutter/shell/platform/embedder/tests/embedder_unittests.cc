@@ -4,6 +4,7 @@
 
 #define FML_USED_ON_EMBEDDER
 
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -62,6 +63,99 @@ TEST(EmbedderTestNoFixture, MustNotRunWithInvalidArgs) {
       context, EmbedderConfigBuilder::InitializationPreference::kNoInitialize);
   auto engine = builder.LaunchEngine();
   ASSERT_FALSE(engine.is_valid());
+}
+
+TEST(EmbedderTestNoFixture, DenialRenderOutputSnapshotRejectsMalformedEntries) {
+  DenialFlutterRenderOutput valid = {
+      .struct_size = sizeof(DenialFlutterRenderOutput),
+      .render_view_id = -1,
+      .configuration_generation = 7,
+      .source_physical_x = 0.0,
+      .source_physical_y = 0.0,
+      .source_physical_width = 800.0,
+      .source_physical_height = 600.0,
+      .target_width = 1200,
+      .target_height = 900,
+      .scale_120 = 180,
+      .transform = kDenialFlutterOutputTransformNormal,
+  };
+  auto unreachable_engine =
+      reinterpret_cast<FlutterEngine>(static_cast<uintptr_t>(1));
+
+  EXPECT_EQ(DenialFlutterEngineSetRenderOutputs(nullptr, &valid, 1),
+            kInvalidArguments);
+  EXPECT_EQ(DenialFlutterEngineSetRenderOutputs(unreachable_engine, nullptr, 1),
+            kInvalidArguments);
+
+  auto malformed = valid;
+  malformed.struct_size--;
+  EXPECT_EQ(
+      DenialFlutterEngineSetRenderOutputs(unreachable_engine, &malformed, 1),
+      kInvalidArguments);
+  malformed = valid;
+  malformed.render_view_id = 0;
+  EXPECT_EQ(
+      DenialFlutterEngineSetRenderOutputs(unreachable_engine, &malformed, 1),
+      kInvalidArguments);
+  malformed = valid;
+  malformed.source_physical_width = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(
+      DenialFlutterEngineSetRenderOutputs(unreachable_engine, &malformed, 1),
+      kInvalidArguments);
+  malformed = valid;
+  malformed.target_width = 0;
+  EXPECT_EQ(
+      DenialFlutterEngineSetRenderOutputs(unreachable_engine, &malformed, 1),
+      kInvalidArguments);
+  malformed = valid;
+  malformed.scale_120 = 0;
+  EXPECT_EQ(
+      DenialFlutterEngineSetRenderOutputs(unreachable_engine, &malformed, 1),
+      kInvalidArguments);
+  malformed = valid;
+  malformed.transform = static_cast<DenialFlutterOutputTransform>(999);
+  EXPECT_EQ(
+      DenialFlutterEngineSetRenderOutputs(unreachable_engine, &malformed, 1),
+      kInvalidArguments);
+
+  DenialFlutterRenderOutput duplicate[] = {valid, valid};
+  EXPECT_EQ(DenialFlutterEngineSetRenderOutputs(unreachable_engine, duplicate,
+                                                std::size(duplicate)),
+            kInvalidArguments);
+  DenialFlutterRenderOutput mixed_generation[] = {valid, valid};
+  mixed_generation[1].render_view_id = -2;
+  mixed_generation[1].configuration_generation++;
+  EXPECT_EQ(
+      DenialFlutterEngineSetRenderOutputs(unreachable_engine, mixed_generation,
+                                          std::size(mixed_generation)),
+      kInvalidArguments);
+}
+
+TEST(EmbedderTestNoFixture, DenialOutputRenderRejectsMalformedTransactions) {
+  auto unreachable_engine =
+      reinterpret_cast<FlutterEngine>(static_cast<uintptr_t>(1));
+  const int64_t view = -1;
+  const int64_t duplicate_views[] = {-1, -1};
+  const int64_t texture = 7;
+  const int64_t duplicate_textures[] = {7, 7};
+
+  EXPECT_EQ(DenialFlutterEngineRenderOutputs(nullptr, &view, 1, nullptr, 0,
+                                             false, 1, 2),
+            kInvalidArguments);
+  EXPECT_EQ(DenialFlutterEngineRenderOutputs(unreachable_engine, nullptr, 1,
+                                             nullptr, 0, false, 1, 2),
+            kInvalidArguments);
+  EXPECT_EQ(DenialFlutterEngineRenderOutputs(
+                unreachable_engine, duplicate_views, std::size(duplicate_views),
+                nullptr, 0, false, 1, 2),
+            kInvalidArguments);
+  EXPECT_EQ(DenialFlutterEngineRenderOutputs(unreachable_engine, &view, 1,
+                                             &texture, 1, false, 2, 1),
+            kInvalidArguments);
+  EXPECT_EQ(DenialFlutterEngineRenderOutputs(
+                unreachable_engine, &view, 1, duplicate_textures,
+                std::size(duplicate_textures), false, 1, 2),
+            kInvalidArguments);
 }
 
 TEST_F(EmbedderTest, CanLaunchAndShutdownWithValidProjectArgs) {

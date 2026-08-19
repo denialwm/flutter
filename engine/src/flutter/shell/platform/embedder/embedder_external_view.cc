@@ -62,6 +62,7 @@ bool EmbedderExternalView::HasPlatformView() const {
 }
 
 const DlRegion& EmbedderExternalView::GetDlRegion() const {
+  TryEndRecording();
   return slice_->getRegion();
 }
 
@@ -89,9 +90,6 @@ const EmbeddedViewParams* EmbedderExternalView::GetEmbeddedViewParams() const {
 void EmbedderExternalView::Render(DlCanvas& dl_canvas, bool clear_surface) {
   TRACE_EVENT0("flutter", "EmbedderExternalView::Render");
   TryEndRecording();
-  FML_DCHECK(HasEngineRenderedContents())
-      << "Unnecessarily asked to render into a render target when there was "
-         "nothing to render.";
 
   int restore_count = dl_canvas.GetSaveCount();
   dl_canvas.SetTransform(surface_transformation_);
@@ -100,6 +98,106 @@ void EmbedderExternalView::Render(DlCanvas& dl_canvas, bool clear_surface) {
   }
   slice_->render_into(&dl_canvas);
   dl_canvas.RestoreToCount(restore_count);
+}
+
+// TODO(https://github.com/flutter/flutter/issues/151670): Implement this for
+//  Impeller as well.
+#if !SLIMPELLER
+static void InvalidateApiState(SkSurface& skia_surface) {
+  auto recording_context = skia_surface.recordingContext();
+
+  // Should never happen.
+  FML_DCHECK(recording_context) << "Recording context was null.";
+
+  auto direct_context = recording_context->asDirectContext();
+  if (direct_context == nullptr) {
+    // Can happen when using software rendering.
+    // Print an error but otherwise continue in that case.
+    FML_LOG(ERROR) << "Embedder asked to invalidate cached graphics API state "
+                      "but Flutter is not using a graphics API.";
+  } else {
+    direct_context->resetContext(kAll_GrBackendState);
+  }
+}
+#endif
+
+bool EmbedderExternalView::Render(const EmbedderRenderTarget& render_target,
+                                  bool clear_surface,
+                                  bool clear_impeller_surface) {
+  TRACE_EVENT0("flutter", "EmbedderExternalView::Render");
+  TryEndRecording();
+
+#ifdef IMPELLER_SUPPORTS_RENDERING
+  auto* impeller_target = render_target.GetImpellerRenderTarget();
+  if (impeller_target) {
+    auto aiks_context = render_target.GetAiksContext();
+
+    auto color0 = impeller_target->GetColorAttachment(0u);
+    color0.load_action = clear_impeller_surface ? impeller::LoadAction::kClear
+                                                : impeller::LoadAction::kLoad;
+    impeller_target->SetColorAttachment(color0, 0u);
+
+    auto dl_builder = DisplayListBuilder();
+    dl_builder.SetTransform(surface_transformation_);
+    slice_->render_into(&dl_builder);
+    auto display_list = dl_builder.Build();
+
+    auto cull_rect =
+        impeller::Rect::MakeSize(impeller_target->GetRenderTargetSize());
+
+    return impeller::RenderToTarget(aiks_context->GetContentContext(),  //
+                                    *impeller_target,                   //
+                                    display_list,                       //
+                                    cull_rect,                          //
+                                    /*reset_host_buffer=*/true,         //
+                                    /*is_onscreen=*/false               //
+    );
+  }
+#endif  // IMPELLER_SUPPORTS_RENDERING
+
+#if SLIMPELLER
+  FML_LOG(FATAL) << "Impeller opt-out unavailable.";
+  return false;
+#else   // SLIMPELLER
+  auto skia_surface = render_target.GetSkiaSurface();
+  if (!skia_surface) {
+    return false;
+  }
+
+  auto [ok, invalidate_api_state] = render_target.MaybeMakeCurrent();
+
+  if (invalidate_api_state) {
+    InvalidateApiState(*skia_surface);
+  }
+  if (!ok) {
+    FML_LOG(ERROR) << "Could not make the surface current.";
+    return false;
+  }
+
+  // Clear the current render target (most likely EGLSurface) at the
+  // end of this scope.
+  fml::ScopedCleanupClosure clear_current_surface([&]() {
+    auto [ok, invalidate_api_state] = render_target.MaybeClearCurrent();
+    if (invalidate_api_state) {
+      InvalidateApiState(*skia_surface);
+    }
+    if (!ok) {
+      FML_LOG(ERROR) << "Could not clear the current surface.";
+    }
+  });
+
+  FML_DCHECK(render_target.GetRenderTargetSize() == render_surface_size_);
+
+  auto canvas = skia_surface->getCanvas();
+  if (!canvas) {
+    return false;
+  }
+  DlSkCanvasAdapter dl_canvas(canvas);
+  Render(dl_canvas, clear_surface);
+  dl_canvas.Flush();
+#endif  //  !SLIMPELLER
+
+  return true;
 }
 
 void EmbedderExternalView::TryEndRecording() const {

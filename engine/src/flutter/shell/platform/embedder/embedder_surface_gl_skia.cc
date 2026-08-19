@@ -13,9 +13,11 @@ namespace flutter {
 EmbedderSurfaceGLSkia::EmbedderSurfaceGLSkia(
     GLDispatchTable gl_dispatch_table,
     bool fbo_reset_after_present,
-    std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder)
+    std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder,
+    bool fbo_zero_is_no_target)
     : gl_dispatch_table_(std::move(gl_dispatch_table)),
       fbo_reset_after_present_(fbo_reset_after_present),
+      fbo_zero_is_no_target_(fbo_zero_is_no_target),
       external_view_embedder_(std::move(external_view_embedder)) {
   // Make sure all required members of the dispatch table are checked.
   if (!gl_dispatch_table_.gl_make_current_callback ||
@@ -97,8 +99,9 @@ SurfaceFrame::FramebufferInfo EmbedderSurfaceGLSkia::GLContextFramebufferInfo()
 std::unique_ptr<Surface> EmbedderSurfaceGLSkia::CreateGPUSurface() {
   const bool render_to_surface = !external_view_embedder_;
   return std::make_unique<GPUSurfaceGLSkia>(
-      this,              // GPU surface GL delegate
-      render_to_surface  // render to surface
+      this,                   // GPU surface GL delegate
+      render_to_surface,      // render to surface
+      fbo_zero_is_no_target_  // Denial damage handoff
   );
 }
 

@@ -26,12 +26,15 @@ class GPUSurfaceGLSkia : public Surface {
  public:
   static sk_sp<GrDirectContext> MakeGLContext(GPUSurfaceGLDelegate* delegate);
 
-  GPUSurfaceGLSkia(GPUSurfaceGLDelegate* delegate, bool render_to_surface);
+  GPUSurfaceGLSkia(GPUSurfaceGLDelegate* delegate,
+                   bool render_to_surface,
+                   bool forward_external_view_damage = false);
 
   // Creates a new GL surface reusing an existing GrDirectContext.
   GPUSurfaceGLSkia(const sk_sp<GrDirectContext>& gr_context,
                    GPUSurfaceGLDelegate* delegate,
-                   bool render_to_surface);
+                   bool render_to_surface,
+                   bool forward_external_view_damage = false);
 
   // |Surface|
   ~GPUSurfaceGLSkia() override;
@@ -69,6 +72,8 @@ class GPUSurfaceGLSkia : public Surface {
 
   bool PresentSurface(const SurfaceFrame& frame);
 
+  bool PresentExternalViewDamage(const SurfaceFrame& frame);
+
   GPUSurfaceGLDelegate* delegate_;
   sk_sp<GrDirectContext> context_;
   sk_sp<const GrGLInterface> gl_interface_;
@@ -89,6 +94,7 @@ class GPUSurfaceGLSkia : public Surface {
   // hack to make avoid allocating resources for the root surface when an
   // external view embedder is present.
   const bool render_to_surface_ = true;
+  const bool forward_external_view_damage_ = false;
   bool valid_ = false;
 
   // WeakPtrFactory must be the last member.

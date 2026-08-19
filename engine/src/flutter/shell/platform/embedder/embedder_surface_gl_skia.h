@@ -30,7 +30,8 @@ class EmbedderSurfaceGLSkia final : public EmbedderSurface,
   EmbedderSurfaceGLSkia(
       GLDispatchTable gl_dispatch_table,
       bool fbo_reset_after_present,
-      std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder);
+      std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder,
+      bool fbo_zero_is_no_target = false);
 
   ~EmbedderSurfaceGLSkia() override;
 
@@ -38,6 +39,7 @@ class EmbedderSurfaceGLSkia final : public EmbedderSurface,
   bool valid_ = false;
   GLDispatchTable gl_dispatch_table_;
   bool fbo_reset_after_present_;
+  bool fbo_zero_is_no_target_;
 
   std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder_;
 

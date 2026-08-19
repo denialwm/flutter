@@ -101,12 +101,21 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceGLImpeller::AcquireFrame(
   }
 
   if (!render_to_surface_) {
+    auto submit = [weak = weak_factory_.GetWeakPtr(), delegate = delegate_,
+                   size, forward_damage = fbo_zero_is_no_target_](
+                      const SurfaceFrame& surface_frame) {
+      if (!forward_damage) {
+        return true;
+      }
+      return weak &&
+             PresentFrame(delegate, 0u, size, surface_frame.submit_info());
+    };
     return std::make_unique<SurfaceFrame>(
         nullptr, SurfaceFrame::FramebufferInfo{.supports_readback = true},
         [](const SurfaceFrame& surface_frame, DlCanvas* canvas) {
           return true;
         },
-        [](const SurfaceFrame& surface_frame) { return true; }, size);
+        std::move(submit), size);
   }
 
   GLFrameInfo frame_info = {static_cast<uint32_t>(size.width),

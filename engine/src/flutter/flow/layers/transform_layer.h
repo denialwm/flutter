@@ -13,6 +13,8 @@ class TransformLayer : public ContainerLayer {
  public:
   explicit TransformLayer(const DlMatrix& transform);
 
+  const DlMatrix& transform() const { return transform_; }
+
   void Diff(DiffContext* context, const Layer* old_layer) override;
 
   void Preroll(PrerollContext* context) override;
