@@ -795,7 +795,11 @@ Scalar GaussianBlurFilterContents::CalculateScale(Scalar sigma) {
   if (sigma <= 4) {
     return 1.0;
   }
-  Scalar raw_result = 4.0 / sigma;
+  // Keep the convolution kernel small and let the downsample filter reject
+  // frequencies that the blur would remove anyway. An effective sigma near 2
+  // retains the useful signal while reducing both the number of filtered
+  // pixels and the number of samples per pixel.
+  Scalar raw_result = 2.0 / sigma;
   // Round to the nearest 1/(2^n) to get the best quality down scaling.
   Scalar exponent = round(log2f(raw_result));
   // Don't scale down below 1/16th to preserve signal.

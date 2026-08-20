@@ -254,7 +254,8 @@ TEST(GaussianBlurFilterContentsTest, CalculateSigmaValues) {
   EXPECT_EQ(GaussianBlurFilterContents::CalculateScale(2.0f), 1);
   EXPECT_EQ(GaussianBlurFilterContents::CalculateScale(3.0f), 1);
   EXPECT_EQ(GaussianBlurFilterContents::CalculateScale(4.0f), 1);
-  EXPECT_EQ(GaussianBlurFilterContents::CalculateScale(16.0f), 0.25);
+  EXPECT_EQ(GaussianBlurFilterContents::CalculateScale(6.0f), 0.25);
+  EXPECT_EQ(GaussianBlurFilterContents::CalculateScale(16.0f), 0.125);
   // Hang on to 1/8 as long as possible.
   EXPECT_EQ(GaussianBlurFilterContents::CalculateScale(95.0f), 0.125);
   EXPECT_EQ(GaussianBlurFilterContents::CalculateScale(96.0f), 0.0625);
@@ -294,7 +295,7 @@ TEST_P(GaussianBlurFilterContentsTest,
       auto texture_contents =
           std::static_pointer_cast<TextureContents>(result->GetContents());
       ASSERT_TRUE(texture_contents);
-      EXPECT_EQ(texture_contents->GetTexture()->GetSize(), ISize(21, 21));
+      EXPECT_EQ(texture_contents->GetTexture()->GetSize(), ISize(11, 11));
     }
   }
 }
@@ -319,7 +320,7 @@ TEST_P(GaussianBlurFilterContentsTest,
   auto texture_contents =
       std::static_pointer_cast<TextureContents>(result->GetContents());
   ASSERT_TRUE(texture_contents);
-  EXPECT_EQ(texture_contents->GetTexture()->GetSize(), ISize(60, 50));
+  EXPECT_EQ(texture_contents->GetTexture()->GetSize(), ISize(30, 25));
 }
 
 TEST_P(GaussianBlurFilterContentsTest, RenderCoverageMatchesGetCoverage) {
