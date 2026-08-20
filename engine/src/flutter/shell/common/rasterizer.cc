@@ -266,9 +266,11 @@ void Rasterizer::SetDenialRenderOutputs(
   denial_render_output_generation_ =
       outputs.empty() ? 0 : outputs.front().configuration_generation;
   denial_render_outputs_ = std::move(outputs);
-  denial_pending_output_tasks_.clear();
-  denial_selected_render_view_ids_.clear();
-  denial_render_selection_pending_ = false;
+  if (!presentation_only) {
+    denial_pending_output_tasks_.clear();
+    denial_selected_render_view_ids_.clear();
+    denial_render_selection_pending_ = false;
+  }
 }
 
 void Rasterizer::PrepareDenialRenderOutputs(
@@ -304,13 +306,27 @@ void Rasterizer::DrawDenialRenderOutputs(
     if (pending != denial_pending_output_tasks_.end()) {
       task = std::move(pending->second);
       denial_pending_output_tasks_.erase(pending);
+      const auto* output = FindDenialRenderOutput(view_id);
+      if (output) {
+        auto reprojected = ReprojectDenialRenderOutputTask(*output, *task);
+        if (reprojected) {
+          task = std::move(reprojected);
+        }
+      }
     } else {
       auto view = view_records_.find(view_id);
       if (view == view_records_.end() || !view->second.last_successful_task) {
         continue;
       }
-      task = std::move(view->second.last_successful_task);
-      task->is_reused_layer_tree = true;
+      const auto* output = FindDenialRenderOutput(view_id);
+      if (output) {
+        task = ReprojectDenialRenderOutputTask(
+            *output, *view->second.last_successful_task);
+      }
+      if (!task) {
+        task = std::move(view->second.last_successful_task);
+        task->is_reused_layer_tree = true;
+      }
     }
     task->dirty_texture_ids = dirty_texture_ids;
     tasks.push_back(std::move(task));
@@ -328,6 +344,58 @@ void Rasterizer::DrawDenialRenderOutputs(
     external_view_embedder_->EndFrame(should_resubmit_frame,
                                       raster_thread_merger_);
   }
+}
+
+std::unique_ptr<LayerTreeTask> Rasterizer::ReprojectDenialRenderOutputTask(
+    const DenialRenderOutput& output,
+    const LayerTreeTask& previous_task) {
+  if (previous_task.render_output_configuration_generation !=
+      output.configuration_generation) {
+    return nullptr;
+  }
+
+  Layer* previous_clip = previous_task.layer_tree->root_layer();
+  const ContainerLayer* previous_clip_container =
+      previous_clip->as_container_layer();
+  if (!previous_clip_container ||
+      previous_clip_container->layers().size() != 1u) {
+    return nullptr;
+  }
+  Layer* previous_transform_layer =
+      previous_clip_container->layers().front().get();
+  const ContainerLayer* previous_transform_container =
+      previous_transform_layer->as_container_layer();
+  if (!previous_transform_container ||
+      previous_transform_container->layers().size() != 1u) {
+    return nullptr;
+  }
+  auto* previous_transform =
+      static_cast<TransformLayer*>(previous_transform_layer);
+  if (previous_transform->transform() == output.source_to_target_transform) {
+    return nullptr;
+  }
+
+  // Rewrap the immutable source subtree and leave the previous task resident
+  // until damage diffing completes. This is the projection-only fast path
+  // used by output rotation animations: Dart and external textures do not
+  // advance, while TransformLayer still damages both the old and new bounds.
+  auto transform =
+      std::make_shared<TransformLayer>(output.source_to_target_transform);
+  transform->AssignOldLayer(previous_transform_layer);
+  transform->Add(previous_transform_container->layers().front());
+  auto clip = std::make_shared<ClipRectLayer>(
+      DlRect::MakeWH(output.target_size.width, output.target_size.height),
+      Clip::kHardEdge);
+  clip->AssignOldLayer(previous_clip);
+  clip->Add(transform);
+
+  auto task = std::make_unique<LayerTreeTask>(
+      output.render_view_id,
+      std::make_unique<LayerTree>(clip, output.target_size),
+      static_cast<float>(output.scale_120) / 120.0f);
+  task->render_output_configuration_generation =
+      output.configuration_generation;
+  return task;
 }
 
 const DenialRenderOutput* Rasterizer::FindDenialRenderOutput(

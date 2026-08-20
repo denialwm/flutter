@@ -153,6 +153,13 @@ class RasterizerTestPeer {
     return rasterizer.FindDenialRenderOutput(view_id);
   }
 
+  static std::unique_ptr<LayerTreeTask> ReprojectRenderOutput(
+      Rasterizer& rasterizer,
+      const DenialRenderOutput& output,
+      const LayerTreeTask& previous_task) {
+    return rasterizer.ReprojectDenialRenderOutputTask(output, previous_task);
+  }
+
   static uint64_t ConfigurationGeneration(const Rasterizer& rasterizer) {
     return rasterizer.denial_render_output_generation_;
   }
@@ -272,6 +279,48 @@ TEST(RasterizerTest, DenialRenderOutputsProjectOneSceneToNativeTargets) {
               DlRect::MakeWH(expected.target_size.width,
                              expected.target_size.height));
   }
+}
+
+TEST(RasterizerTest, DenialPresentationUpdateReusesRetainedSourceScene) {
+  NiceMock<MockDelegate> delegate;
+  Settings settings;
+  ON_CALL(delegate, GetSettings()).WillByDefault(ReturnRef(settings));
+  Rasterizer rasterizer(delegate);
+
+  constexpr uint64_t kGeneration = 42;
+  DenialRenderOutput output = {
+      .render_view_id = -5,
+      .configuration_generation = kGeneration,
+      .source_physical_bounds = DlRect::MakeWH(800, 600),
+      .target_size = DlISize(800, 600),
+      .scale_120 = 120,
+      .source_to_target_transform = DlMatrix(),
+  };
+  rasterizer.SetDenialRenderOutputs({output});
+  auto source_root = std::make_shared<ContainerLayer>();
+  auto expanded = RasterizerTestPeer::ExpandRenderOutputs(
+      rasterizer,
+      SingleLayerTreeList(
+          kImplicitViewId,
+          std::make_unique<LayerTree>(source_root, DlISize(800, 600)), 1.0f));
+  ASSERT_EQ(expanded.size(), 1u);
+
+  output.source_to_target_transform =
+      DlMatrix::MakeTranslation({800.0f, 0.0f, 0.0f}) *
+      DlMatrix::MakeRotationZ(DlDegrees(90));
+  auto reprojected = RasterizerTestPeer::ReprojectRenderOutput(
+      rasterizer, output, *expanded.front());
+  ASSERT_NE(reprojected, nullptr);
+  auto* clip =
+      static_cast<ClipRectLayer*>(reprojected->layer_tree->root_layer());
+  ASSERT_EQ(clip->layers().size(), 1u);
+  auto* transform = static_cast<TransformLayer*>(clip->layers().front().get());
+  EXPECT_EQ(transform->transform(), output.source_to_target_transform);
+  ASSERT_EQ(transform->layers().size(), 1u);
+  auto* source_clip =
+      static_cast<ClipRectLayer*>(transform->layers().front().get());
+  ASSERT_EQ(source_clip->layers().size(), 1u);
+  EXPECT_EQ(source_clip->layers().front(), source_root);
 }
 
 TEST(RasterizerTest, DenialSyntheticRenderTasksAreNeverExpandedAgain) {
