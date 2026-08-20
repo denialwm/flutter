@@ -87,34 +87,32 @@ enum class DrawSurfaceStatus {
   kDiscarded,
 };
 
-enum class DenialRenderOutputTransform : uint8_t {
-  kNormal,
-  kRotate90,
-  kRotate180,
-  kRotate270,
-  kFlipped,
-  kFlipped90,
-  kFlipped180,
-  kFlipped270,
-};
-
 /// An immutable physical-output projection installed by Denial. Source bounds
-/// use the implicit view's physical pixels; the target size is the output's
-/// transformed physical extent. KMS applies `transform` without scaling.
+/// use the implicit view's physical pixels; the target size is the scanout
+/// buffer's native physical extent. Flutter applies the arbitrary affine
+/// source-to-target transform and KMS scans the result out without transforming
+/// it.
 struct DenialRenderOutput {
   int64_t render_view_id;
   uint64_t configuration_generation;
   DlRect source_physical_bounds;
   DlISize target_size;
   uint32_t scale_120;
-  DenialRenderOutputTransform transform;
+  DlMatrix source_to_target_transform;
 
   bool operator==(const DenialRenderOutput& other) const {
     return render_view_id == other.render_view_id &&
            configuration_generation == other.configuration_generation &&
            source_physical_bounds == other.source_physical_bounds &&
            target_size == other.target_size && scale_120 == other.scale_120 &&
-           transform == other.transform;
+           source_to_target_transform == other.source_to_target_transform;
+  }
+
+  bool HasSameTarget(const DenialRenderOutput& other) const {
+    return render_view_id == other.render_view_id &&
+           configuration_generation == other.configuration_generation &&
+           source_physical_bounds == other.source_physical_bounds &&
+           target_size == other.target_size && scale_120 == other.scale_120;
   }
 };
 

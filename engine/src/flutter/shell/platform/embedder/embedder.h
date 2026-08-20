@@ -3642,25 +3642,11 @@ FlutterEngineResult DenialFlutterEngineRenderOutputs(
     uint64_t frame_target_time_nanos);
 
 //------------------------------------------------------------------------------
-/// Physical-output transforms understood by Denial's raster fan-out. The
-/// transform remains part of the configuration identity even when KMS applies
-/// the corresponding rotation after Flutter has rendered the output's
-/// transformed pixel extent.
-typedef enum {
-  kDenialFlutterOutputTransformNormal,
-  kDenialFlutterOutputTransformRotate90,
-  kDenialFlutterOutputTransformRotate180,
-  kDenialFlutterOutputTransformRotate270,
-  kDenialFlutterOutputTransformFlipped,
-  kDenialFlutterOutputTransformFlipped90,
-  kDenialFlutterOutputTransformFlipped180,
-  kDenialFlutterOutputTransformFlipped270,
-} DenialFlutterOutputTransform;
-
-//------------------------------------------------------------------------------
 /// One physical raster target projected from the implicit Flutter view.
 /// Source coordinates are in the implicit view's physical-pixel coordinate
-/// space. Target dimensions are the output's transformed physical extent.
+/// space. Target dimensions are the scanout buffer's native physical extent.
+/// `source_to_target_transform` is an arbitrary affine mapping from the
+/// implicit view directly into that target; KMS does not transform the result.
 typedef struct {
   size_t struct_size;
   int64_t render_view_id;
@@ -3672,7 +3658,7 @@ typedef struct {
   size_t target_width;
   size_t target_height;
   uint32_t scale_120;
-  DenialFlutterOutputTransform transform;
+  FlutterTransformation source_to_target_transform;
 } DenialFlutterRenderOutput;
 
 //------------------------------------------------------------------------------

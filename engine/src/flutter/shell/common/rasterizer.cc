@@ -51,14 +51,15 @@ namespace flutter {
 namespace {
 
 // The implicit Flutter view's root is normally diffed directly and therefore
-// does not need an EngineLayer identity. Denial places that root below an
-// output projection, where an ordinary ContainerLayer would instead compare
-// its identity as a child and conservatively damage the complete scene.
-// Preserve root semantics while keeping the normal TransformLayer behavior.
-class DenialRenderOutputTransformLayer final : public TransformLayer {
+// does not need an EngineLayer identity. Denial places that root below a source
+// crop and output projection, where an ordinary ContainerLayer would instead
+// compare its identity as a child and conservatively damage the complete
+// scene. Preserve root semantics while retaining the ordinary clip and
+// transform behavior of the synthesized ancestors.
+class DenialRenderOutputSourceLayer final : public ClipRectLayer {
  public:
-  explicit DenialRenderOutputTransformLayer(const DlMatrix& transform)
-      : TransformLayer(transform) {}
+  explicit DenialRenderOutputSourceLayer(const DlRect& source)
+      : ClipRectLayer(source, Clip::kHardEdge) {}
 
   void DiffChildren(DiffContext* context,
                     const ContainerLayer* old_layer) override {
@@ -244,14 +245,22 @@ void Rasterizer::SetDenialRenderOutputs(
     return;
   }
 
-  // Configuration is installed only between raster-runner tasks. Collect all
-  // old synthetic views as one transaction so neither retained layer trees nor
-  // backing-store caches can cross topology generations.
-  for (const auto& output : denial_render_outputs_) {
-    CollectView(output.render_view_id);
-  }
-  if (!outputs.empty()) {
-    CollectView(kFlutterImplicitViewId);
+  const bool presentation_only =
+      outputs.size() == denial_render_outputs_.size() &&
+      std::equal(outputs.begin(), outputs.end(), denial_render_outputs_.begin(),
+                 [](const auto& current, const auto& previous) {
+                   return current.HasSameTarget(previous);
+                 });
+  if (!presentation_only) {
+    // Structural configuration is installed only between raster-runner tasks.
+    // Collect all old synthetic views as one transaction so neither retained
+    // layer trees nor backing-store caches can cross topology generations.
+    for (const auto& output : denial_render_outputs_) {
+      CollectView(output.render_view_id);
+    }
+    if (!outputs.empty()) {
+      CollectView(kFlutterImplicitViewId);
+    }
   }
 
   denial_render_output_generation_ =
@@ -354,17 +363,12 @@ Rasterizer::ExpandDenialRenderOutputTasks(
     const auto source_root = task->layer_tree->root_layer_shared();
     for (const auto& output : denial_render_outputs_) {
       const auto& source = output.source_physical_bounds;
-      const auto scale_x =
-          static_cast<DlScalar>(output.target_size.width) / source.GetWidth();
-      const auto scale_y =
-          static_cast<DlScalar>(output.target_size.height) / source.GetHeight();
-      const DlMatrix projection =
-          DlMatrix::MakeScale({scale_x, scale_y, 1.0f}) *
-          DlMatrix::MakeTranslation({-source.GetX(), -source.GetY(), 0.0f});
-
+      auto source_clip =
+          std::make_shared<DenialRenderOutputSourceLayer>(source);
+      source_clip->Add(source_root);
       auto transform =
-          std::make_shared<DenialRenderOutputTransformLayer>(projection);
-      transform->Add(source_root);
+          std::make_shared<TransformLayer>(output.source_to_target_transform);
+      transform->Add(source_clip);
       auto clip = std::make_shared<ClipRectLayer>(
           DlRect::MakeWH(output.target_size.width, output.target_size.height),
           Clip::kHardEdge);
@@ -385,9 +389,17 @@ Rasterizer::ExpandDenialRenderOutputTasks(
             previous_clip->as_container_layer();
         if (previous_clip_container &&
             previous_clip_container->layers().size() == 1u) {
-          clip->AssignOldLayer(previous_clip);
-          transform->AssignOldLayer(
-              previous_clip_container->layers().front().get());
+          Layer* previous_transform =
+              previous_clip_container->layers().front().get();
+          const ContainerLayer* previous_transform_container =
+              previous_transform->as_container_layer();
+          if (previous_transform_container &&
+              previous_transform_container->layers().size() == 1u) {
+            clip->AssignOldLayer(previous_clip);
+            transform->AssignOldLayer(previous_transform);
+            source_clip->AssignOldLayer(
+                previous_transform_container->layers().front().get());
+          }
         }
       }
 

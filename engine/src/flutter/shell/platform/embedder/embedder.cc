@@ -3843,28 +3843,20 @@ namespace {
 constexpr size_t kMaximumDenialRenderOutputCount = 128;
 constexpr size_t kMaximumDenialRenderTargetDimension = 32768;
 
-static std::optional<flutter::DenialRenderOutputTransform>
-ToDenialRenderOutputTransform(DenialFlutterOutputTransform transform) {
-  using Internal = flutter::DenialRenderOutputTransform;
-  switch (transform) {
-    case kDenialFlutterOutputTransformNormal:
-      return Internal::kNormal;
-    case kDenialFlutterOutputTransformRotate90:
-      return Internal::kRotate90;
-    case kDenialFlutterOutputTransformRotate180:
-      return Internal::kRotate180;
-    case kDenialFlutterOutputTransformRotate270:
-      return Internal::kRotate270;
-    case kDenialFlutterOutputTransformFlipped:
-      return Internal::kFlipped;
-    case kDenialFlutterOutputTransformFlipped90:
-      return Internal::kFlipped90;
-    case kDenialFlutterOutputTransformFlipped180:
-      return Internal::kFlipped180;
-    case kDenialFlutterOutputTransformFlipped270:
-      return Internal::kFlipped270;
+static std::optional<flutter::DlMatrix> ToDenialRenderOutputTransform(
+    const FlutterTransformation& transform) {
+  // clang-format off
+  flutter::DlMatrix matrix(
+      transform.scaleX, transform.skewY,  0.0f, transform.pers0,
+      transform.skewX, transform.scaleY, 0.0f, transform.pers1,
+      0.0f,            0.0f,             1.0f, 0.0f,
+      transform.transX, transform.transY, 0.0f, transform.pers2
+  );
+  // clang-format on
+  if (!matrix.IsFinite() || matrix.HasPerspective() || !matrix.IsInvertible()) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  return matrix;
 }
 
 }  // namespace
@@ -3940,7 +3932,8 @@ FlutterEngineResult DenialFlutterEngineSetRenderOutputs(
   std::optional<uint64_t> configuration_generation;
   for (size_t index = 0; index < output_count; index++) {
     const auto& output = outputs[index];
-    const auto transform = ToDenialRenderOutputTransform(output.transform);
+    const auto transform =
+        ToDenialRenderOutputTransform(output.source_to_target_transform);
     const bool finite_source = std::isfinite(output.source_physical_x) &&
                                std::isfinite(output.source_physical_y) &&
                                std::isfinite(output.source_physical_width) &&
@@ -3977,7 +3970,7 @@ FlutterEngineResult DenialFlutterEngineSetRenderOutputs(
             flutter::DlISize(static_cast<int32_t>(output.target_width),
                              static_cast<int32_t>(output.target_height)),
         .scale_120 = output.scale_120,
-        .transform = transform.value(),
+        .source_to_target_transform = transform.value(),
     });
   }
 
