@@ -111,6 +111,11 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
     const bool reuse_diff_metadata = prev_layer_tree_ == &layer_tree &&
                                      dirty_texture_ids_ != nullptr &&
                                      layer_tree.has_diff_metadata();
+    if (!reuse_diff_metadata && prev_layer_tree_ != nullptr &&
+        prev_layer_tree_ != &layer_tree) {
+      layer_tree.paint_region_map().reserve(
+          prev_layer_tree_->paint_region_map().size());
+    }
     DiffContext context(layer_tree.frame_size(), layer_tree.paint_region_map(),
                         prev_layer_tree_ ? prev_layer_tree_->paint_region_map()
                                          : empty_paint_region_map,

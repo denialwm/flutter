@@ -416,7 +416,8 @@ bool DiffContext::TryReuseRetainedSubtreeMetadata(
   AddExistingPaintRegion(paint_region);
   MarkSubtreeHasTextureLayer();
   for (const auto& entry : metadata->layer_paint_regions) {
-    this_frame_paint_region_map_[entry.layer_id] = entry.paint_region;
+    this_frame_paint_region_map_.insert_or_assign(entry.layer_id,
+                                                  entry.paint_region);
     if (retained_subtree_capture_) {
       retained_subtree_capture_->layer_paint_regions.push_back(entry);
     }
@@ -504,7 +505,7 @@ void DiffContext::AddDamage(const DlRect& rect) {
 
 void DiffContext::SetLayerPaintRegion(const Layer* layer,
                                       const PaintRegion& region) {
-  this_frame_paint_region_map_[layer->unique_id()] = region;
+  this_frame_paint_region_map_.insert_or_assign(layer->unique_id(), region);
   if (retained_subtree_capture_) {
     retained_subtree_capture_->layer_paint_regions.push_back(
         {layer->unique_id(), region});
