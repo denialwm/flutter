@@ -800,6 +800,10 @@ class Rasterizer final : public SnapshotDelegate,
   std::vector<std::unique_ptr<LayerTreeTask>> ExpandDenialRenderOutputTasks(
       std::vector<std::unique_ptr<LayerTreeTask>> tasks);
 
+  std::unique_ptr<LayerTreeTask> ReprojectDenialRenderOutputTask(
+      const DenialRenderOutput& output,
+      const LayerTreeTask& previous_task);
+
   const DenialRenderOutput* FindDenialRenderOutput(int64_t view_id) const;
 
   // Draws the layer tree to the specified view, assuming we have access to the

@@ -117,6 +117,11 @@ class EmbedderEngine {
   std::unique_ptr<Shell> shell_;
   std::unique_ptr<EmbedderExternalTextureResolver> external_texture_resolver_;
 
+  // Platform-thread mirror used only to distinguish a projection update from
+  // a structural output replacement. The rasterizer owns the authoritative
+  // snapshot used for drawing.
+  std::vector<DenialRenderOutput> denial_render_outputs_;
+
   FML_DISALLOW_COPY_AND_ASSIGN(EmbedderEngine);
 };
 

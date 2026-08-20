@@ -4,6 +4,8 @@
 
 #include "flutter/shell/platform/embedder/embedder_engine.h"
 
+#include <algorithm>
+
 #include "flutter/fml/make_copyable.h"
 #include "flutter/shell/platform/embedder/vsync_waiter_embedder.h"
 
@@ -380,6 +382,13 @@ bool EmbedderEngine::SetRenderOutputs(std::vector<DenialRenderOutput> outputs) {
     return false;
   }
 
+  const bool presentation_only =
+      outputs.size() == denial_render_outputs_.size() &&
+      std::equal(outputs.begin(), outputs.end(), denial_render_outputs_.begin(),
+                 [](const auto& current, const auto& previous) {
+                   return current.HasSameTarget(previous);
+                 });
+  denial_render_outputs_ = outputs;
   auto rasterizer = shell_->GetRasterizer();
   shell_->GetTaskRunners().GetRasterTaskRunner()->PostTask(
       [rasterizer, outputs = std::move(outputs)]() mutable {
@@ -387,7 +396,10 @@ bool EmbedderEngine::SetRenderOutputs(std::vector<DenialRenderOutput> outputs) {
           rasterizer->SetDenialRenderOutputs(std::move(outputs));
         }
       });
-  return ScheduleFrame();
+  // A matrix-only update is consumed by Denial's next output-clock raster
+  // transaction. Scheduling a framework frame here would rebuild the Dart
+  // scene for every animation sample even though its contents are unchanged.
+  return presentation_only || ScheduleFrame();
 }
 
 #ifdef SHELL_ENABLE_GL
