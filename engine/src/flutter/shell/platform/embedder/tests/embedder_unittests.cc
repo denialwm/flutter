@@ -77,7 +77,18 @@ TEST(EmbedderTestNoFixture, DenialRenderOutputSnapshotRejectsMalformedEntries) {
       .target_width = 1200,
       .target_height = 900,
       .scale_120 = 180,
-      .transform = kDenialFlutterOutputTransformNormal,
+      .source_to_target_transform =
+          {
+              .scaleX = 1.5,
+              .skewX = 0.0,
+              .transX = 0.0,
+              .skewY = 0.0,
+              .scaleY = 1.5,
+              .transY = 0.0,
+              .pers0 = 0.0,
+              .pers1 = 0.0,
+              .pers2 = 1.0,
+          },
   };
   auto unreachable_engine =
       reinterpret_cast<FlutterEngine>(static_cast<uintptr_t>(1));
@@ -113,7 +124,13 @@ TEST(EmbedderTestNoFixture, DenialRenderOutputSnapshotRejectsMalformedEntries) {
       DenialFlutterEngineSetRenderOutputs(unreachable_engine, &malformed, 1),
       kInvalidArguments);
   malformed = valid;
-  malformed.transform = static_cast<DenialFlutterOutputTransform>(999);
+  malformed.source_to_target_transform.scaleX =
+      std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(
+      DenialFlutterEngineSetRenderOutputs(unreachable_engine, &malformed, 1),
+      kInvalidArguments);
+  malformed = valid;
+  malformed.source_to_target_transform.pers0 = 1.0;
   EXPECT_EQ(
       DenialFlutterEngineSetRenderOutputs(unreachable_engine, &malformed, 1),
       kInvalidArguments);

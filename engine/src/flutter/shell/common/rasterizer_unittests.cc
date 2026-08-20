@@ -50,6 +50,14 @@ std::vector<std::unique_ptr<LayerTreeTask>> SingleLayerTreeList(
   return tasks;
 }
 
+DlMatrix ProjectRect(const DlRect& source, const DlISize& target) {
+  const auto scale_x = static_cast<DlScalar>(target.width) / source.GetWidth();
+  const auto scale_y =
+      static_cast<DlScalar>(target.height) / source.GetHeight();
+  return DlMatrix::MakeScale({scale_x, scale_y, 1.0f}) *
+         DlMatrix::MakeTranslation({-source.GetX(), -source.GetY(), 0.0f});
+}
+
 class MockDelegate : public Rasterizer::Delegate {
  public:
   MOCK_METHOD(void,
@@ -193,7 +201,8 @@ TEST(RasterizerTest, DenialRenderOutputsProjectOneSceneToNativeTargets) {
       .source_physical_bounds = DlRect::MakeXYWH(200, 100, 800, 600),
       .target_size = DlISize(1200, 900),
       .scale_120 = 180,
-      .transform = DenialRenderOutputTransform::kNormal,
+      .source_to_target_transform =
+          ProjectRect(DlRect::MakeXYWH(200, 100, 800, 600), DlISize(1200, 900)),
   };
   const DenialRenderOutput left_output = {
       .render_view_id = -8,
@@ -201,7 +210,7 @@ TEST(RasterizerTest, DenialRenderOutputsProjectOneSceneToNativeTargets) {
       .source_physical_bounds = DlRect::MakeXYWH(0, 0, 200, 900),
       .target_size = DlISize(200, 900),
       .scale_120 = 120,
-      .transform = DenialRenderOutputTransform::kNormal,
+      .source_to_target_transform = DlMatrix(),
   };
   rasterizer.SetDenialRenderOutputs({right_output, left_output});
 
@@ -252,7 +261,12 @@ TEST(RasterizerTest, DenialRenderOutputsProjectOneSceneToNativeTargets) {
         static_cast<TransformLayer*>(clip->layers().front().get());
     ASSERT_NE(transform, nullptr);
     ASSERT_EQ(transform->layers().size(), 1u);
-    EXPECT_EQ(transform->layers().front(), source_root);
+    auto* source_clip =
+        static_cast<ClipRectLayer*>(transform->layers().front().get());
+    ASSERT_NE(source_clip, nullptr);
+    EXPECT_EQ(source_clip->clip_rect(), expected.source_physical_bounds);
+    ASSERT_EQ(source_clip->layers().size(), 1u);
+    EXPECT_EQ(source_clip->layers().front(), source_root);
     EXPECT_EQ(expected.source_physical_bounds.TransformAndClipBounds(
                   transform->transform()),
               DlRect::MakeWH(expected.target_size.width,
@@ -271,7 +285,7 @@ TEST(RasterizerTest, DenialSyntheticRenderTasksAreNeverExpandedAgain) {
       .source_physical_bounds = DlRect::MakeXYWH(0, 0, 800, 600),
       .target_size = DlISize(800, 600),
       .scale_120 = 120,
-      .transform = DenialRenderOutputTransform::kNormal,
+      .source_to_target_transform = DlMatrix(),
   }});
 
   auto root = std::make_shared<ContainerLayer>();
@@ -301,7 +315,8 @@ TEST(RasterizerTest, DenialRenderOutputProjectionPreservesSceneDamage) {
       .source_physical_bounds = DlRect::MakeWH(100, 100),
       .target_size = DlISize(200, 200),
       .scale_120 = 240,
-      .transform = DenialRenderOutputTransform::kNormal,
+      .source_to_target_transform =
+          ProjectRect(DlRect::MakeWH(100, 100), DlISize(200, 200)),
   }});
 
   DisplayListBuilder wallpaper_builder;
@@ -367,7 +382,7 @@ TEST(RasterizerTest, DenialRenderSelectionDefersOtherOutputs) {
           .source_physical_bounds = DlRect::MakeXYWH(0, 0, 400, 600),
           .target_size = DlISize(400, 600),
           .scale_120 = 120,
-          .transform = DenialRenderOutputTransform::kNormal,
+          .source_to_target_transform = DlMatrix(),
       },
       {
           .render_view_id = -1,
@@ -375,7 +390,8 @@ TEST(RasterizerTest, DenialRenderSelectionDefersOtherOutputs) {
           .source_physical_bounds = DlRect::MakeXYWH(400, 0, 800, 600),
           .target_size = DlISize(1200, 900),
           .scale_120 = 180,
-          .transform = DenialRenderOutputTransform::kNormal,
+          .source_to_target_transform = ProjectRect(
+              DlRect::MakeXYWH(400, 0, 800, 600), DlISize(1200, 900)),
       },
   });
 
@@ -396,7 +412,10 @@ TEST(RasterizerTest, DenialRenderSelectionDefersOtherOutputs) {
   ASSERT_EQ(clip->layers().size(), 1u);
   auto* transform = static_cast<TransformLayer*>(clip->layers().front().get());
   ASSERT_EQ(transform->layers().size(), 1u);
-  EXPECT_EQ(transform->layers().front(), source_root);
+  auto* source_clip =
+      static_cast<ClipRectLayer*>(transform->layers().front().get());
+  ASSERT_EQ(source_clip->layers().size(), 1u);
+  EXPECT_EQ(source_clip->layers().front(), source_root);
 }
 
 TEST(RasterizerTest, DenialRenderOutputReplacementDropsTheOldGeneration) {
@@ -410,7 +429,7 @@ TEST(RasterizerTest, DenialRenderOutputReplacementDropsTheOldGeneration) {
       .source_physical_bounds = DlRect::MakeXYWH(0, 0, 640, 480),
       .target_size = DlISize(640, 480),
       .scale_120 = 120,
-      .transform = DenialRenderOutputTransform::kNormal,
+      .source_to_target_transform = DlMatrix(),
   }});
   ASSERT_NE(RasterizerTestPeer::FindRenderOutput(rasterizer, -4), nullptr);
 
@@ -420,7 +439,8 @@ TEST(RasterizerTest, DenialRenderOutputReplacementDropsTheOldGeneration) {
       .source_physical_bounds = DlRect::MakeXYWH(0, 0, 1280, 720),
       .target_size = DlISize(1920, 1080),
       .scale_120 = 180,
-      .transform = DenialRenderOutputTransform::kRotate90,
+      .source_to_target_transform =
+          ProjectRect(DlRect::MakeXYWH(0, 0, 1280, 720), DlISize(1920, 1080)),
   }});
 
   EXPECT_EQ(RasterizerTestPeer::FindRenderOutput(rasterizer, -4), nullptr);
