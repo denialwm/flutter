@@ -145,6 +145,67 @@ struct RenderPassData {
   std::string label;
 };
 
+void ConfigureDepth(const ProcTableGLES& gl,
+                    const std::optional<DepthAttachmentDescriptor>& depth) {
+  if (!depth.has_value()) {
+    gl.Disable(GL_DEPTH_TEST);
+    return;
+  }
+
+  gl.Enable(GL_DEPTH_TEST);
+  gl.DepthFunc(ToCompareFunction(depth->depth_compare));
+  gl.DepthMask(depth->depth_write_enabled ? GL_TRUE : GL_FALSE);
+}
+
+void EncodeViewport(const ProcTableGLES& gl,
+                    const RenderPassData& pass_data,
+                    const std::optional<Viewport>& command_viewport,
+                    const ISize& target_size,
+                    std::optional<Viewport>& current_viewport) {
+  const auto viewport = command_viewport.value_or(pass_data.viewport);
+  if (current_viewport == viewport) {
+    return;
+  }
+  current_viewport = viewport;
+
+  gl.Viewport(viewport.rect.GetX(),  // x
+              target_size.height - viewport.rect.GetY() -
+                  viewport.rect.GetHeight(),  // y
+              viewport.rect.GetWidth(),       // width
+              viewport.rect.GetHeight()       // height
+  );
+  if (pass_data.depth_attachment) {
+    if (gl.DepthRangef.IsAvailable()) {
+      gl.DepthRangef(viewport.depth_range.z_near, viewport.depth_range.z_far);
+    } else {
+      gl.DepthRange(viewport.depth_range.z_near, viewport.depth_range.z_far);
+    }
+  }
+}
+
+void EncodeScissor(const ProcTableGLES& gl,
+                   const std::optional<IRect32>& scissor,
+                   const ISize& target_size,
+                   std::optional<IRect32>& current_scissor) {
+  if (current_scissor == scissor) {
+    return;
+  }
+  if (!scissor.has_value()) {
+    gl.Disable(GL_SCISSOR_TEST);
+    current_scissor.reset();
+    return;
+  }
+  if (!current_scissor.has_value()) {
+    gl.Enable(GL_SCISSOR_TEST);
+  }
+  current_scissor = scissor;
+  gl.Scissor(scissor->GetX(),                                              // x
+             target_size.height - scissor->GetY() - scissor->GetHeight(),  // y
+             scissor->GetWidth(),  // width
+             scissor->GetHeight()  // height
+  );
+}
+
 static bool BindVertexBuffer(const ProcTableGLES& gl,
                              BufferBindingsGLES* vertex_desc_gles,
                              const BufferView& vertex_buffer_view,
@@ -268,19 +329,21 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
     }
   }
 
-  gl.ClearColor(pass_data.clear_color.red,    // red
-                pass_data.clear_color.green,  // green
-                pass_data.clear_color.blue,   // blue
-                pass_data.clear_color.alpha   // alpha
-  );
-  if (pass_data.depth_attachment) {
+  if (pass_data.clear_color_attachment) {
+    gl.ClearColor(pass_data.clear_color.red,    // red
+                  pass_data.clear_color.green,  // green
+                  pass_data.clear_color.blue,   // blue
+                  pass_data.clear_color.alpha   // alpha
+    );
+  }
+  if (pass_data.clear_depth_attachment && pass_data.depth_attachment) {
     if (gl.DepthRangef.IsAvailable()) {
       gl.ClearDepthf(pass_data.clear_depth);
     } else {
       gl.ClearDepth(pass_data.clear_depth);
     }
   }
-  if (pass_data.stencil_attachment) {
+  if (pass_data.clear_stencil_attachment && pass_data.stencil_attachment) {
     gl.ClearStencil(pass_data.clear_stencil);
   }
 
@@ -288,16 +351,18 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
   if (pass_data.clear_color_attachment) {
     clear_bits |= GL_COLOR_BUFFER_BIT;
   }
-  if (pass_data.clear_depth_attachment) {
+  if (pass_data.clear_depth_attachment && pass_data.depth_attachment) {
     clear_bits |= GL_DEPTH_BUFFER_BIT;
   }
-  if (pass_data.clear_stencil_attachment) {
+  if (pass_data.clear_stencil_attachment && pass_data.stencil_attachment) {
     clear_bits |= GL_STENCIL_BUFFER_BIT;
   }
 
   RenderPassGLES::ResetGLState(gl);
 
-  gl.Clear(clear_bits);
+  if (clear_bits != 0u) {
+    gl.Clear(clear_bits);
+  }
 
   // Both the viewport and scissor are specified in framebuffer coordinates.
   // Impeller's framebuffer coordinate system is top left origin, but OpenGL's
@@ -322,6 +387,13 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
     }
   }
 
+  std::optional<ColorAttachmentDescriptor> current_color_attachment;
+  std::optional<DepthAttachmentDescriptor> current_depth_attachment;
+  std::optional<StencilAttachmentDescriptor> current_front_stencil;
+  std::optional<StencilAttachmentDescriptor> current_back_stencil;
+  uint32_t current_stencil_reference = 0u;
+  std::optional<Viewport> current_viewport = viewport;
+  std::optional<IRect32> current_scissor;
   CullMode current_cull_mode = CullMode::kNone;
   WindingOrder current_winding_order = WindingOrder::kClockwise;
   gl.FrontFace(GL_CW);
@@ -337,10 +409,10 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
     }
 #endif  // IMPELLER_DEBUG
     const auto& pipeline = PipelineGLES::Cast(*command.pipeline);
-    impeller_context->GetPipelineLibrary()->LogPipelineUsage(
-        pipeline.GetDescriptor());
+    const auto& descriptor = pipeline.GetDescriptor();
+    impeller_context->GetPipelineLibrary()->LogPipelineUsage(descriptor);
     const auto* color_attachment =
-        pipeline.GetDescriptor().GetLegacyCompatibleColorAttachment();
+        descriptor.GetLegacyCompatibleColorAttachment();
     if (!color_attachment) {
       VALIDATION_LOG
           << "Color attachment is too complicated for a legacy renderer.";
@@ -350,65 +422,52 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
     //--------------------------------------------------------------------------
     /// Configure blending.
     ///
-    ConfigureBlending(gl, color_attachment);
+    if (!current_color_attachment.has_value() ||
+        current_color_attachment.value() != *color_attachment) {
+      ConfigureBlending(gl, color_attachment);
+      current_color_attachment = *color_attachment;
+    }
 
     //--------------------------------------------------------------------------
     /// Setup stencil.
     ///
-    ConfigureStencil(gl, pipeline.GetDescriptor(), command.stencil_reference);
+    const auto front_stencil = descriptor.GetFrontStencilAttachmentDescriptor();
+    const auto back_stencil = descriptor.GetBackStencilAttachmentDescriptor();
+    if (current_front_stencil != front_stencil ||
+        current_back_stencil != back_stencil ||
+        ((front_stencil.has_value() || back_stencil.has_value()) &&
+         current_stencil_reference != command.stencil_reference)) {
+      ConfigureStencil(gl, descriptor, command.stencil_reference);
+      current_front_stencil = front_stencil;
+      current_back_stencil = back_stencil;
+      current_stencil_reference = command.stencil_reference;
+    }
 
     //--------------------------------------------------------------------------
     /// Configure depth.
     ///
-    if (auto depth =
-            pipeline.GetDescriptor().GetDepthStencilAttachmentDescriptor();
-        depth.has_value()) {
-      gl.Enable(GL_DEPTH_TEST);
-      gl.DepthFunc(ToCompareFunction(depth->depth_compare));
-      gl.DepthMask(depth->depth_write_enabled ? GL_TRUE : GL_FALSE);
-    } else {
-      gl.Disable(GL_DEPTH_TEST);
+    const auto depth_attachment =
+        descriptor.GetDepthStencilAttachmentDescriptor();
+    if (current_depth_attachment != depth_attachment) {
+      ConfigureDepth(gl, depth_attachment);
+      current_depth_attachment = depth_attachment;
     }
 
     //--------------------------------------------------------------------------
     /// Setup the viewport.
     ///
-    if (command.viewport.has_value()) {
-      gl.Viewport(viewport.rect.GetX(),  // x
-                  target_size.height - viewport.rect.GetY() -
-                      viewport.rect.GetHeight(),  // y
-                  viewport.rect.GetWidth(),       // width
-                  viewport.rect.GetHeight()       // height
-      );
-      if (pass_data.depth_attachment) {
-        if (gl.DepthRangef.IsAvailable()) {
-          gl.DepthRangef(viewport.depth_range.z_near,
-                         viewport.depth_range.z_far);
-        } else {
-          gl.DepthRange(viewport.depth_range.z_near,
-                        viewport.depth_range.z_far);
-        }
-      }
-    }
+    EncodeViewport(gl, pass_data, command.viewport, target_size,
+                   current_viewport);
 
     //--------------------------------------------------------------------------
     /// Setup the scissor rect.
     ///
-    if (command.scissor.has_value()) {
-      const auto& scissor = command.scissor.value();
-      gl.Enable(GL_SCISSOR_TEST);
-      gl.Scissor(
-          scissor.GetX(),                                             // x
-          target_size.height - scissor.GetY() - scissor.GetHeight(),  // y
-          scissor.GetWidth(),                                         // width
-          scissor.GetHeight()                                         // height
-      );
-    }
+    EncodeScissor(gl, command.scissor, target_size, current_scissor);
 
     //--------------------------------------------------------------------------
     /// Setup culling.
     ///
-    CullMode pipeline_cull_mode = pipeline.GetDescriptor().GetCullMode();
+    CullMode pipeline_cull_mode = descriptor.GetCullMode();
     if (current_cull_mode != pipeline_cull_mode) {
       switch (pipeline_cull_mode) {
         case CullMode::kNone:
@@ -429,10 +488,9 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
     //--------------------------------------------------------------------------
     /// Setup winding order.
     ///
-    WindingOrder pipeline_winding_order =
-        pipeline.GetDescriptor().GetWindingOrder();
+    WindingOrder pipeline_winding_order = descriptor.GetWindingOrder();
     if (current_winding_order != pipeline_winding_order) {
-      switch (pipeline.GetDescriptor().GetWindingOrder()) {
+      switch (descriptor.GetWindingOrder()) {
         case WindingOrder::kClockwise:
           gl.FrontFace(GL_CW);
           break;
@@ -488,10 +546,9 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
     // correct; full triangle outlines won't be drawn and disconnected
     // geometry may appear connected. However this can still be useful for
     // wireframe debug views.
-    GLenum mode =
-        pipeline.GetDescriptor().GetPolygonMode() == PolygonMode::kLine
-            ? GL_LINE_STRIP
-            : ToMode(pipeline.GetDescriptor().GetPrimitiveType());
+    GLenum mode = descriptor.GetPolygonMode() == PolygonMode::kLine
+                      ? GL_LINE_STRIP
+                      : ToMode(descriptor.GetPrimitiveType());
 
     //--------------------------------------------------------------------------
     /// Finally! Invoke the draw call.
