@@ -91,6 +91,19 @@ void ContainerLayer::DiffChildren(DiffContext* context,
         // associate their paint region with current layer tree so that we can
         // retrieve it in next frame diff
         layer->PreservePaintRegion(context);
+      } else if (layer == prev_layer && !paint_region.has_readback() &&
+                 paint_region.has_texture()) {
+        if (context->TryReuseRetainedSubtreeMetadata(layer.get(),
+                                                     paint_region)) {
+          continue;
+        }
+
+        // The first matching frame records every descendant paint region and
+        // texture association in one reusable block. Later clean frames can
+        // attach that block without walking the retained subtree.
+        DiffContext::AutoRetainedSubtreeMetadataCapture capture(context,
+                                                                layer.get());
+        layer->Diff(context, prev_layer.get());
       } else {
         layer->Diff(context, prev_layer.get());
       }

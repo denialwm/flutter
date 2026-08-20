@@ -54,6 +54,25 @@ struct TexturePaintRegion {
 
 using TexturePaintRegionList = std::vector<TexturePaintRegion>;
 
+struct LayerPaintRegion {
+  uint64_t layer_id;
+  PaintRegion paint_region;
+};
+
+using LayerPaintRegionList = std::vector<LayerPaintRegion>;
+
+// Complete metadata needed to preserve one retained texture subtree without
+// walking its descendants. Readback subtrees are intentionally excluded: they
+// must replay backdrop-filter ordering and dependencies during Diff.
+struct RetainedSubtreeDiffMetadata {
+  LayerPaintRegionList layer_paint_regions;
+  TexturePaintRegionList texture_paint_regions;
+};
+
+using RetainedSubtreeDiffMetadataMap =
+    std::unordered_map<uint64_t,
+                       std::shared_ptr<const RetainedSubtreeDiffMetadata>>;
+
 struct ReadbackRegion {
   DlIRect paint_rect;
   DlIRect readback_rect;
@@ -238,11 +257,34 @@ class DiffContext {
   void SetDiffMetadataCache(
       TexturePaintRegionList* texture_regions,
       ReadbackRegionList* readback_regions,
-      BackdropFilterCacheMetadataList* backdrop_filter_caches);
+      BackdropFilterCacheMetadataList* backdrop_filter_caches,
+      RetainedSubtreeDiffMetadataMap* retained_subtrees,
+      const RetainedSubtreeDiffMetadataMap* previous_retained_subtrees);
 
   // Records the paint region for a TextureLayer in the active metadata cache.
   void CacheTexturePaintRegion(int64_t texture_id,
                                const PaintRegion& paint_region);
+
+  // Reuses all per-layer and external-texture metadata for an unchanged,
+  // readback-free retained subtree if none of its textures are dirty.
+  bool TryReuseRetainedSubtreeMetadata(const Layer* layer,
+                                       const PaintRegion& paint_region);
+
+  // Captures metadata produced while an otherwise reusable texture subtree is
+  // diffed for the first time. Nested captures are folded into the outer block
+  // to avoid duplicating metadata.
+  class AutoRetainedSubtreeMetadataCapture {
+    FML_DISALLOW_COPY_ASSIGN_AND_MOVE(AutoRetainedSubtreeMetadataCapture);
+
+   public:
+    AutoRetainedSubtreeMetadataCapture(DiffContext* context,
+                                       const Layer* layer);
+    ~AutoRetainedSubtreeMetadataCapture();
+
+   private:
+    DiffContext* context_;
+    bool active_;
+  };
 
   // Reuses readback dependencies captured for the exact same LayerTree.
   void UseCachedReadbackRegions(const ReadbackRegionList* readback_regions);
@@ -335,6 +377,9 @@ class DiffContext {
   TexturePaintRegionList* texture_region_cache_ = nullptr;
   ReadbackRegionList* readback_region_cache_ = nullptr;
   BackdropFilterCacheMetadataList* backdrop_filter_cache_ = nullptr;
+  RetainedSubtreeDiffMetadataMap* retained_subtree_cache_ = nullptr;
+  const RetainedSubtreeDiffMetadataMap* previous_retained_subtree_cache_ =
+      nullptr;
   const ReadbackRegionList* cached_readback_regions_ = nullptr;
   std::unordered_map<int64_t, std::shared_ptr<BackdropFilterCacheState>>
       backdrop_group_states_;
@@ -362,6 +407,16 @@ class DiffContext {
 
   std::vector<Readback> readbacks_;
   Statistics statistics_;
+
+  struct RetainedSubtreeCapture {
+    uint64_t layer_id;
+    LayerPaintRegionList layer_paint_regions;
+    TexturePaintRegionList texture_paint_regions;
+  };
+
+  bool BeginRetainedSubtreeMetadataCapture(const Layer* layer);
+  void EndRetainedSubtreeMetadataCapture();
+  std::optional<RetainedSubtreeCapture> retained_subtree_capture_;
 };
 
 }  // namespace flutter

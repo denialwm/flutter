@@ -350,17 +350,23 @@ DiffContext::RegisterBackdropFilterCache(
 void DiffContext::SetDiffMetadataCache(
     TexturePaintRegionList* texture_regions,
     ReadbackRegionList* readback_regions,
-    BackdropFilterCacheMetadataList* backdrop_filter_caches) {
+    BackdropFilterCacheMetadataList* backdrop_filter_caches,
+    RetainedSubtreeDiffMetadataMap* retained_subtrees,
+    const RetainedSubtreeDiffMetadataMap* previous_retained_subtrees) {
   FML_DCHECK(texture_regions);
   FML_DCHECK(readback_regions);
   FML_DCHECK(backdrop_filter_caches);
+  FML_DCHECK(retained_subtrees);
   FML_DCHECK(!cached_readback_regions_);
   texture_regions->clear();
   readback_regions->clear();
   backdrop_filter_caches->clear();
+  retained_subtrees->clear();
   texture_region_cache_ = texture_regions;
   readback_region_cache_ = readback_regions;
   backdrop_filter_cache_ = backdrop_filter_caches;
+  retained_subtree_cache_ = retained_subtrees;
+  previous_retained_subtree_cache_ = previous_retained_subtrees;
 }
 
 void DiffContext::CacheTexturePaintRegion(int64_t texture_id,
@@ -368,6 +374,102 @@ void DiffContext::CacheTexturePaintRegion(int64_t texture_id,
   if (texture_region_cache_) {
     texture_region_cache_->push_back({texture_id, paint_region});
   }
+  if (retained_subtree_capture_) {
+    retained_subtree_capture_->texture_paint_regions.push_back(
+        {texture_id, paint_region});
+  }
+}
+
+bool DiffContext::TryReuseRetainedSubtreeMetadata(
+    const Layer* layer,
+    const PaintRegion& paint_region) {
+  FML_DCHECK(layer);
+  FML_DCHECK(paint_region.is_valid());
+  FML_DCHECK(paint_region.has_texture());
+  FML_DCHECK(!paint_region.has_readback());
+  if (!previous_retained_subtree_cache_ || !retained_subtree_cache_ ||
+      !texture_region_cache_) {
+    return false;
+  }
+
+  const auto previous =
+      previous_retained_subtree_cache_->find(layer->unique_id());
+  if (previous == previous_retained_subtree_cache_->end()) {
+    return false;
+  }
+
+  const auto& metadata = previous->second;
+  // The geometry metadata remains valid even when texture contents are dirty.
+  // Carry the block forward so a later clean frame can reuse it after this
+  // frame performs the normal damage-producing diff.
+  retained_subtree_cache_->insert_or_assign(layer->unique_id(), metadata);
+
+  if (!dirty_texture_ids_ ||
+      std::any_of(metadata->texture_paint_regions.begin(),
+                  metadata->texture_paint_regions.end(),
+                  [&](const TexturePaintRegion& texture) {
+                    return dirty_texture_ids_->contains(texture.texture_id);
+                  })) {
+    return false;
+  }
+
+  AddExistingPaintRegion(paint_region);
+  MarkSubtreeHasTextureLayer();
+  for (const auto& entry : metadata->layer_paint_regions) {
+    this_frame_paint_region_map_[entry.layer_id] = entry.paint_region;
+    if (retained_subtree_capture_) {
+      retained_subtree_capture_->layer_paint_regions.push_back(entry);
+    }
+  }
+  texture_region_cache_->insert(texture_region_cache_->end(),
+                                metadata->texture_paint_regions.begin(),
+                                metadata->texture_paint_regions.end());
+  if (retained_subtree_capture_) {
+    retained_subtree_capture_->texture_paint_regions.insert(
+        retained_subtree_capture_->texture_paint_regions.end(),
+        metadata->texture_paint_regions.begin(),
+        metadata->texture_paint_regions.end());
+  }
+  return true;
+}
+
+DiffContext::AutoRetainedSubtreeMetadataCapture::
+    AutoRetainedSubtreeMetadataCapture(DiffContext* context, const Layer* layer)
+    : context_(context),
+      active_(context_->BeginRetainedSubtreeMetadataCapture(layer)) {}
+
+DiffContext::AutoRetainedSubtreeMetadataCapture::
+    ~AutoRetainedSubtreeMetadataCapture() {
+  if (active_) {
+    context_->EndRetainedSubtreeMetadataCapture();
+  }
+}
+
+bool DiffContext::BeginRetainedSubtreeMetadataCapture(const Layer* layer) {
+  FML_DCHECK(layer);
+  if (retained_subtree_capture_.has_value() || !retained_subtree_cache_ ||
+      !texture_region_cache_) {
+    return false;
+  }
+  retained_subtree_capture_ = RetainedSubtreeCapture{
+      .layer_id = layer->unique_id(),
+  };
+  return true;
+}
+
+void DiffContext::EndRetainedSubtreeMetadataCapture() {
+  FML_DCHECK(retained_subtree_capture_.has_value());
+  FML_DCHECK(retained_subtree_cache_);
+  FML_DCHECK(texture_region_cache_);
+  RetainedSubtreeCapture capture = std::move(*retained_subtree_capture_);
+  retained_subtree_capture_.reset();
+
+  auto metadata = std::make_shared<RetainedSubtreeDiffMetadata>();
+  metadata->layer_paint_regions = std::move(capture.layer_paint_regions);
+  metadata->texture_paint_regions = std::move(capture.texture_paint_regions);
+  FML_DCHECK(!metadata->texture_paint_regions.empty());
+  retained_subtree_cache_->insert_or_assign(capture.layer_id,
+                                            std::move(metadata));
 }
 
 void DiffContext::UseCachedReadbackRegions(
@@ -403,6 +505,10 @@ void DiffContext::AddDamage(const DlRect& rect) {
 void DiffContext::SetLayerPaintRegion(const Layer* layer,
                                       const PaintRegion& region) {
   this_frame_paint_region_map_[layer->unique_id()] = region;
+  if (retained_subtree_capture_) {
+    retained_subtree_capture_->layer_paint_regions.push_back(
+        {layer->unique_id(), region});
+  }
 }
 
 PaintRegion DiffContext::GetOldLayerPaintRegion(const Layer* layer) const {

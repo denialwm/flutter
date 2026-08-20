@@ -80,6 +80,13 @@ class LayerTree {
     return backdrop_filter_caches_;
   }
 
+  const RetainedSubtreeDiffMetadataMap& retained_subtree_diff_metadata() const {
+    return retained_subtree_diff_metadata_;
+  }
+  RetainedSubtreeDiffMetadataMap& retained_subtree_diff_metadata() {
+    return retained_subtree_diff_metadata_;
+  }
+
   bool has_diff_metadata() const { return has_diff_metadata_; }
   void set_has_diff_metadata(bool value) { has_diff_metadata_ = value; }
 
@@ -91,6 +98,7 @@ class LayerTree {
   TexturePaintRegionList texture_paint_regions_;
   ReadbackRegionList readback_regions_;
   BackdropFilterCacheMetadataList backdrop_filter_caches_;
+  RetainedSubtreeDiffMetadataMap retained_subtree_diff_metadata_;
   bool has_diff_metadata_ = false;
 
   std::vector<RasterCacheItem*> raster_cache_items_;
