@@ -7,7 +7,6 @@
 
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -41,7 +40,7 @@ struct Damage {
 };
 
 // Layer Unique Id to PaintRegion
-using PaintRegionMap = std::map<uint64_t, PaintRegion>;
+using PaintRegionMap = std::unordered_map<uint64_t, PaintRegion>;
 
 // Reusable metadata for autonomous frames that redraw an unchanged layer tree.
 // A texture ID may occur in more than one TextureLayer. The list is sorted by
