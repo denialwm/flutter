@@ -139,9 +139,12 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
         }
       }
     } else {
-      context.SetDiffMetadataCache(&layer_tree.texture_paint_regions(),
-                                   &layer_tree.readback_regions(),
-                                   &layer_tree.backdrop_filter_caches());
+      context.SetDiffMetadataCache(
+          &layer_tree.texture_paint_regions(), &layer_tree.readback_regions(),
+          &layer_tree.backdrop_filter_caches(),
+          &layer_tree.retained_subtree_diff_metadata(),
+          prev_layer_tree_ ? &prev_layer_tree_->retained_subtree_diff_metadata()
+                           : nullptr);
       DiffContext::AutoSubtreeRestore subtree(&context);
       const Layer* prev_root_layer = nullptr;
       if (!prev_layer_tree_ ||

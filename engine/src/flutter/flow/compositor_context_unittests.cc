@@ -12,6 +12,7 @@
 #include "flutter/flow/layers/clip_rect_layer.h"
 #include "flutter/flow/layers/layer_tree.h"
 #include "flutter/flow/layers/texture_layer.h"
+#include "flutter/flow/layers/transform_layer.h"
 #include "gtest/gtest.h"
 
 namespace flutter {
@@ -46,6 +47,21 @@ class CountingTextureLayer final : public TextureLayer {
   void Diff(DiffContext* context, const Layer* old_layer) override {
     diff_count_++;
     TextureLayer::Diff(context, old_layer);
+  }
+
+  int diff_count() const { return diff_count_; }
+
+ private:
+  int diff_count_ = 0;
+};
+
+class CountingBackdropFilterLayer final : public BackdropFilterLayer {
+ public:
+  using BackdropFilterLayer::BackdropFilterLayer;
+
+  void Diff(DiffContext* context, const Layer* old_layer) override {
+    diff_count_++;
+    BackdropFilterLayer::Diff(context, old_layer);
   }
 
   int diff_count() const { return diff_count_; }
@@ -174,6 +190,271 @@ TEST(FrameDamageTest, ReusedTreeDamagesDirtyTextureWithoutDiffingLayers) {
   ASSERT_TRUE(autonomous_frame.GetFrameDamage().has_value());
   ExpectRegion(*autonomous_frame.GetFrameDamage(),
                {DlIRect::MakeLTRB(50, 10, 70, 40)});
+}
+
+TEST(FrameDamageTest, RetainedTextureSubtreeReusesCompleteDiffMetadata) {
+  auto retained = std::make_shared<ContainerLayer>();
+  auto retained_texture = std::make_shared<CountingTextureLayer>(
+      DlPoint(10, 10), DlSize(20, 20), 7);
+  retained->Add(retained_texture);
+  const std::unordered_set<int64_t> first_dirty_texture = {100};
+
+  auto first_root = std::make_shared<ContainerLayer>();
+  first_root->Add(retained);
+  first_root->Add(std::make_shared<TextureLayer>(
+      DlPoint(60, 0), DlSize(10, 10), 100, false, DlImageSampling::kLinear));
+  LayerTree first(first_root, kFrameSize);
+  FrameDamage first_frame;
+  first_frame.SetDirtyTextureIds(&first_dirty_texture);
+  first_frame.ComputeDamageRegion(first, true, false);
+  EXPECT_EQ(retained_texture->diff_count(), 1);
+
+  // The first retained frame performs the normal diff once and captures the
+  // complete metadata block for subsequent frames.
+  auto second_root = std::make_shared<ContainerLayer>();
+  second_root->Add(retained);
+  second_root->Add(std::make_shared<TextureLayer>(
+      DlPoint(70, 0), DlSize(10, 10), 101, false, DlImageSampling::kLinear));
+  LayerTree second(second_root, kFrameSize);
+  const std::unordered_set<int64_t> second_dirty_texture = {101};
+  FrameDamage second_frame;
+  second_frame.SetPreviousLayerTree(&first);
+  second_frame.SetDirtyTextureIds(&second_dirty_texture);
+  second_frame.SetExistingDamage(DlRegion());
+  second_frame.ComputeDamageRegion(second, true, false);
+  EXPECT_EQ(retained_texture->diff_count(), 2);
+  ASSERT_TRUE(
+      second.retained_subtree_diff_metadata().contains(retained->unique_id()));
+  const auto metadata =
+      second.retained_subtree_diff_metadata().at(retained->unique_id());
+  EXPECT_EQ(metadata->layer_paint_regions.size(), 2u);
+  ASSERT_EQ(metadata->texture_paint_regions.size(), 1u);
+  EXPECT_EQ(metadata->texture_paint_regions.front().texture_id, 7);
+
+  // Changing an unrelated sibling still produces exact sibling damage, but
+  // the retained textured child is not visited and its metadata block is
+  // shared with the new LayerTree.
+  auto third_root = std::make_shared<ContainerLayer>();
+  third_root->Add(retained);
+  third_root->Add(std::make_shared<TextureLayer>(
+      DlPoint(80, 0), DlSize(10, 10), 102, false, DlImageSampling::kLinear));
+  LayerTree third(third_root, kFrameSize);
+  const std::unordered_set<int64_t> third_dirty_texture = {102};
+  FrameDamage third_frame;
+  third_frame.SetPreviousLayerTree(&second);
+  third_frame.SetDirtyTextureIds(&third_dirty_texture);
+  third_frame.SetExistingDamage(DlRegion());
+  third_frame.ComputeDamageRegion(third, true, false);
+
+  EXPECT_EQ(retained_texture->diff_count(), 2);
+  ASSERT_TRUE(
+      third.retained_subtree_diff_metadata().contains(retained->unique_id()));
+  EXPECT_EQ(third.retained_subtree_diff_metadata().at(retained->unique_id()),
+            metadata);
+  ASSERT_TRUE(third_frame.GetFrameDamage().has_value());
+  ExpectRegion(*third_frame.GetFrameDamage(),
+               {DlIRect::MakeLTRB(70, 0, 90, 10)});
+
+  const std::unordered_set<int64_t> no_dirty_textures;
+  auto fourth_root = std::make_shared<ContainerLayer>();
+  fourth_root->Add(retained);
+  LayerTree fourth(fourth_root, kFrameSize);
+  FrameDamage fourth_frame;
+  fourth_frame.SetPreviousLayerTree(&third);
+  fourth_frame.SetDirtyTextureIds(&no_dirty_textures);
+  fourth_frame.SetExistingDamage(DlRegion());
+  fourth_frame.ComputeDamageRegion(fourth, true, false);
+  EXPECT_EQ(retained_texture->diff_count(), 2);
+  ASSERT_TRUE(fourth_frame.GetFrameDamage().has_value());
+  ExpectRegion(*fourth_frame.GetFrameDamage(),
+               {DlIRect::MakeLTRB(80, 0, 90, 10)});
+}
+
+TEST(FrameDamageTest, RetainedTextureMetadataChecksEveryTextureOccurrence) {
+  auto retained = std::make_shared<ContainerLayer>();
+  auto first_texture =
+      std::make_shared<CountingTextureLayer>(DlPoint(0, 10), DlSize(10, 10), 7);
+  auto second_texture = std::make_shared<CountingTextureLayer>(
+      DlPoint(30, 10), DlSize(10, 10), 7);
+  retained->Add(first_texture);
+  retained->Add(second_texture);
+
+  auto make_tree = [&](int64_t changing_texture_id) {
+    auto root = std::make_shared<ContainerLayer>();
+    root->Add(retained);
+    root->Add(std::make_shared<TextureLayer>(DlPoint(80, 80), DlSize(10, 10),
+                                             changing_texture_id, false,
+                                             DlImageSampling::kLinear));
+    return std::make_unique<LayerTree>(root, kFrameSize);
+  };
+
+  auto first = make_tree(100);
+  const std::unordered_set<int64_t> first_dirty_texture = {100};
+  FrameDamage first_frame;
+  first_frame.SetDirtyTextureIds(&first_dirty_texture);
+  first_frame.ComputeDamageRegion(*first, true, false);
+
+  auto second = make_tree(101);
+  const std::unordered_set<int64_t> second_dirty_texture = {101};
+  FrameDamage second_frame;
+  second_frame.SetPreviousLayerTree(first.get());
+  second_frame.SetDirtyTextureIds(&second_dirty_texture);
+  second_frame.SetExistingDamage(DlRegion());
+  second_frame.ComputeDamageRegion(*second, true, false);
+  ASSERT_EQ(second->retained_subtree_diff_metadata()
+                .at(retained->unique_id())
+                ->texture_paint_regions.size(),
+            2u);
+
+  const std::unordered_set<int64_t> unrelated_texture = {99, 102};
+  auto third = make_tree(102);
+  FrameDamage third_frame;
+  third_frame.SetPreviousLayerTree(second.get());
+  third_frame.SetDirtyTextureIds(&unrelated_texture);
+  third_frame.SetExistingDamage(DlRegion());
+  third_frame.ComputeDamageRegion(*third, true, false);
+  EXPECT_EQ(first_texture->diff_count(), 2);
+  EXPECT_EQ(second_texture->diff_count(), 2);
+
+  const std::unordered_set<int64_t> dirty_shared_texture = {7, 103};
+  auto fourth = make_tree(103);
+  FrameDamage fourth_frame;
+  fourth_frame.SetPreviousLayerTree(third.get());
+  fourth_frame.SetDirtyTextureIds(&dirty_shared_texture);
+  fourth_frame.SetExistingDamage(DlRegion());
+  fourth_frame.ComputeDamageRegion(*fourth, true, false);
+  EXPECT_EQ(first_texture->diff_count(), 3);
+  EXPECT_EQ(second_texture->diff_count(), 3);
+  ASSERT_TRUE(fourth_frame.GetFrameDamage().has_value());
+  ExpectRegion(
+      *fourth_frame.GetFrameDamage(),
+      {DlIRect::MakeLTRB(0, 10, 10, 20), DlIRect::MakeLTRB(30, 10, 40, 20),
+       DlIRect::MakeLTRB(80, 80, 90, 90)});
+
+  // A missing dirty set preserves upstream's conservative behavior.
+  auto fifth = make_tree(104);
+  FrameDamage fifth_frame;
+  fifth_frame.SetPreviousLayerTree(fourth.get());
+  fifth_frame.SetExistingDamage(DlRegion());
+  fifth_frame.ComputeDamageRegion(*fifth, true, false);
+  EXPECT_EQ(first_texture->diff_count(), 4);
+  EXPECT_EQ(second_texture->diff_count(), 4);
+
+  // The conservative diff refreshes the reusable block for a later clean
+  // frame instead of permanently disabling the optimization.
+  const std::unordered_set<int64_t> sixth_dirty_texture = {105};
+  auto sixth = make_tree(105);
+  FrameDamage sixth_frame;
+  sixth_frame.SetPreviousLayerTree(fifth.get());
+  sixth_frame.SetDirtyTextureIds(&sixth_dirty_texture);
+  sixth_frame.SetExistingDamage(DlRegion());
+  sixth_frame.ComputeDamageRegion(*sixth, true, false);
+  EXPECT_EQ(first_texture->diff_count(), 4);
+  EXPECT_EQ(second_texture->diff_count(), 4);
+}
+
+TEST(FrameDamageTest, RetainedTextureMetadataRejectsChangedAncestorTransform) {
+  auto retained = std::make_shared<ContainerLayer>();
+  auto retained_texture = std::make_shared<CountingTextureLayer>(
+      DlPoint(10, 10), DlSize(20, 20), 7);
+  retained->Add(retained_texture);
+  const std::unordered_set<int64_t> no_dirty_textures;
+
+  auto first_transform =
+      std::make_shared<TransformLayer>(DlMatrix::MakeTranslation({0, 0}));
+  first_transform->Add(retained);
+  auto first_root = std::make_shared<ContainerLayer>();
+  first_root->Add(first_transform);
+  LayerTree first(first_root, kFrameSize);
+  FrameDamage first_frame;
+  first_frame.SetDirtyTextureIds(&no_dirty_textures);
+  first_frame.ComputeDamageRegion(first, true, false);
+
+  auto second_transform =
+      std::make_shared<TransformLayer>(DlMatrix::MakeTranslation({0, 0}));
+  second_transform->AssignOldLayer(first_transform.get());
+  second_transform->Add(retained);
+  auto second_root = std::make_shared<ContainerLayer>();
+  second_root->Add(second_transform);
+  LayerTree second(second_root, kFrameSize);
+  FrameDamage second_frame;
+  second_frame.SetPreviousLayerTree(&first);
+  second_frame.SetDirtyTextureIds(&no_dirty_textures);
+  second_frame.SetExistingDamage(DlRegion());
+  second_frame.ComputeDamageRegion(second, true, false);
+  EXPECT_EQ(retained_texture->diff_count(), 2);
+
+  auto third_transform =
+      std::make_shared<TransformLayer>(DlMatrix::MakeTranslation({40, 0}));
+  third_transform->AssignOldLayer(second_transform.get());
+  third_transform->Add(retained);
+  auto third_root = std::make_shared<ContainerLayer>();
+  third_root->Add(third_transform);
+  LayerTree third(third_root, kFrameSize);
+  FrameDamage third_frame;
+  third_frame.SetPreviousLayerTree(&second);
+  third_frame.SetDirtyTextureIds(&no_dirty_textures);
+  third_frame.SetExistingDamage(DlRegion());
+  third_frame.ComputeDamageRegion(third, true, false);
+
+  EXPECT_EQ(retained_texture->diff_count(), 3);
+  ASSERT_TRUE(third_frame.GetFrameDamage().has_value());
+  ExpectRegion(
+      *third_frame.GetFrameDamage(),
+      {DlIRect::MakeLTRB(10, 10, 30, 30), DlIRect::MakeLTRB(50, 10, 70, 30)});
+}
+
+TEST(FrameDamageTest, RetainedReadbackTextureSubtreeUsesNormalDiff) {
+  auto retained = std::make_shared<ContainerLayer>();
+  auto retained_texture = std::make_shared<CountingTextureLayer>(
+      DlPoint(10, 10), DlSize(10, 10), 7);
+  retained->Add(retained_texture);
+  auto clip = std::make_shared<ClipRectLayer>(DlRect::MakeLTRB(60, 60, 80, 80),
+                                              Clip::kHardEdge);
+  auto backdrop = std::make_shared<CountingBackdropFilterLayer>(
+      DlImageFilter::MakeMatrix(DlMatrix::MakeTranslation({50, 50}),
+                                DlImageSampling::kLinear),
+      DlBlendMode::kSrcOver);
+  clip->Add(backdrop);
+  retained->Add(clip);
+
+  auto make_tree = [&](int64_t changing_texture_id) {
+    auto root = std::make_shared<ContainerLayer>();
+    root->Add(retained);
+    root->Add(std::make_shared<TextureLayer>(DlPoint(90, 90), DlSize(5, 5),
+                                             changing_texture_id, false,
+                                             DlImageSampling::kLinear));
+    return std::make_unique<LayerTree>(root, kFrameSize);
+  };
+
+  auto first = make_tree(100);
+  const std::unordered_set<int64_t> first_dirty_texture = {100};
+  FrameDamage first_frame;
+  first_frame.SetDirtyTextureIds(&first_dirty_texture);
+  first_frame.ComputeDamageRegion(*first, true, false);
+
+  auto second = make_tree(101);
+  const std::unordered_set<int64_t> second_dirty_texture = {101};
+  FrameDamage second_frame;
+  second_frame.SetPreviousLayerTree(first.get());
+  second_frame.SetDirtyTextureIds(&second_dirty_texture);
+  second_frame.SetExistingDamage(DlRegion());
+  second_frame.ComputeDamageRegion(*second, true, false);
+
+  auto third = make_tree(102);
+  const std::unordered_set<int64_t> third_dirty_texture = {102};
+  FrameDamage third_frame;
+  third_frame.SetPreviousLayerTree(second.get());
+  third_frame.SetDirtyTextureIds(&third_dirty_texture);
+  third_frame.SetExistingDamage(DlRegion());
+  third_frame.ComputeDamageRegion(*third, true, false);
+
+  EXPECT_EQ(backdrop->diff_count(), 3);
+  EXPECT_EQ(retained_texture->diff_count(), 2);
+  EXPECT_FALSE(
+      second->retained_subtree_diff_metadata().contains(retained->unique_id()));
+  EXPECT_FALSE(
+      third->retained_subtree_diff_metadata().contains(retained->unique_id()));
 }
 
 TEST(FrameDamageTest, ReusedTreePreservesReadbackDamageDependencies) {
