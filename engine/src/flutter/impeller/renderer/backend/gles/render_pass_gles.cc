@@ -153,6 +153,18 @@ struct RenderPassData {
   std::string label;
 };
 
+void ConfigureDepth(const ProcTableGLES& gl,
+                    const std::optional<DepthAttachmentDescriptor>& depth) {
+  if (!depth.has_value()) {
+    gl.Disable(GL_DEPTH_TEST);
+    return;
+  }
+
+  gl.Enable(GL_DEPTH_TEST);
+  gl.DepthFunc(ToCompareFunction(depth->depth_compare));
+  gl.DepthMask(depth->depth_write_enabled ? GL_TRUE : GL_FALSE);
+}
+
 static bool BindVertexBuffer(const ProcTableGLES& gl,
                              BufferBindingsGLES* vertex_desc_gles,
                              const BufferView& vertex_buffer_view,
@@ -320,19 +332,21 @@ static void EncodeViewport(const ProcTableGLES& gl,
     }
   }
 
-  gl.ClearColor(pass_data.clear_color.red,    // red
-                pass_data.clear_color.green,  // green
-                pass_data.clear_color.blue,   // blue
-                pass_data.clear_color.alpha   // alpha
-  );
-  if (pass_data.depth_attachment) {
+  if (pass_data.clear_color_attachment) {
+    gl.ClearColor(pass_data.clear_color.red,    // red
+                  pass_data.clear_color.green,  // green
+                  pass_data.clear_color.blue,   // blue
+                  pass_data.clear_color.alpha   // alpha
+    );
+  }
+  if (pass_data.clear_depth_attachment && pass_data.depth_attachment) {
     if (gl.DepthRangef.IsAvailable()) {
       gl.ClearDepthf(pass_data.clear_depth);
     } else {
       gl.ClearDepth(pass_data.clear_depth);
     }
   }
-  if (pass_data.stencil_attachment) {
+  if (pass_data.clear_stencil_attachment && pass_data.stencil_attachment) {
     gl.ClearStencil(pass_data.clear_stencil);
   }
 
@@ -340,16 +354,18 @@ static void EncodeViewport(const ProcTableGLES& gl,
   if (pass_data.clear_color_attachment) {
     clear_bits |= GL_COLOR_BUFFER_BIT;
   }
-  if (pass_data.clear_depth_attachment) {
+  if (pass_data.clear_depth_attachment && pass_data.depth_attachment) {
     clear_bits |= GL_DEPTH_BUFFER_BIT;
   }
-  if (pass_data.clear_stencil_attachment) {
+  if (pass_data.clear_stencil_attachment && pass_data.stencil_attachment) {
     clear_bits |= GL_STENCIL_BUFFER_BIT;
   }
 
   RenderPassGLES::ResetGLState(gl);
 
-  gl.Clear(clear_bits);
+  if (clear_bits != 0u) {
+    gl.Clear(clear_bits);
+  }
 
   // Both the viewport and scissor are specified in framebuffer coordinates.
   // Impeller's framebuffer coordinate system is top left origin, but OpenGL's
@@ -361,6 +377,11 @@ static void EncodeViewport(const ProcTableGLES& gl,
   const bool flip_y = !is_wrapped_fbo;
   const float y_flip_value = flip_y ? -1.0f : 1.0f;
 
+  std::optional<ColorAttachmentDescriptor> current_color_attachment;
+  std::optional<DepthAttachmentDescriptor> current_depth_attachment;
+  std::optional<StencilAttachmentDescriptor> current_front_stencil;
+  std::optional<StencilAttachmentDescriptor> current_back_stencil;
+  uint32_t current_stencil_reference = 0u;
   std::optional<Viewport> current_viewport;
   CullMode current_cull_mode = CullMode::kNone;
   WindingOrder current_winding_order = WindingOrder::kClockwise;
@@ -378,10 +399,10 @@ static void EncodeViewport(const ProcTableGLES& gl,
     }
 #endif  // IMPELLER_DEBUG
     const auto& pipeline = PipelineGLES::Cast(*command.pipeline);
-    impeller_context->GetPipelineLibrary()->LogPipelineUsage(
-        pipeline.GetDescriptor());
+    const auto& descriptor = pipeline.GetDescriptor();
+    impeller_context->GetPipelineLibrary()->LogPipelineUsage(descriptor);
     const auto* color_attachment =
-        pipeline.GetDescriptor().GetLegacyCompatibleColorAttachment();
+        descriptor.GetLegacyCompatibleColorAttachment();
     if (!color_attachment) {
       VALIDATION_LOG
           << "Color attachment is too complicated for a legacy renderer.";
@@ -391,24 +412,35 @@ static void EncodeViewport(const ProcTableGLES& gl,
     //--------------------------------------------------------------------------
     /// Configure blending.
     ///
-    ConfigureBlending(gl, color_attachment);
+    if (!current_color_attachment.has_value() ||
+        current_color_attachment.value() != *color_attachment) {
+      ConfigureBlending(gl, color_attachment);
+      current_color_attachment = *color_attachment;
+    }
 
     //--------------------------------------------------------------------------
     /// Setup stencil.
     ///
-    ConfigureStencil(gl, pipeline.GetDescriptor(), command.stencil_reference);
+    const auto front_stencil = descriptor.GetFrontStencilAttachmentDescriptor();
+    const auto back_stencil = descriptor.GetBackStencilAttachmentDescriptor();
+    if (current_front_stencil != front_stencil ||
+        current_back_stencil != back_stencil ||
+        ((front_stencil.has_value() || back_stencil.has_value()) &&
+         current_stencil_reference != command.stencil_reference)) {
+      ConfigureStencil(gl, descriptor, command.stencil_reference);
+      current_front_stencil = front_stencil;
+      current_back_stencil = back_stencil;
+      current_stencil_reference = command.stencil_reference;
+    }
 
     //--------------------------------------------------------------------------
     /// Configure depth.
     ///
-    if (auto depth =
-            pipeline.GetDescriptor().GetDepthStencilAttachmentDescriptor();
-        depth.has_value()) {
-      gl.Enable(GL_DEPTH_TEST);
-      gl.DepthFunc(ToCompareFunction(depth->depth_compare));
-      gl.DepthMask(depth->depth_write_enabled ? GL_TRUE : GL_FALSE);
-    } else {
-      gl.Disable(GL_DEPTH_TEST);
+    const auto depth_attachment =
+        descriptor.GetDepthStencilAttachmentDescriptor();
+    if (current_depth_attachment != depth_attachment) {
+      ConfigureDepth(gl, depth_attachment);
+      current_depth_attachment = depth_attachment;
     }
 
     //--------------------------------------------------------------------------
@@ -440,7 +472,7 @@ static void EncodeViewport(const ProcTableGLES& gl,
     //--------------------------------------------------------------------------
     /// Setup culling.
     ///
-    CullMode pipeline_cull_mode = pipeline.GetDescriptor().GetCullMode();
+    CullMode pipeline_cull_mode = descriptor.GetCullMode();
     if (current_cull_mode != pipeline_cull_mode) {
       switch (pipeline_cull_mode) {
         case CullMode::kNone:
@@ -462,10 +494,9 @@ static void EncodeViewport(const ProcTableGLES& gl,
     /// Setup winding order. The pipeline's winding is inverted when
     /// `flip_y` is in effect (the vertex flip reverses the rasterizer's
     /// view of winding).
-    WindingOrder pipeline_winding_order =
-        pipeline.GetDescriptor().GetWindingOrder();
+    WindingOrder pipeline_winding_order = descriptor.GetWindingOrder();
     if (current_winding_order != pipeline_winding_order) {
-      switch (pipeline.GetDescriptor().GetWindingOrder()) {
+      switch (descriptor.GetWindingOrder()) {
         case WindingOrder::kClockwise:
           gl.FrontFace(flip_y ? GL_CCW : GL_CW);
           break;
@@ -528,10 +559,9 @@ static void EncodeViewport(const ProcTableGLES& gl,
     // correct; full triangle outlines won't be drawn and disconnected
     // geometry may appear connected. However this can still be useful for
     // wireframe debug views.
-    GLenum mode =
-        pipeline.GetDescriptor().GetPolygonMode() == PolygonMode::kLine
-            ? GL_LINE_STRIP
-            : ToMode(pipeline.GetDescriptor().GetPrimitiveType());
+    GLenum mode = descriptor.GetPolygonMode() == PolygonMode::kLine
+                      ? GL_LINE_STRIP
+                      : ToMode(descriptor.GetPrimitiveType());
 
     //--------------------------------------------------------------------------
     /// Finally! Invoke the draw call.
