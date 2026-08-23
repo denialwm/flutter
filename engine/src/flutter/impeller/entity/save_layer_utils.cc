@@ -16,6 +16,17 @@ bool SizeDifferenceUnderThreshold(Size a, Size b, Scalar threshold) {
 static constexpr Scalar kDefaultSizeThreshold = 0.3;
 }  // namespace
 
+bool CanRenderBackdropLayerDirectly(
+    const BackdropLayerDirectPlanInputs& inputs) {
+  return inputs.has_backdrop_filter &&
+         inputs.content_is_single_sample_compatible &&
+         inputs.content_bounds_are_contained && inputs.is_root_pass &&
+         inputs.restore_blend_mode == BlendMode::kSrc &&
+         inputs.restore_is_opaque && !inputs.restore_has_effects &&
+         !inputs.has_backdrop_id &&
+         ScalarNearlyEqual(inputs.inherited_opacity, 1.0f);
+}
+
 std::optional<Rect> ComputeSaveLayerCoverage(
     const Rect& content_coverage,
     const Matrix& effect_transform,

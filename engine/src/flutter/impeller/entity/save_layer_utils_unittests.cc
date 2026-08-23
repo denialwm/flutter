@@ -14,6 +14,64 @@ namespace testing {
 
 using SaveLayerUtilsTest = ::testing::Test;
 
+TEST(SaveLayerUtilsTest, DirectBackdropPlanAcceptsExactSourceAssignment) {
+  EXPECT_TRUE(CanRenderBackdropLayerDirectly({
+      .has_backdrop_filter = true,
+      .content_is_single_sample_compatible = true,
+      .content_bounds_are_contained = true,
+      .is_root_pass = true,
+      .restore_blend_mode = BlendMode::kSrc,
+      .restore_is_opaque = true,
+  }));
+}
+
+TEST(SaveLayerUtilsTest, DirectBackdropPlanRejectsUnprovenSemantics) {
+  const BackdropLayerDirectPlanInputs accepted = {
+      .has_backdrop_filter = true,
+      .content_is_single_sample_compatible = true,
+      .content_bounds_are_contained = true,
+      .is_root_pass = true,
+      .restore_blend_mode = BlendMode::kSrc,
+      .restore_is_opaque = true,
+  };
+
+  auto rejected = accepted;
+  rejected.has_backdrop_filter = false;
+  EXPECT_FALSE(CanRenderBackdropLayerDirectly(rejected));
+
+  rejected = accepted;
+  rejected.content_is_single_sample_compatible = false;
+  EXPECT_FALSE(CanRenderBackdropLayerDirectly(rejected));
+
+  rejected = accepted;
+  rejected.content_bounds_are_contained = false;
+  EXPECT_FALSE(CanRenderBackdropLayerDirectly(rejected));
+
+  rejected = accepted;
+  rejected.is_root_pass = false;
+  EXPECT_FALSE(CanRenderBackdropLayerDirectly(rejected));
+
+  rejected = accepted;
+  rejected.restore_blend_mode = BlendMode::kSrcOver;
+  EXPECT_FALSE(CanRenderBackdropLayerDirectly(rejected));
+
+  rejected = accepted;
+  rejected.restore_is_opaque = false;
+  EXPECT_FALSE(CanRenderBackdropLayerDirectly(rejected));
+
+  rejected = accepted;
+  rejected.restore_has_effects = true;
+  EXPECT_FALSE(CanRenderBackdropLayerDirectly(rejected));
+
+  rejected = accepted;
+  rejected.has_backdrop_id = true;
+  EXPECT_FALSE(CanRenderBackdropLayerDirectly(rejected));
+
+  rejected = accepted;
+  rejected.inherited_opacity = 0.5f;
+  EXPECT_FALSE(CanRenderBackdropLayerDirectly(rejected));
+}
+
 TEST(SaveLayerUtilsTest, SimplePaintComputedCoverage) {
   // Basic Case, simple paint, computed coverage
   auto coverage = ComputeSaveLayerCoverage(
