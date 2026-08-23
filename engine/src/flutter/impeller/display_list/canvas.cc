@@ -87,6 +87,7 @@ struct BackdropLayerPlanAudit {
   uint64_t direct_pixels = 0;
   uint64_t single_sample_pixels = 0;
   uint64_t multisample_pixels = 0;
+  bool first_report_pending = true;
 };
 
 struct BackdropGraphPlanAudit {
@@ -102,6 +103,7 @@ struct BackdropGraphPlanAudit {
   uint64_t epoch_snapshot_flips = 0;
   uint64_t epoch_snapshot_reuses = 0;
   uint64_t epoch_plan_misses = 0;
+  bool first_report_pending = true;
 };
 
 enum class BackdropEpochExecution {
@@ -121,6 +123,11 @@ static bool IsDenialRenderAuditEnabled() {
 
 static BackdropGraphPlanAudit& GetBackdropGraphPlanAudit() {
   static thread_local BackdropGraphPlanAudit audit;
+  return audit;
+}
+
+static BackdropLayerPlanAudit& GetBackdropLayerPlanAudit() {
+  static thread_local BackdropLayerPlanAudit audit;
   return audit;
 }
 
@@ -149,7 +156,7 @@ static void RecordBackdropLayerPlan(ISize size,
     return;
   }
 
-  static thread_local BackdropLayerPlanAudit audit;
+  BackdropLayerPlanAudit& audit = GetBackdropLayerPlanAudit();
   const uint64_t pixels = static_cast<uint64_t>(size.Area());
   if (is_direct) {
     audit.direct_layers++;
@@ -161,11 +168,24 @@ static void RecordBackdropLayerPlan(ISize size,
     audit.single_sample_layers++;
     audit.single_sample_pixels += pixels;
   }
+}
+
+static void FlushBackdropLayerPlanAudit() {
+  if (!IsDenialRenderAuditEnabled()) {
+    return;
+  }
+
+  BackdropLayerPlanAudit& audit = GetBackdropLayerPlanAudit();
+  const uint64_t layers = audit.direct_layers + audit.single_sample_layers +
+                          audit.multisample_layers;
+  if (layers == 0u) {
+    return;
+  }
 
   const auto now = BackdropLayerPlanAudit::Clock::now();
   const auto interval = std::chrono::duration_cast<std::chrono::milliseconds>(
       now - audit.period_start);
-  if (interval < std::chrono::seconds(1)) {
+  if (!audit.first_report_pending && interval < std::chrono::seconds(1)) {
     return;
   }
 
@@ -179,7 +199,8 @@ static void RecordBackdropLayerPlan(ISize size,
                 << " multisample_pixels=" << audit.multisample_pixels
                 << " avoided_color_samples="
                 << audit.direct_pixels * 4u + audit.single_sample_pixels * 3u;
-  audit = BackdropLayerPlanAudit{.period_start = now};
+  audit = BackdropLayerPlanAudit{.period_start = now,
+                                 .first_report_pending = false};
 }
 
 static void RecordBackdropGraphPlan(const BackdropEpochPlan& plan) {
@@ -195,11 +216,18 @@ static void RecordBackdropGraphPlan(const BackdropEpochPlan& plan) {
   audit.scene_barriers += plan.scene_barriers;
   audit.parallel_rects_max =
       std::max<uint64_t>(audit.parallel_rects_max, plan.GetMaxEpochWidth());
+}
 
+static void FlushBackdropGraphPlanAudit() {
+  if (!IsDenialRenderAuditEnabled()) {
+    return;
+  }
+
+  BackdropGraphPlanAudit& audit = GetBackdropGraphPlanAudit();
   const auto now = BackdropGraphPlanAudit::Clock::now();
   const auto interval = std::chrono::duration_cast<std::chrono::milliseconds>(
       now - audit.period_start);
-  if (interval < std::chrono::seconds(1)) {
+  if (!audit.first_report_pending && interval < std::chrono::seconds(1)) {
     return;
   }
 
@@ -217,7 +245,8 @@ static void RecordBackdropGraphPlan(const BackdropEpochPlan& plan) {
                 << " epoch_snapshot_flips=" << audit.epoch_snapshot_flips
                 << " epoch_snapshot_reuses=" << audit.epoch_snapshot_reuses
                 << " epoch_plan_misses=" << audit.epoch_plan_misses;
-  audit = BackdropGraphPlanAudit{.period_start = now};
+  audit = BackdropGraphPlanAudit{.period_start = now,
+                                 .first_report_pending = false};
 }
 
 bool IsPipelineBlendOrMatrixFilter(const flutter::DlColorFilter* filter) {
@@ -2963,6 +2992,8 @@ void Canvas::EndReplay() {
   render_passes_.back().GetInlinePassContext()->GetRenderPass();
   render_passes_.back().GetInlinePassContext()->EndPass(
       /*is_onscreen=*/!requires_readback_ && is_onscreen_);
+  FlushBackdropLayerPlanAudit();
+  FlushBackdropGraphPlanAudit();
   backdrop_data_.clear();
   backdrop_epoch_plan_ = {};
   backdrop_epoch_cursor_.Reset();
