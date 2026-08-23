@@ -1514,6 +1514,38 @@ TEST_F(DisplayListTest, SaveLayerNoAttributesInheritsOpacity) {
   EXPECT_TRUE(expector.all_expectations_checked());
 }
 
+TEST_F(DisplayListTest, BackdropTextureContentIsSingleSampleCompatible) {
+  SAVE_LAYER_EXPECTOR(expector);
+  expector.addExpectation([](const SaveLayerOptions& options) {
+    return options.content_is_single_sample_compatible();
+  });
+
+  DisplayListBuilder builder;
+  builder.SaveLayer(std::nullopt, nullptr, &kTestBlurImageFilter1);
+  auto image = MakeTestImage(100, 100, 5);
+  builder.DrawImageRect(image, DlRect::MakeWH(100, 100),
+                        DlImageSampling::kLinear);
+  builder.Restore();
+
+  builder.Build()->Dispatch(expector);
+  EXPECT_TRUE(expector.all_expectations_checked());
+}
+
+TEST_F(DisplayListTest, BackdropGeometryContentKeepsMultisampling) {
+  SAVE_LAYER_EXPECTOR(expector);
+  expector.addExpectation([](const SaveLayerOptions& options) {
+    return !options.content_is_single_sample_compatible();
+  });
+
+  DisplayListBuilder builder;
+  builder.SaveLayer(std::nullopt, nullptr, &kTestBlurImageFilter1);
+  builder.DrawRect(DlRect::MakeWH(100, 100), DlPaint());
+  builder.Restore();
+
+  builder.Build()->Dispatch(expector);
+  EXPECT_TRUE(expector.all_expectations_checked());
+}
+
 TEST_F(DisplayListTest, SaveLayerTwoOverlappingOpsDoesNotInheritOpacity) {
   SAVE_LAYER_EXPECTOR(expector);
   expector.addExpectation(SaveLayerOptions::kWithAttributes);

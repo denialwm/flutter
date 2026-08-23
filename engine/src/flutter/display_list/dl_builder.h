@@ -558,6 +558,12 @@ class DisplayListBuilder final : public virtual DlCanvas,
     bool contains_backdrop_filter = false;
     bool is_unbounded = false;
 
+    // Starts optimistic and is invalidated by any operation which may need
+    // geometric multisampling when rendered directly into this layer. The
+    // value is only exported for backdrop saveLayers, where avoiding a 4x
+    // multisampled color allocation and resolve has a material cost.
+    bool content_is_single_sample_compatible = true;
+
     bool is_group_opacity_compatible() const {
       return !opacity_incompatible_op_detected &&
              !layer_local_accumulator.overlap_detected();

@@ -429,6 +429,11 @@ void DisplayListBuilder::saveLayer(const DlRect& bounds,
     current_layer().contains_backdrop_filter = true;
   }
 
+  // The eventual restore composites a generic layer result into the current
+  // layer. Keep the parent's proof conservative; the child receives its own
+  // independent LayerInfo below and may still prove itself single-sample.
+  current_layer().content_is_single_sample_compatible = false;
+
   // Snapshot these values before we do any work as we need the values
   // from before the method was called, but some of the operations below
   // might update them.
@@ -623,6 +628,12 @@ void DisplayListBuilder::RestoreLayer() {
 
   if (current_layer().is_unbounded) {
     layer_op->options = layer_op->options.with_content_is_unbounded();
+  }
+
+  if (layer_op->type == DisplayListOpType::kSaveLayerBackdrop &&
+      current_layer().content_is_single_sample_compatible) {
+    layer_op->options =
+        layer_op->options.with_content_is_single_sample_compatible();
   }
 
   // Ensure that the bounds transferred in the following call will be
@@ -1434,6 +1445,7 @@ void DisplayListBuilder::drawVertices(
   if (result != OpResult::kNoEffect &&
       AccumulateOpBounds(vertices->GetBounds(), flags)) {
     Push<DrawVerticesOp>(0, vertices, mode);
+    current_layer().content_is_single_sample_compatible = false;
     // DrawVertices applies its colors to the paint so we have no way
     // of controlling opacity using the current paint attributes.
     // Although, examination of the |mode| might find some predictable
@@ -1628,6 +1640,7 @@ void DisplayListBuilder::drawAtlas(const sk_sp<DlImage> atlas,
   // on it to distribute the opacity without overlap without checking all
   // of the transforms and texture rectangles.
   UpdateLayerOpacityCompatibility(false);
+  current_layer().content_is_single_sample_compatible = false;
   UpdateLayerResult(result, render_with_attributes);
   is_ui_thread_safe_ = is_ui_thread_safe_ && atlas->isUIThreadSafe();
 }
@@ -1684,6 +1697,7 @@ void DisplayListBuilder::DrawDisplayList(const sk_sp<DisplayList> display_list,
   DlPaint current_paint = current_;
   Push<DrawDisplayListOp>(0, display_list,
                           opacity < SK_Scalar1 ? opacity : SK_Scalar1);
+  current_layer().content_is_single_sample_compatible = false;
 
   // This depth increment accounts for every draw call in the child
   // DisplayList and is in addition to the implicit depth increment
@@ -1773,6 +1787,7 @@ void DisplayListBuilder::DrawShadow(const DlPath& path,
           ? Push<DrawShadowTransparentOccluderOp>(0, path, color, elevation,
                                                   dpr)
           : Push<DrawShadowOp>(0, path, color, elevation, dpr);
+      current_layer().content_is_single_sample_compatible = false;
       UpdateLayerOpacityCompatibility(false);
       UpdateLayerResult(result, DlBlendMode::kSrcOver);
     }
@@ -2025,6 +2040,13 @@ DlColor DisplayListBuilder::GetEffectiveColor(const DlPaint& paint,
 DisplayListBuilder::OpResult DisplayListBuilder::PaintResult(
     const DlPaint& paint,
     DisplayListAttributeFlags flags) {
+  if (flags.is_geometric()) {
+    // Impeller's path, text, and primitive geometries can derive edge
+    // coverage from MSAA. This invalidation is intentionally conservative:
+    // a culled or no-op geometry may leave a layer on the legacy path, but it
+    // can never incorrectly remove multisampling from visible geometry.
+    current_layer().content_is_single_sample_compatible = false;
+  }
   if (current_info().is_nop) {
     return OpResult::kNoEffect;
   }

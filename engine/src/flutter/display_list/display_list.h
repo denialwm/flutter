@@ -236,6 +236,20 @@ class SaveLayerOptions {
     return options;
   }
 
+  // Indicates that the DisplayListBuilder proved that every operation which
+  // renders directly into this layer is compatible with a single-sample
+  // color target. This is an optimization hint produced while recording the
+  // DisplayList; caller-provided values are deliberately stripped by
+  // without_optimizations().
+  bool content_is_single_sample_compatible() const {
+    return fContentIsSingleSampleCompatible;
+  }
+  SaveLayerOptions with_content_is_single_sample_compatible() const {
+    SaveLayerOptions options(this);
+    options.fContentIsSingleSampleCompatible = true;
+    return options;
+  }
+
   SaveLayerOptions& operator=(const SaveLayerOptions& other) {
     flags_ = other.flags_;
     return *this;
@@ -253,6 +267,7 @@ class SaveLayerOptions {
       unsigned fContentIsClipped : 1;
       unsigned fHasBackdropFilter : 1;
       unsigned fContentIsUnbounded : 1;
+      unsigned fContentIsSingleSampleCompatible : 1;
     };
     uint32_t flags_;
   };

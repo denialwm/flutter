@@ -4,6 +4,8 @@
 
 #include "impeller/display_list/canvas.h"
 
+#include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -65,6 +67,57 @@ namespace impeller {
 namespace {
 
 constexpr Scalar kAntialiasPadding = 1.0f;
+
+struct BackdropLayerPlanAudit {
+  using Clock = std::chrono::steady_clock;
+
+  Clock::time_point period_start = Clock::now();
+  uint64_t single_sample_layers = 0;
+  uint64_t multisample_layers = 0;
+  uint64_t single_sample_pixels = 0;
+  uint64_t multisample_pixels = 0;
+};
+
+static bool IsDenialRenderAuditEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("DENIA_RENDER_AUDIT");
+    return value != nullptr && value[0] != '\0' &&
+           !(value[0] == '0' && value[1] == '\0');
+  }();
+  return enabled;
+}
+
+static void RecordBackdropLayerPlan(ISize size, bool use_msaa) {
+  if (!IsDenialRenderAuditEnabled()) {
+    return;
+  }
+
+  static thread_local BackdropLayerPlanAudit audit;
+  const uint64_t pixels = static_cast<uint64_t>(size.Area());
+  if (use_msaa) {
+    audit.multisample_layers++;
+    audit.multisample_pixels += pixels;
+  } else {
+    audit.single_sample_layers++;
+    audit.single_sample_pixels += pixels;
+  }
+
+  const auto now = BackdropLayerPlanAudit::Clock::now();
+  const auto interval = std::chrono::duration_cast<std::chrono::milliseconds>(
+      now - audit.period_start);
+  if (interval < std::chrono::seconds(1)) {
+    return;
+  }
+
+  FML_LOG(INFO) << "Denial backdrop render plan"
+                << " interval_ms=" << interval.count()
+                << " single_sample_layers=" << audit.single_sample_layers
+                << " multisample_layers=" << audit.multisample_layers
+                << " single_sample_pixels=" << audit.single_sample_pixels
+                << " multisample_pixels=" << audit.multisample_pixels
+                << " avoided_color_samples=" << audit.single_sample_pixels * 3u;
+  audit = BackdropLayerPlanAudit{.period_start = now};
+}
 
 bool IsPipelineBlendOrMatrixFilter(const flutter::DlColorFilter* filter) {
   return filter->type() == flutter::DlColorFilterType::kMatrix ||
@@ -139,7 +192,8 @@ static const constexpr RenderTarget::AttachmentConfig kDefaultStencilConfig =
 static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
     ContentContext& renderer,
     ISize size,
-    const Color& clear_color) {
+    const Color& clear_color,
+    bool use_msaa) {
   const std::shared_ptr<Context>& context = renderer.GetContext();
 
   /// All of the load/store actions are managed by `InlinePassContext` when
@@ -148,7 +202,7 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
   /// changed for the lifetime of the textures.
 
   RenderTarget target;
-  if (context->GetCapabilities()->SupportsOffscreenMSAA()) {
+  if (use_msaa && context->GetCapabilities()->SupportsOffscreenMSAA()) {
     target = renderer.GetRenderTargetCache()->CreateOffscreenMSAA(
         /*context=*/*context,
         /*size=*/size,
@@ -1420,7 +1474,8 @@ void Canvas::SetupRenderPass() {
     auto entity_pass_target =
         CreateRenderTarget(renderer_,                  //
                            color0.texture->GetSize(),  //
-                           /*clear_color=*/Color::BlackTransparent());
+                           /*clear_color=*/Color::BlackTransparent(),
+                           /*use_msaa=*/true);
     render_passes_.push_back(
         LazyRenderingConfig(renderer_, std::move(entity_pass_target)));
   } else {
@@ -1501,7 +1556,8 @@ void Canvas::SaveLayer(const Paint& paint,
                        ContentBoundsPromise bounds_promise,
                        uint32_t total_content_depth,
                        bool can_distribute_opacity,
-                       std::optional<int64_t> backdrop_id) {
+                       std::optional<int64_t> backdrop_id,
+                       bool content_is_single_sample_compatible) {
   TRACE_EVENT0("flutter", "Canvas::saveLayer");
   if (IsSkipping()) {
     return SkipUntilMatchingRestore(total_content_depth);
@@ -1747,11 +1803,17 @@ void Canvas::SaveLayer(const Paint& paint,
   paint_copy.color.alpha *= transform_stack_.back().distributed_opacity;
   transform_stack_.back().distributed_opacity = 1.0;
 
+  const bool use_msaa = !content_is_single_sample_compatible;
+  if (backdrop_filter) {
+    RecordBackdropLayerPlan(subpass_size, use_msaa);
+  }
+
   render_passes_.push_back(
-      LazyRenderingConfig(renderer_,                                    //
-                          CreateRenderTarget(renderer_,                 //
-                                             subpass_size,              //
-                                             Color::BlackTransparent()  //
+      LazyRenderingConfig(renderer_,                                     //
+                          CreateRenderTarget(renderer_,                  //
+                                             subpass_size,               //
+                                             Color::BlackTransparent(),  //
+                                             use_msaa                    //
                                              )));
   save_layer_state_.push_back(SaveLayerState{
       paint_copy, subpass_coverage.Shift(-coverage_origin_adjustment)});
