@@ -31,6 +31,23 @@ struct BackdropLayerDirectPlanInputs {
   Scalar inherited_opacity = 1.0f;
 };
 
+enum class BackdropLayerDirectRejection : uint32_t {
+  kMissingBackdropFilter = 1u << 0u,
+  kContentNeedsMultisampling = 1u << 1u,
+  kContentBoundsUncontained = 1u << 2u,
+  kNestedPass = 1u << 3u,
+  kRestoreBlendMode = 1u << 4u,
+  kRestoreNotOpaque = 1u << 5u,
+  kRestoreHasEffects = 1u << 6u,
+  kBackdropId = 1u << 7u,
+  kInheritedOpacity = 1u << 8u,
+};
+
+/// Returns a bitset explaining every failed direct-plan predicate. A zero
+/// result means the rewrite is accepted.
+uint32_t GetBackdropLayerDirectRejections(
+    const BackdropLayerDirectPlanInputs& inputs);
+
 /// Returns true when the following saveLayer expression is an exact rewrite:
 ///
 ///   layer = backdrop; layer = children over layer; parent = layer (kSrc)

@@ -63,4 +63,8 @@ void FilterContentsFilterInput::SetRenderingMode(
   filter_->SetRenderingMode(rendering_mode);
 }
 
+void FilterContentsFilterInput::SetIsBackdropFilter(bool is_backdrop_filter) {
+  filter_->SetIsBackdropFilter(is_backdrop_filter);
+}
+
 }  // namespace impeller

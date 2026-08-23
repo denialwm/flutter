@@ -18,13 +18,34 @@ static constexpr Scalar kDefaultSizeThreshold = 0.3;
 
 bool CanRenderBackdropLayerDirectly(
     const BackdropLayerDirectPlanInputs& inputs) {
-  return inputs.has_backdrop_filter &&
-         inputs.content_is_single_sample_compatible &&
-         inputs.content_bounds_are_contained && inputs.is_root_pass &&
-         inputs.restore_blend_mode == BlendMode::kSrc &&
-         inputs.restore_is_opaque && !inputs.restore_has_effects &&
-         !inputs.has_backdrop_id &&
-         ScalarNearlyEqual(inputs.inherited_opacity, 1.0f);
+  return GetBackdropLayerDirectRejections(inputs) == 0u;
+}
+
+uint32_t GetBackdropLayerDirectRejections(
+    const BackdropLayerDirectPlanInputs& inputs) {
+  uint32_t result = 0u;
+  const auto reject = [&](bool condition, BackdropLayerDirectRejection reason) {
+    if (condition) {
+      result |= static_cast<uint32_t>(reason);
+    }
+  };
+  reject(!inputs.has_backdrop_filter,
+         BackdropLayerDirectRejection::kMissingBackdropFilter);
+  reject(!inputs.content_is_single_sample_compatible,
+         BackdropLayerDirectRejection::kContentNeedsMultisampling);
+  reject(!inputs.content_bounds_are_contained,
+         BackdropLayerDirectRejection::kContentBoundsUncontained);
+  reject(!inputs.is_root_pass, BackdropLayerDirectRejection::kNestedPass);
+  reject(inputs.restore_blend_mode != BlendMode::kSrc,
+         BackdropLayerDirectRejection::kRestoreBlendMode);
+  reject(!inputs.restore_is_opaque,
+         BackdropLayerDirectRejection::kRestoreNotOpaque);
+  reject(inputs.restore_has_effects,
+         BackdropLayerDirectRejection::kRestoreHasEffects);
+  reject(inputs.has_backdrop_id, BackdropLayerDirectRejection::kBackdropId);
+  reject(!ScalarNearlyEqual(inputs.inherited_opacity, 1.0f),
+         BackdropLayerDirectRejection::kInheritedOpacity);
+  return result;
 }
 
 std::optional<Rect> ComputeSaveLayerCoverage(

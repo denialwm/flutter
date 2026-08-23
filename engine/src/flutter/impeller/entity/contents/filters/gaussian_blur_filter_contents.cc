@@ -437,7 +437,8 @@ fml::StatusOr<RenderTarget> MakeDownsampleSubpass(
     const std::shared_ptr<Texture>& input_texture,
     const SamplerDescriptor& sampler_descriptor,
     const DownsamplePassArgs& pass_args,
-    Entity::TileMode tile_mode) {
+    Entity::TileMode tile_mode,
+    std::string_view pass_label) {
   using VS = TextureFillVertexShader;
 
   // If the texture already had mip levels generated, then we can use the
@@ -492,7 +493,7 @@ fml::StatusOr<RenderTarget> MakeDownsampleSubpass(
 
           return pass.Draw().ok();
         };
-    return renderer.MakeSubpass("Gaussian Blur Filter", pass_args.subpass_size,
+    return renderer.MakeSubpass(pass_label, pass_args.subpass_size,
                                 command_buffer, subpass_callback,
                                 /*msaa_enabled=*/false,
                                 /*depth_stencil_enabled=*/false);
@@ -576,7 +577,7 @@ fml::StatusOr<RenderTarget> MakeDownsampleSubpass(
 
           return pass.Draw().ok();
         };
-    return renderer.MakeSubpass("Gaussian Blur Filter", pass_args.subpass_size,
+    return renderer.MakeSubpass(pass_label, pass_args.subpass_size,
                                 command_buffer, subpass_callback,
                                 /*msaa_enabled=*/false,
                                 /*depth_stencil_enabled=*/false);
@@ -592,7 +593,8 @@ fml::StatusOr<RenderTarget> MakeGaussianBlurSubpass(
     std::optional<RenderTarget> destination_target,
     const ISize& subpass_size,
     const Quad& positions,
-    const Quad& texture_uvs) {
+    const Quad& texture_uvs,
+    std::string_view pass_label) {
   using VS = GaussianBlurVertexShader;
   ContentContext::SubpassCallback subpass_callback =
       [&](const ContentContext& renderer, RenderPass& pass) {
@@ -635,12 +637,11 @@ fml::StatusOr<RenderTarget> MakeGaussianBlurSubpass(
         return pass.Draw().ok();
       };
   if (destination_target.has_value()) {
-    return renderer.MakeSubpass("Gaussian Blur Filter",
-                                destination_target.value(), command_buffer,
-                                subpass_callback);
+    return renderer.MakeSubpass(pass_label, destination_target.value(),
+                                command_buffer, subpass_callback);
   } else {
     return renderer.MakeSubpass(
-        "Gaussian Blur Filter", subpass_size, command_buffer, subpass_callback,
+        pass_label, subpass_size, command_buffer, subpass_callback,
         /*msaa_enabled=*/false, /*depth_stencil_enabled=*/false);
   }
 }
@@ -652,7 +653,8 @@ fml::StatusOr<RenderTarget> MakeBlurSubpass(
     const SamplerDescriptor& sampler_descriptor,
     const BlurParameters& blur_info,
     std::optional<RenderTarget> destination_target,
-    const Quad& blur_uvs) {
+    const Quad& blur_uvs,
+    std::string_view pass_label) {
   if (blur_info.blur_sigma < kEhCloseEnough) {
     return input_pass;
   }
@@ -662,9 +664,10 @@ fml::StatusOr<RenderTarget> MakeBlurSubpass(
 
   // TODO(gaaclarke): This blurs the whole image, but because we know the clip
   //                  region we could focus on just blurring that.
-  return MakeGaussianBlurSubpass(
-      renderer, command_buffer, input_texture, sampler_descriptor, blur_info,
-      destination_target, input_texture->GetSize(), blur_uvs, blur_uvs);
+  return MakeGaussianBlurSubpass(renderer, command_buffer, input_texture,
+                                 sampler_descriptor, blur_info,
+                                 destination_target, input_texture->GetSize(),
+                                 blur_uvs, blur_uvs, pass_label);
 }
 
 int ScaleBlurRadius(Scalar radius, Scalar scalar) {
@@ -946,6 +949,16 @@ std::optional<Entity> GaussianBlurFilterContents::RenderFilter(
       downsample_pass_args.effective_scalar.y >= 0.5f &&
       vertical_blur.blur_sigma >= kEhCloseEnough;
 
+  const std::string_view downsample_pass_label =
+      IsBackdropFilter() ? "Denial Backdrop Blur Downsample"
+                         : "Gaussian Blur Filter";
+  const std::string_view vertical_pass_label =
+      IsBackdropFilter() ? "Denial Backdrop Blur Vertical"
+                         : "Gaussian Blur Filter";
+  const std::string_view horizontal_pass_label =
+      IsBackdropFilter() ? "Denial Backdrop Blur Horizontal"
+                         : "Gaussian Blur Filter";
+
   // Non-fused backends intentionally retain separate command buffers. Some
   // Vulkan Adreno devices report device loss when all three blur passes share
   // one command buffer (https://github.com/flutter/flutter/issues/154046).
@@ -975,7 +988,8 @@ std::optional<Entity> GaussianBlurFilterContents::RenderFilter(
     fml::StatusOr<RenderTarget> fused_pass = MakeGaussianBlurSubpass(
         renderer, first_command_buffer, input_snapshot->texture, source_sampler,
         source_vertical_blur, /*destination_target=*/std::nullopt,
-        downsample_pass_args.subpass_size, blur_uvs, downsample_pass_args.uvs);
+        downsample_pass_args.subpass_size, blur_uvs, downsample_pass_args.uvs,
+        vertical_pass_label);
     if (!fused_pass.ok()) {
       return std::nullopt;
     }
@@ -983,7 +997,8 @@ std::optional<Entity> GaussianBlurFilterContents::RenderFilter(
   } else {
     fml::StatusOr<RenderTarget> downsample_pass = MakeDownsampleSubpass(
         renderer, first_command_buffer, input_snapshot->texture,
-        input_snapshot->sampler_descriptor, downsample_pass_args, tile_mode_);
+        input_snapshot->sampler_descriptor, downsample_pass_args, tile_mode_,
+        downsample_pass_label);
     if (!downsample_pass.ok()) {
       return std::nullopt;
     }
@@ -992,11 +1007,11 @@ std::optional<Entity> GaussianBlurFilterContents::RenderFilter(
     if (!vertical_command_buffer) {
       return std::nullopt;
     }
-    fml::StatusOr<RenderTarget> blur_pass =
-        MakeBlurSubpass(renderer, vertical_command_buffer,
-                        /*input_pass=*/downsample_pass.value(),
-                        input_snapshot->sampler_descriptor, vertical_blur,
-                        /*destination_target=*/std::nullopt, blur_uvs);
+    fml::StatusOr<RenderTarget> blur_pass = MakeBlurSubpass(
+        renderer, vertical_command_buffer,
+        /*input_pass=*/downsample_pass.value(),
+        input_snapshot->sampler_descriptor, vertical_blur,
+        /*destination_target=*/std::nullopt, blur_uvs, vertical_pass_label);
     if (!blur_pass.ok()) {
       return std::nullopt;
     }
@@ -1028,7 +1043,7 @@ std::optional<Entity> GaussianBlurFilterContents::RenderFilter(
           .step_size = 1,
           .apply_unpremultiply = bounds_.has_value(),
       },
-      horizontal_destination, blur_uvs);
+      horizontal_destination, blur_uvs, horizontal_pass_label);
 
   if (!horizontal_pass.ok()) {
     return std::nullopt;

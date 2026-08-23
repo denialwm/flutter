@@ -281,6 +281,7 @@ void(glDepthRange)(GLdouble n, GLdouble f);
   PROC(GenQueriesEXT);                      \
   PROC(DeleteQueriesEXT);                   \
   PROC(GetQueryObjectui64vEXT);             \
+  PROC(QueryCounterEXT);                    \
   PROC(BeginQueryEXT);                      \
   PROC(EndQueryEXT);                        \
   PROC(GetQueryObjectuivEXT);               \

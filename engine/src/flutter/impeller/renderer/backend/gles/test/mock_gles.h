@@ -83,6 +83,7 @@ class IMockGLESImpl {
                                 GLboolean transpose,
                                 const GLfloat* value) {}
   virtual void GenQueriesEXT(GLsizei n, GLuint* ids) {}
+  virtual void QueryCounterEXT(GLuint id, GLenum target) {}
   virtual void BeginQueryEXT(GLenum target, GLuint id) {}
   virtual void EndQueryEXT(GLuint id) {}
   virtual void GetQueryObjectuivEXT(GLuint id, GLenum target, GLuint* result) {}
@@ -208,6 +209,7 @@ class MockGLESImpl : public IMockGLESImpl {
                const GLfloat* value),
               (override));
   MOCK_METHOD(void, GenQueriesEXT, (GLsizei n, GLuint* ids), (override));
+  MOCK_METHOD(void, QueryCounterEXT, (GLuint id, GLenum target), (override));
   MOCK_METHOD(void, BeginQueryEXT, (GLenum target, GLuint id), (override));
   MOCK_METHOD(void, EndQueryEXT, (GLuint id), (override));
   MOCK_METHOD(void,

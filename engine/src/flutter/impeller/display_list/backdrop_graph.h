@@ -39,6 +39,9 @@ struct BackdropEpochPlan {
   std::vector<uint32_t> epoch_for_scope;
   std::vector<std::vector<uint32_t>> scopes_by_epoch;
   size_t dependency_edges = 0u;
+  size_t write_read_hazards = 0u;
+  size_t write_write_hazards = 0u;
+  size_t read_write_hazards = 0u;
   size_t scene_barriers = 0u;
 
   size_t GetMaxEpochWidth() const;

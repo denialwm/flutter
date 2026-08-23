@@ -149,6 +149,12 @@ bool TextureContents::Render(const ContentContext& renderer,
   }
 #endif  // IMPELLER_DEBUG
 
+  if (label_ == "Denial backdrop layer restore") {
+    pass.SetCommandAuditCategory(CommandAuditCategory::kBackdropRestore);
+  } else if (label_ == "MSAA backdrop") {
+    pass.SetCommandAuditCategory(CommandAuditCategory::kMsaaBackdropRestore);
+  }
+
   auto pipeline_options = OptionsFromPassAndEntity(pass, entity);
   if (!stencil_enabled_) {
     pipeline_options.stencil_mode = ContentContextOptions::StencilMode::kIgnore;

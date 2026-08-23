@@ -142,6 +142,12 @@ void mockGenQueriesEXT(GLsizei n, GLuint* ids) {
 static_assert(CheckSameSignature<decltype(mockGenQueriesEXT),  //
                                  decltype(glGenQueriesEXT)>::value);
 
+void mockQueryCounterEXT(GLuint id, GLenum target) {
+  CallMockMethod(&IMockGLESImpl::QueryCounterEXT, id, target);
+}
+static_assert(CheckSameSignature<decltype(mockQueryCounterEXT),  //
+                                 decltype(glQueryCounterEXT)>::value);
+
 void mockBeginQueryEXT(GLenum target, GLuint id) {
   CallMockMethod(&IMockGLESImpl::BeginQueryEXT, target, id);
 }
@@ -389,6 +395,8 @@ const ProcTableGLES::Resolver kMockResolverGLES = [](const char* name) {
     return reinterpret_cast<void*>(&mockGetError);
   } else if (strcmp(name, "glGenQueriesEXT") == 0) {
     return reinterpret_cast<void*>(&mockGenQueriesEXT);
+  } else if (strcmp(name, "glQueryCounterEXT") == 0) {
+    return reinterpret_cast<void*>(&mockQueryCounterEXT);
   } else if (strcmp(name, "glBeginQueryEXT") == 0) {
     return reinterpret_cast<void*>(&mockBeginQueryEXT);
   } else if (strcmp(name, "glEndQueryEXT") == 0) {

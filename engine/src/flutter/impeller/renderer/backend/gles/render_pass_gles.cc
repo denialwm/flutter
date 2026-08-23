@@ -14,6 +14,7 @@
 #include "impeller/core/formats.h"
 #include "impeller/renderer/backend/gles/buffer_bindings_gles.h"
 #include "impeller/renderer/backend/gles/context_gles.h"
+#include "impeller/renderer/backend/gles/denial_gpu_audit_gles.h"
 #include "impeller/renderer/backend/gles/device_buffer_gles.h"
 #include "impeller/renderer/backend/gles/formats_gles.h"
 #include "impeller/renderer/backend/gles/gpu_tracer_gles.h"
@@ -213,6 +214,15 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
   TRACE_EVENT0("impeller", "RenderPassGLES::EncodeCommandsInReactor");
 
   const auto& gl = reactor.GetProcTable();
+  const ISize target_size = pass_data.color_attachment->GetSize();
+  const uint64_t target_pixels =
+      static_cast<uint64_t>(std::max<int64_t>(0, target_size.Area()));
+  DenialGpuAuditGLES& denial_gpu_audit = GetDenialGpuAuditGLES();
+  denial_gpu_audit.Poll(gl);
+  const DenialGpuAuditGLES::Token pass_audit_token = denial_gpu_audit.Begin(
+      gl, DenialGpuAuditGLES::ClassifyPass(pass_data.label), target_pixels);
+  fml::ScopedCleanupClosure finish_pass_audit(
+      [&] { denial_gpu_audit.End(gl, pass_audit_token); });
 #ifdef IMPELLER_DEBUG
   tracer->MarkFrameStart(gl);
 
@@ -318,8 +328,6 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
   // Both the viewport and scissor are specified in framebuffer coordinates.
   // Impeller's framebuffer coordinate system is top left origin, but OpenGL's
   // is bottom left origin, so we convert the coordinates here.
-  ISize target_size = pass_data.color_attachment->GetSize();
-
   //--------------------------------------------------------------------------
   /// Setup the viewport.
   ///
@@ -526,9 +534,7 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
     //--------------------------------------------------------------------------
     /// Finally! Invoke the draw call.
     ///
-    if (command.index_type == IndexType::kNone) {
-      gl.DrawArrays(mode, command.base_vertex, command.element_count);
-    } else {
+    if (command.index_type != IndexType::kNone) {
       // Bind the index buffer if necessary.
       auto index_buffer_view = command.index_buffer;
       const DeviceBuffer* index_buffer = index_buffer_view.GetBuffer();
@@ -537,13 +543,35 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
               DeviceBufferGLES::BindingType::kElementArrayBuffer)) {
         return false;
       }
+    }
+
+    std::optional<DenialGpuAuditStage> command_audit_stage;
+    switch (command.audit_category) {
+      case CommandAuditCategory::kNone:
+        break;
+      case CommandAuditCategory::kBackdropRestore:
+        command_audit_stage = DenialGpuAuditStage::kBackdropRestore;
+        break;
+      case CommandAuditCategory::kMsaaBackdropRestore:
+        command_audit_stage = DenialGpuAuditStage::kMsaaBackdropRestore;
+        break;
+    }
+    const DenialGpuAuditGLES::Token command_audit_token =
+        command_audit_stage.has_value()
+            ? denial_gpu_audit.Begin(gl, command_audit_stage.value(),
+                                     target_pixels)
+            : DenialGpuAuditGLES::Token{};
+    if (command.index_type == IndexType::kNone) {
+      gl.DrawArrays(mode, command.base_vertex, command.element_count);
+    } else {
       gl.DrawElements(mode,                             // mode
                       command.element_count,            // count
                       ToIndexType(command.index_type),  // type
                       reinterpret_cast<const GLvoid*>(static_cast<GLsizei>(
-                          index_buffer_view.GetRange().offset))  // indices
+                          command.index_buffer.GetRange().offset))  // indices
       );
     }
+    denial_gpu_audit.End(gl, command_audit_token);
 
     //--------------------------------------------------------------------------
     /// Unbind vertex attribs.
@@ -594,6 +622,9 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
     RenderPassGLES::ResetGLState(gl);
     auto size = pass_data.color_attachment->GetSize();
 
+    const DenialGpuAuditGLES::Token resolve_audit_token =
+        denial_gpu_audit.Begin(gl, DenialGpuAuditStage::kResolve,
+                               static_cast<uint64_t>(size.Area()));
     gl.BlitFramebuffer(/*srcX0=*/0,
                        /*srcY0=*/0,
                        /*srcX1=*/size.width,
@@ -604,6 +635,7 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
                        /*dstY1=*/size.height,
                        /*mask=*/GL_COLOR_BUFFER_BIT,
                        /*filter=*/GL_NEAREST);
+    denial_gpu_audit.End(gl, resolve_audit_token);
 
     gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, GL_NONE);
     gl.BindFramebuffer(GL_READ_FRAMEBUFFER, GL_NONE);

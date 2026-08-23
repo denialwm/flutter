@@ -20,6 +20,12 @@
 
 namespace impeller {
 
+enum class CommandAuditCategory : uint8_t {
+  kNone,
+  kBackdropRestore,
+  kMsaaBackdropRestore,
+};
+
 template <class T>
 class Resource {
  public:
@@ -112,6 +118,10 @@ struct Command {
   /// If unset, no scissor is applied.
   ///
   std::optional<IRect32> scissor;
+
+  // A compact semantic category retained in release builds for opt-in GPU
+  // auditing. Unlike the debug label, this is not a heap allocation.
+  CommandAuditCategory audit_category = CommandAuditCategory::kNone;
 
 #ifdef IMPELLER_DEBUG
   //----------------------------------------------------------------------------

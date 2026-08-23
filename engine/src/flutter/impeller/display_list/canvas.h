@@ -267,6 +267,7 @@ class Canvas {
   struct SaveLayerState {
     Paint paint;
     Rect coverage;
+    bool has_backdrop_filter = false;
   };
 
   // Visible for testing.

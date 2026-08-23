@@ -100,6 +100,10 @@ void RenderPass::SetCommandLabel(std::string_view label) {
 #endif  // IMPELLER_DEBUG
 }
 
+void RenderPass::SetCommandAuditCategory(CommandAuditCategory category) {
+  pending_.audit_category = category;
+}
+
 void RenderPass::SetStencilReference(uint32_t value) {
   pending_.stencil_reference = value;
 }

@@ -40,6 +40,9 @@ class FilterContentsFilterInput final : public FilterInput {
   // |FilterInput|
   virtual void SetRenderingMode(Entity::RenderingMode rendering_mode) override;
 
+  // |FilterInput|
+  void SetIsBackdropFilter(bool is_backdrop_filter) override;
+
  private:
   explicit FilterContentsFilterInput(std::shared_ptr<FilterContents> filter);
 

@@ -172,6 +172,13 @@ class FilterContents : public Contents {
   ///         is used in this case.
   virtual void SetRenderingMode(Entity::RenderingMode rendering_mode);
 
+  // Marks a filter graph as originating from backdrop-filter semantics. This
+  // does not affect rendering; it preserves enough meaning for audit labels to
+  // distinguish backdrop convolution from unrelated image and mask filters.
+  virtual void SetIsBackdropFilter(bool is_backdrop_filter);
+
+  bool IsBackdropFilter() const;
+
  private:
   /// @brief  Internal utility method for |GetLocalCoverage| that computes
   ///         the output coverage of this filter across the specified inputs,
@@ -229,6 +236,7 @@ class FilterContents : public Contents {
 
   FilterInput::Vector inputs_;
   Matrix effect_transform_ = Matrix();
+  bool is_backdrop_filter_ = false;
 
   FilterContents(const FilterContents&) = delete;
 

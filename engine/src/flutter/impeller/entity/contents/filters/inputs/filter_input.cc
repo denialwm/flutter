@@ -82,4 +82,6 @@ void FilterInput::SetEffectTransform(const Matrix& matrix) {}
 
 void FilterInput::SetRenderingMode(Entity::RenderingMode rendering_mode) {}
 
+void FilterInput::SetIsBackdropFilter(bool is_backdrop_filter) {}
+
 }  // namespace impeller

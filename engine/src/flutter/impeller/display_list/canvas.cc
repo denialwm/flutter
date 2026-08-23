@@ -4,6 +4,7 @@
 
 #include "impeller/display_list/canvas.h"
 
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
@@ -78,6 +79,9 @@ struct BackdropLayerPlanAudit {
   uint64_t direct_pixels = 0;
   uint64_t single_sample_pixels = 0;
   uint64_t multisample_pixels = 0;
+  uint64_t direct_attempts = 0;
+  uint64_t direct_predicate_accepts = 0;
+  std::array<uint64_t, 9> direct_rejections = {};
   bool first_report_pending = true;
 };
 
@@ -89,6 +93,9 @@ struct BackdropGraphPlanAudit {
   uint64_t scopes = 0;
   uint64_t epochs = 0;
   uint64_t dependency_edges = 0;
+  uint64_t write_read_hazards = 0;
+  uint64_t write_write_hazards = 0;
+  uint64_t read_write_hazards = 0;
   uint64_t scene_barriers = 0;
   uint64_t parallel_rects_max = 0;
   uint64_t epoch_snapshot_flips = 0;
@@ -161,6 +168,23 @@ static void RecordBackdropLayerPlan(ISize size,
   }
 }
 
+static void RecordBackdropDirectPredicate(uint32_t rejections) {
+  if (!IsDenialRenderAuditEnabled()) {
+    return;
+  }
+  BackdropLayerPlanAudit& audit = GetBackdropLayerPlanAudit();
+  audit.direct_attempts++;
+  if (rejections == 0u) {
+    audit.direct_predicate_accepts++;
+    return;
+  }
+  for (size_t bit = 0u; bit < audit.direct_rejections.size(); bit++) {
+    if ((rejections & (1u << bit)) != 0u) {
+      audit.direct_rejections[bit]++;
+    }
+  }
+}
+
 static void FlushBackdropLayerPlanAudit() {
   if (!IsDenialRenderAuditEnabled()) {
     return;
@@ -180,16 +204,28 @@ static void FlushBackdropLayerPlanAudit() {
     return;
   }
 
-  FML_LOG(IMPORTANT) << "Denial backdrop render plan"
-                << " interval_ms=" << interval.count()
-                << " direct_layers=" << audit.direct_layers
-                << " single_sample_layers=" << audit.single_sample_layers
-                << " multisample_layers=" << audit.multisample_layers
-                << " direct_pixels=" << audit.direct_pixels
-                << " single_sample_pixels=" << audit.single_sample_pixels
-                << " multisample_pixels=" << audit.multisample_pixels
-                << " avoided_color_samples="
-                << audit.direct_pixels * 4u + audit.single_sample_pixels * 3u;
+  FML_LOG(IMPORTANT)
+      << "Denial backdrop render plan"
+      << " interval_ms=" << interval.count()
+      << " direct_layers=" << audit.direct_layers
+      << " single_sample_layers=" << audit.single_sample_layers
+      << " multisample_layers=" << audit.multisample_layers
+      << " direct_pixels=" << audit.direct_pixels
+      << " single_sample_pixels=" << audit.single_sample_pixels
+      << " multisample_pixels=" << audit.multisample_pixels
+      << " avoided_color_samples="
+      << audit.direct_pixels * 4u + audit.single_sample_pixels * 3u
+      << " direct_attempts=" << audit.direct_attempts
+      << " direct_predicate_accepts=" << audit.direct_predicate_accepts
+      << " reject_missing_backdrop=" << audit.direct_rejections[0]
+      << " reject_content_msaa=" << audit.direct_rejections[1]
+      << " reject_uncontained_bounds=" << audit.direct_rejections[2]
+      << " reject_nested_pass=" << audit.direct_rejections[3]
+      << " reject_restore_blend=" << audit.direct_rejections[4]
+      << " reject_restore_alpha=" << audit.direct_rejections[5]
+      << " reject_restore_effects=" << audit.direct_rejections[6]
+      << " reject_backdrop_id=" << audit.direct_rejections[7]
+      << " reject_inherited_opacity=" << audit.direct_rejections[8];
   audit = BackdropLayerPlanAudit{.period_start = now,
                                  .first_report_pending = false};
 }
@@ -204,6 +240,9 @@ static void RecordBackdropGraphPlan(const BackdropEpochPlan& plan) {
   audit.scopes += plan.epoch_for_scope.size();
   audit.epochs += plan.scopes_by_epoch.size();
   audit.dependency_edges += plan.dependency_edges;
+  audit.write_read_hazards += plan.write_read_hazards;
+  audit.write_write_hazards += plan.write_write_hazards;
+  audit.read_write_hazards += plan.read_write_hazards;
   audit.scene_barriers += plan.scene_barriers;
   audit.parallel_rects_max =
       std::max<uint64_t>(audit.parallel_rects_max, plan.GetMaxEpochWidth());
@@ -226,16 +265,19 @@ static void FlushBackdropGraphPlanAudit() {
       audit.epochs == 0u ? 0.0
                          : static_cast<double>(audit.scopes) / audit.epochs;
   FML_LOG(IMPORTANT) << "Denial backdrop graph plan"
-                << " interval_ms=" << interval.count()
-                << " frames=" << audit.frames << " scopes=" << audit.scopes
-                << " epochs=" << audit.epochs
-                << " dependency_edges=" << audit.dependency_edges
-                << " scene_barriers=" << audit.scene_barriers
-                << " parallel_rects_avg=" << parallel_rects_avg
-                << " parallel_rects_max=" << audit.parallel_rects_max
-                << " epoch_snapshot_flips=" << audit.epoch_snapshot_flips
-                << " epoch_snapshot_reuses=" << audit.epoch_snapshot_reuses
-                << " epoch_plan_misses=" << audit.epoch_plan_misses;
+                     << " interval_ms=" << interval.count()
+                     << " frames=" << audit.frames << " scopes=" << audit.scopes
+                     << " epochs=" << audit.epochs
+                     << " dependency_edges=" << audit.dependency_edges
+                     << " write_read_hazards=" << audit.write_read_hazards
+                     << " write_write_hazards=" << audit.write_write_hazards
+                     << " read_write_hazards=" << audit.read_write_hazards
+                     << " scene_barriers=" << audit.scene_barriers
+                     << " parallel_rects_avg=" << parallel_rects_avg
+                     << " parallel_rects_max=" << audit.parallel_rects_max
+                     << " epoch_snapshot_flips=" << audit.epoch_snapshot_flips
+                     << " epoch_snapshot_reuses=" << audit.epoch_snapshot_reuses
+                     << " epoch_plan_misses=" << audit.epoch_plan_misses;
   audit = BackdropGraphPlanAudit{.period_start = now,
                                  .first_report_pending = false};
 }
@@ -291,10 +333,11 @@ static void ApplyFramebufferBlend(Entity& entity) {
 static std::shared_ptr<Contents> CreateContentsForSubpassTarget(
     const Paint& paint,
     const std::shared_ptr<Texture>& target,
-    const Matrix& effect_transform) {
+    const Matrix& effect_transform,
+    std::string_view label) {
   auto contents = TextureContents::MakeRect(Rect::MakeSize(target->GetSize()));
   contents->SetTexture(target);
-  contents->SetLabel("Subpass");
+  contents->SetLabel(label);
   contents->SetSourceRect(Rect::MakeSize(target->GetSize()));
   contents->SetOpacity(paint.color.alpha);
   contents->SetDeferApplyingOpacity(true);
@@ -1774,7 +1817,7 @@ void Canvas::SaveLayer(const Paint& paint,
       paint.color_source != nullptr || paint.color_filter != nullptr ||
       paint.image_filter != nullptr || paint.invert_colors ||
       paint.mask_blur_descriptor.has_value();
-  const bool can_render_backdrop_directly = CanRenderBackdropLayerDirectly({
+  const BackdropLayerDirectPlanInputs direct_plan_inputs = {
       .has_backdrop_filter = backdrop_filter != nullptr,
       .content_is_single_sample_compatible =
           content_is_single_sample_compatible,
@@ -1786,7 +1829,13 @@ void Canvas::SaveLayer(const Paint& paint,
       .restore_has_effects = restore_has_effects,
       .has_backdrop_id = backdrop_id.has_value(),
       .inherited_opacity = transform_stack_.back().distributed_opacity,
-  });
+  };
+  const uint32_t direct_plan_rejections =
+      GetBackdropLayerDirectRejections(direct_plan_inputs);
+  const bool can_render_backdrop_directly = direct_plan_rejections == 0u;
+  if (backdrop_filter) {
+    RecordBackdropDirectPredicate(direct_plan_rejections);
+  }
 
   std::optional<uint32_t> planned_backdrop_epoch;
   if (backdrop_filter && render_passes_.size() == 1u) {
@@ -1814,6 +1863,7 @@ void Canvas::SaveLayer(const Paint& paint,
           auto filter = WrapInput(backdrop_filter, input);
           filter->SetEffectTransform(effect_transform);
           filter->SetRenderingMode(rendering_mode);
+          filter->SetIsBackdropFilter(true);
           return filter;
         };
 
@@ -2020,7 +2070,12 @@ void Canvas::SaveLayer(const Paint& paint,
                                              use_msaa                    //
                                              )));
   save_layer_state_.push_back(SaveLayerState{
-      paint_copy, subpass_coverage.Shift(-coverage_origin_adjustment)});
+      paint_copy, subpass_coverage.Shift(-coverage_origin_adjustment),
+      backdrop_filter != nullptr});
+
+  render_passes_.back().GetInlinePassContext()->GetRenderPass()->SetLabel(
+      backdrop_filter ? "Denial Backdrop Layer Color"
+                      : "EntityPass Layer Color");
 
   CanvasStackEntry entry;
   entry.transform = transform_stack_.back().transform;
@@ -2106,7 +2161,9 @@ bool Canvas::Restore() {
         save_layer_state.paint,                                    //
         lazy_render_pass.GetInlinePassContext()->GetTexture(),     //
         Matrix::MakeTranslation(Vector3{-global_pass_position}) *  //
-            transform_stack_.back().transform                      //
+            transform_stack_.back().transform,                     //
+        save_layer_state.has_backdrop_filter ? "Denial backdrop layer restore"
+                                             : "Subpass"  //
     );
 
     lazy_render_pass.GetInlinePassContext()->EndPass();
