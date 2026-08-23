@@ -313,10 +313,12 @@ DownsamplePassArgs CalculateDownsamplePassArgs(
     const std::optional<Quad>& source_bounds,
     const std::shared_ptr<FilterInput>& input,
     const Entity& snapshot_entity,
-    Entity::TileMode tile_mode) {
-  Scalar desired_scalar =
-      std::min(GaussianBlurFilterContents::CalculateScale(scaled_sigma.x),
-               GaussianBlurFilterContents::CalculateScale(scaled_sigma.y));
+    Entity::TileMode tile_mode,
+    Scalar downsample_scale) {
+  Scalar desired_scalar = std::min(GaussianBlurFilterContents::CalculateScale(
+                                       scaled_sigma.x, downsample_scale),
+                                   GaussianBlurFilterContents::CalculateScale(
+                                       scaled_sigma.y, downsample_scale));
 
   // TODO(jonahwilliams): If desired_scalar is 1.0 and we fully acquired the
   // gutter from the expanded_coverage_hint, we can skip the downsample pass.
@@ -778,12 +780,14 @@ GaussianBlurFilterContents::GaussianBlurFilterContents(
     Entity::TileMode tile_mode,
     std::optional<Rect> bounds,
     BlurStyle mask_blur_style,
-    const Geometry* mask_geometry)
+    const Geometry* mask_geometry,
+    Scalar downsample_scale)
     : sigma_(sigma_x, sigma_y),
       tile_mode_(tile_mode),
       bounds_(bounds),
       mask_blur_style_(mask_blur_style),
-      mask_geometry_(mask_geometry) {
+      mask_geometry_(mask_geometry),
+      downsample_scale_(std::clamp(downsample_scale, 0.0625f, 1.0f)) {
   // This is supposed to be enforced at a higher level.
   FML_DCHECK(mask_blur_style == BlurStyle::kNormal || mask_geometry);
 }
@@ -791,9 +795,11 @@ GaussianBlurFilterContents::GaussianBlurFilterContents(
 // This value was extracted from Skia, see:
 //  * https://github.com/google/skia/blob/d29cc3fe182f6e8a8539004a6a4ee8251677a6fd/src/gpu/ganesh/GrBlurUtils.cpp#L2561-L2576
 //  * https://github.com/google/skia/blob/d29cc3fe182f6e8a8539004a6a4ee8251677a6fd/src/gpu/BlurUtils.h#L57
-Scalar GaussianBlurFilterContents::CalculateScale(Scalar sigma) {
+Scalar GaussianBlurFilterContents::CalculateScale(Scalar sigma,
+                                                  Scalar downsample_scale) {
+  Scalar result = 1.0f;
   if (sigma <= 4) {
-    return 1.0;
+    return std::max(0.0625f, result * downsample_scale);
   }
   // Keep the convolution kernel small and let the downsample filter reject
   // frequencies that the blur would remove anyway. An effective sigma near 2
@@ -805,7 +811,7 @@ Scalar GaussianBlurFilterContents::CalculateScale(Scalar sigma) {
   // Don't scale down below 1/16th to preserve signal.
   exponent = std::max(-4.0f, exponent);
   Scalar rounded = powf(2.0f, exponent);
-  Scalar result = rounded;
+  result = rounded;
   // Extend the range of the 1/8th downsample based on the effective kernel size
   // for the blur.
   if (rounded < 0.125f) {
@@ -819,7 +825,7 @@ Scalar GaussianBlurFilterContents::CalculateScale(Scalar sigma) {
     result = kernel_size_plus <= kEighthDownsampleKernalWidthMax ? rounded_plus
                                                                  : rounded;
   }
-  return result;
+  return std::max(0.0625f, result * downsample_scale);
 };
 
 std::optional<Rect> GaussianBlurFilterContents::GetFilterSourceCoverage(
@@ -911,7 +917,7 @@ std::optional<Entity> GaussianBlurFilterContents::RenderFilter(
   DownsamplePassArgs downsample_pass_args = CalculateDownsamplePassArgs(
       blur_info.scaled_sigma, blur_info.padding, input_snapshot.value(),
       source_expanded_coverage_hint, source_bounds, inputs[0], snapshot_entity,
-      tile_mode_);
+      tile_mode_, downsample_scale_);
 
   Vector2 downsampled_pixel_size =
       1.0 / Vector2(downsample_pass_args.subpass_size);

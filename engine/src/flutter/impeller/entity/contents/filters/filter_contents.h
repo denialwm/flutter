@@ -48,7 +48,8 @@ class FilterContents : public Contents {
       Entity::TileMode tile_mode = Entity::TileMode::kDecal,
       std::optional<Rect> bounds = std::nullopt,
       BlurStyle mask_blur_style = BlurStyle::kNormal,
-      const Geometry* mask_geometry = nullptr);
+      const Geometry* mask_geometry = nullptr,
+      Scalar downsample_scale = 1.0f);
 
   static std::shared_ptr<FilterContents> MakeBorderMaskBlur(
       FilterInput::Ref input,
