@@ -271,6 +271,9 @@ void main() async {
 
     filter = makeBlur(1.9, 2.1, TileMode.repeated);
     expect(filter.toString(), 'ImageFilter.blur(1.9, 2.1, repeated)');
+
+    filter = ImageFilter.blur(sigmaX: 1.9, sigmaY: 2.1, downsampleScale: 0.5);
+    expect(filter.toString(), 'ImageFilter.blur(1.9, 2.1, unspecified, downsampleScale: 0.5)');
   });
 
   test('ImageFilter - dilate', () async {

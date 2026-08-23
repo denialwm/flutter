@@ -36,7 +36,8 @@ class ImageFilter : public RefCountedDartWrappable<ImageFilter> {
                 double bounds_left,
                 double bounds_top,
                 double bounds_right,
-                double bounds_bottom);
+                double bounds_bottom,
+                double downsample_scale);
   void initDilate(double radius_x, double radius_y);
   void initErode(double radius_x, double radius_y);
   void initMatrix(const tonic::Float64List& matrix4, int filter_quality_index);

@@ -1588,10 +1588,7 @@ void Canvas::SaveLayer(const Paint& paint,
         [backdrop_filter = backdrop_filter](
             const FilterInput::Ref& input, const Matrix& effect_transform,
             Entity::RenderingMode rendering_mode) {
-          // Backdrop filters are commonly invalidated by moving content and
-          // cannot reuse their snapshots. Favor a coarser intermediate while
-          // preserving the requested blur radius.
-          auto filter = WrapInput(backdrop_filter, input, 0.5f);
+          auto filter = WrapInput(backdrop_filter, input);
           filter->SetEffectTransform(effect_transform);
           filter->SetRenderingMode(rendering_mode);
           return filter;

@@ -4376,17 +4376,24 @@ abstract class ImageFilter {
   /// The `bounds` rectangle is specified in the canvas's current coordinate
   /// space and is affected by the current transform; consequently, the bounds
   /// may not be axis-aligned in the final canvas coordinates.
+  ///
+  /// The `downsampleScale` controls the linear resolution of Impeller's
+  /// intermediate blur textures. Values below 1.0 trade fine detail for lower
+  /// GPU cost while preserving the requested blur radius. It must be between
+  /// 0.0625 and 1.0, inclusive. Other rendering backends may ignore it.
   factory ImageFilter.blur({
     double sigmaX = 0.0,
     double sigmaY = 0.0,
     TileMode? tileMode,
     Rect? bounds,
+    double downsampleScale = 1.0,
   }) {
     return _GaussianBlurImageFilter(
       sigmaX: sigmaX,
       sigmaY: sigmaY,
       tileMode: tileMode,
       bounds: bounds,
+      downsampleScale: downsampleScale,
     );
   }
 
@@ -4551,12 +4558,14 @@ class _GaussianBlurImageFilter implements ImageFilter {
     required this.sigmaY,
     required this.tileMode,
     this.bounds,
+    this.downsampleScale = 1.0,
   });
 
   final double sigmaX;
   final double sigmaY;
   final TileMode? tileMode;
   final Rect? bounds;
+  final double downsampleScale;
 
   // MakeBlurFilter
   late final _ImageFilter nativeFilter = _ImageFilter.blur(this);
@@ -4579,12 +4588,15 @@ class _GaussianBlurImageFilter implements ImageFilter {
   }
 
   @override
-  String get debugShortDescription => 'blur($sigmaX, $sigmaY, $_modeString${_boundsString()})';
+  String get debugShortDescription =>
+      'blur($sigmaX, $sigmaY, $_modeString${_boundsString()}${_downsampleString()})';
 
   String _boundsString() => bounds == null ? '' : ', bounds: $bounds';
+  String _downsampleString() => downsampleScale == 1.0 ? '' : ', downsampleScale: $downsampleScale';
 
   @override
-  String toString() => 'ImageFilter.blur($sigmaX, $sigmaY, $_modeString${_boundsString()})';
+  String toString() =>
+      'ImageFilter.blur($sigmaX, $sigmaY, $_modeString${_boundsString()}${_downsampleString()})';
 
   @override
   bool operator ==(Object other) {
@@ -4595,11 +4607,12 @@ class _GaussianBlurImageFilter implements ImageFilter {
         other.sigmaX == sigmaX &&
         other.sigmaY == sigmaY &&
         other.bounds == bounds &&
+        other.downsampleScale == downsampleScale &&
         other.tileMode == tileMode;
   }
 
   @override
-  int get hashCode => Object.hash(sigmaX, sigmaY, bounds, tileMode);
+  int get hashCode => Object.hash(sigmaX, sigmaY, bounds, downsampleScale, tileMode);
 }
 
 class _DilateImageFilter implements ImageFilter {
@@ -4742,6 +4755,7 @@ base class _ImageFilter extends NativeFieldWrapperClass1 {
       bounds.top,
       bounds.right,
       bounds.bottom,
+      filter.downsampleScale,
     );
   }
 
@@ -4795,7 +4809,18 @@ base class _ImageFilter extends NativeFieldWrapperClass1 {
   external void _constructor();
 
   @Native<
-    Void Function(Pointer<Void>, Double, Double, Int32, Bool, Double, Double, Double, Double)
+    Void Function(
+      Pointer<Void>,
+      Double,
+      Double,
+      Int32,
+      Bool,
+      Double,
+      Double,
+      Double,
+      Double,
+      Double,
+    )
   >(symbol: 'ImageFilter::initBlur', isLeaf: true)
   external void _initBlur(
     double sigmaX,
@@ -4806,6 +4831,7 @@ base class _ImageFilter extends NativeFieldWrapperClass1 {
     double boundsTop,
     double boundsRight,
     double boundsBottom,
+    double downsampleScale,
   );
 
   @Native<Void Function(Pointer<Void>, Double, Double)>(

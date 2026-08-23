@@ -4,14 +4,18 @@
 
 #include "flutter/display_list/effects/image_filters/dl_blur_image_filter.h"
 
+#include <algorithm>
+
 namespace flutter {
 
 std::shared_ptr<DlImageFilter> DlBlurImageFilter::Make(
     DlScalar sigma_x,
     DlScalar sigma_y,
     DlTileMode tile_mode,
-    std::optional<DlRect> bounds) {
-  if (!std::isfinite(sigma_x) || !std::isfinite(sigma_y)) {
+    std::optional<DlRect> bounds,
+    DlScalar downsample_scale) {
+  if (!std::isfinite(sigma_x) || !std::isfinite(sigma_y) ||
+      !std::isfinite(downsample_scale)) {
     return nullptr;
   }
   if (sigma_x < SK_ScalarNearlyZero && sigma_y < SK_ScalarNearlyZero) {
@@ -19,8 +23,9 @@ std::shared_ptr<DlImageFilter> DlBlurImageFilter::Make(
   }
   sigma_x = (sigma_x < SK_ScalarNearlyZero) ? 0 : sigma_x;
   sigma_y = (sigma_y < SK_ScalarNearlyZero) ? 0 : sigma_y;
+  downsample_scale = std::clamp(downsample_scale, 0.0625f, 1.0f);
   return std::make_shared<DlBlurImageFilter>(sigma_x, sigma_y, tile_mode,
-                                             bounds);
+                                             bounds, downsample_scale);
 }
 
 DlRect* DlBlurImageFilter::map_local_bounds(const DlRect& input_bounds,
@@ -49,7 +54,8 @@ bool DlBlurImageFilter::equals_(const DlImageFilter& other) const {
   auto that = static_cast<const DlBlurImageFilter*>(&other);
   return (DlScalarNearlyEqual(sigma_x_, that->sigma_x_) &&
           DlScalarNearlyEqual(sigma_y_, that->sigma_y_) &&
-          tile_mode_ == that->tile_mode_ && bounds_ == that->bounds_);
+          tile_mode_ == that->tile_mode_ && bounds_ == that->bounds_ &&
+          DlScalarNearlyEqual(downsample_scale_, that->downsample_scale_));
 }
 
 }  // namespace flutter

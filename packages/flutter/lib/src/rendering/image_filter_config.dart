@@ -85,6 +85,11 @@ abstract class ImageFilterConfig {
   ///
   /// The `tileMode` argument determines how the blur should handle edges.
   ///
+  /// The `downsampleScale` argument controls the linear resolution of the
+  /// intermediate blur textures on Impeller. Values below 1.0 trade detail for
+  /// lower GPU cost while preserving the requested blur radius. It defaults to
+  /// 1.0 and must be between 0.0625 and 1.0, inclusive.
+  ///
   /// The `bounded` argument (defaults to false) controls the sampling strategy:
   ///
   ///  * If false, the filter is applied to the entire canvas using standard
@@ -111,6 +116,7 @@ abstract class ImageFilterConfig {
     double sigmaY,
     ui.TileMode tileMode,
     bool bounded,
+    double downsampleScale,
   }) = _BlurImageFilterConfig;
 
   /// Composes the `inner` filter configuration with `outer`, to combine their
@@ -186,12 +192,15 @@ class _BlurImageFilterConfig extends ImageFilterConfig {
     this.sigmaY = 0.0,
     this.tileMode = ui.TileMode.clamp,
     this.bounded = false,
-  }) : super._();
+    this.downsampleScale = 1.0,
+  }) : assert(downsampleScale >= 0.0625 && downsampleScale <= 1.0),
+       super._();
 
   final double sigmaX;
   final double sigmaY;
   final ui.TileMode tileMode;
   final bool bounded;
+  final double downsampleScale;
 
   @override
   ui.ImageFilter resolve(ImageFilterContext context) {
@@ -200,6 +209,7 @@ class _BlurImageFilterConfig extends ImageFilterConfig {
       sigmaY: sigmaY,
       tileMode: tileMode,
       bounds: bounded ? context.bounds : null,
+      downsampleScale: downsampleScale,
     );
   }
 
@@ -215,11 +225,12 @@ class _BlurImageFilterConfig extends ImageFilterConfig {
         other.sigmaX == sigmaX &&
         other.sigmaY == sigmaY &&
         other.tileMode == tileMode &&
-        other.bounded == bounded;
+        other.bounded == bounded &&
+        other.downsampleScale == downsampleScale;
   }
 
   @override
-  int get hashCode => Object.hash(sigmaX, sigmaY, tileMode, bounded);
+  int get hashCode => Object.hash(sigmaX, sigmaY, tileMode, bounded, downsampleScale);
 
   String get _modeString {
     switch (tileMode) {
@@ -236,8 +247,11 @@ class _BlurImageFilterConfig extends ImageFilterConfig {
 
   String get _boundedString => bounded ? 'bounded' : 'unbounded';
 
+  String get _downsampleString => downsampleScale == 1.0 ? '' : ', downsample: $downsampleScale';
+
   @override
-  String get debugShortDescription => 'blur($sigmaX, $sigmaY, $_modeString, $_boundedString)';
+  String get debugShortDescription =>
+      'blur($sigmaX, $sigmaY, $_modeString, $_boundedString$_downsampleString)';
 }
 
 class _ComposeImageFilterConfig extends ImageFilterConfig {

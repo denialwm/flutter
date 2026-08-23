@@ -199,6 +199,7 @@ TEST(DisplayListImageFilter, BlurContents) {
   ASSERT_EQ(filter.sigma_x(), 5.0);
   ASSERT_EQ(filter.sigma_y(), 6.0);
   ASSERT_EQ(filter.tile_mode(), DlTileMode::kMirror);
+  ASSERT_EQ(filter.downsample_scale(), 1.0);
 }
 
 TEST(DisplayListImageFilter, BlurEquals) {
@@ -233,12 +234,14 @@ TEST(DisplayListImageFilter, BlurNotEquals) {
                             DlRect::MakeLTRB(1, 2, 3, 4));
   DlBlurImageFilter filter6(5.0, 6.0, DlTileMode::kRepeat,
                             DlRect::MakeLTRB(4, 2, 3, 4));
+  DlBlurImageFilter filter7(5.0, 6.0, DlTileMode::kMirror, std::nullopt, 0.5);
 
   TestNotEquals(filter1, filter2, "Sigma X differs");
   TestNotEquals(filter1, filter3, "Sigma Y differs");
   TestNotEquals(filter1, filter4, "Tile Mode differs");
   TestNotEquals(filter4, filter5, "Bounds differs");
   TestNotEquals(filter5, filter6, "Bounds differs");
+  TestNotEquals(filter1, filter7, "Downsample scale differs");
 }
 
 TEST(DisplayListImageFilter, BlurBounds) {

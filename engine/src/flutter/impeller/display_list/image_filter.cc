@@ -16,8 +16,7 @@
 namespace impeller {
 
 std::shared_ptr<FilterContents> WrapInput(const flutter::DlImageFilter* filter,
-                                          const FilterInput::Ref& input,
-                                          Scalar blur_downsample_scale) {
+                                          const FilterInput::Ref& input) {
   FML_DCHECK(filter);
 
   switch (filter->type()) {
@@ -33,7 +32,7 @@ std::shared_ptr<FilterContents> WrapInput(const flutter::DlImageFilter* filter,
           blur_filter->bounds(),                                    //
           FilterContents::BlurStyle::kNormal,                       //
           nullptr,                                                  //
-          blur_downsample_scale                                     //
+          blur_filter->downsample_scale()                           //
       );
     }
     case flutter::DlImageFilterType::kDilate: {
@@ -74,8 +73,8 @@ std::shared_ptr<FilterContents> WrapInput(const flutter::DlImageFilter* filter,
 
       auto matrix = matrix_filter->matrix();
       return FilterContents::MakeLocalMatrixFilter(
-          FilterInput::Make(WrapInput(matrix_filter->image_filter().get(),
-                                      input, blur_downsample_scale)),
+          FilterInput::Make(
+              WrapInput(matrix_filter->image_filter().get(), input)),
           matrix);
     }
     case flutter::DlImageFilterType::kColorFilter: {
@@ -98,17 +97,16 @@ std::shared_ptr<FilterContents> WrapInput(const flutter::DlImageFilter* filter,
       auto outer_dl_filter = compose->outer();
       auto inner_dl_filter = compose->inner();
       if (!outer_dl_filter) {
-        return WrapInput(inner_dl_filter.get(), input, blur_downsample_scale);
+        return WrapInput(inner_dl_filter.get(), input);
       }
       if (!inner_dl_filter) {
-        return WrapInput(outer_dl_filter.get(), input, blur_downsample_scale);
+        return WrapInput(outer_dl_filter.get(), input);
       }
       FML_DCHECK(outer_dl_filter && inner_dl_filter);
 
-      return WrapInput(outer_dl_filter.get(),
-                       FilterInput::Make(WrapInput(inner_dl_filter.get(), input,
-                                                   blur_downsample_scale)),
-                       blur_downsample_scale);
+      return WrapInput(
+          outer_dl_filter.get(),
+          FilterInput::Make(WrapInput(inner_dl_filter.get(), input)));
     }
     case flutter::DlImageFilterType::kRuntimeEffect: {
       const flutter::DlRuntimeEffectImageFilter* runtime_filter =
