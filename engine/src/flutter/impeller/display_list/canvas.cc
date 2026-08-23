@@ -180,7 +180,7 @@ static void FlushBackdropLayerPlanAudit() {
     return;
   }
 
-  FML_LOG(INFO) << "Denial backdrop render plan"
+  FML_LOG(IMPORTANT) << "Denial backdrop render plan"
                 << " interval_ms=" << interval.count()
                 << " direct_layers=" << audit.direct_layers
                 << " single_sample_layers=" << audit.single_sample_layers
@@ -225,7 +225,7 @@ static void FlushBackdropGraphPlanAudit() {
   const double parallel_rects_avg =
       audit.epochs == 0u ? 0.0
                          : static_cast<double>(audit.scopes) / audit.epochs;
-  FML_LOG(INFO) << "Denial backdrop graph plan"
+  FML_LOG(IMPORTANT) << "Denial backdrop graph plan"
                 << " interval_ms=" << interval.count()
                 << " frames=" << audit.frames << " scopes=" << audit.scopes
                 << " epochs=" << audit.epochs
