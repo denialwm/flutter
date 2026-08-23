@@ -972,8 +972,10 @@ void CanvasDlDispatcher::drawVertices(
 
 void CanvasDlDispatcher::SetBackdropData(
     std::unordered_map<int64_t, BackdropData> backdrop,
-    size_t backdrop_count) {
-  GetCanvas().SetBackdropData(std::move(backdrop), backdrop_count);
+    size_t backdrop_count,
+    BackdropEpochPlan backdrop_epoch_plan) {
+  GetCanvas().SetBackdropData(std::move(backdrop), backdrop_count,
+                              std::move(backdrop_epoch_plan));
 }
 
 //// Text Frame Dispatcher
@@ -987,20 +989,59 @@ FirstPassDispatcher::FirstPassDispatcher(const ContentContext& renderer,
 
 FirstPassDispatcher::~FirstPassDispatcher() {
   FML_DCHECK(cull_rect_state_.size() == 1);
+  FML_DCHECK(stack_.empty());
+  FML_DCHECK(saved_scope_types_.empty());
+  FML_DCHECK(save_layer_depth_ == 0u);
 }
 
 void FirstPassDispatcher::save() {
   stack_.emplace_back(matrix_);
   cull_rect_state_.push_back(cull_rect_state_.back());
+  saved_scope_types_.push_back(SavedScopeType::kSave);
 }
 
 void FirstPassDispatcher::saveLayer(const DlRect& bounds,
                                     const flutter::SaveLayerOptions options,
                                     const flutter::DlImageFilter* backdrop,
                                     std::optional<int64_t> backdrop_id) {
+  const bool is_root_layer = save_layer_depth_ == 0u;
   save();
+  saved_scope_types_.back() = backdrop == nullptr
+                                  ? SavedScopeType::kOtherLayer
+                                  : SavedScopeType::kBackdropLayer;
+  save_layer_depth_++;
 
   backdrop_count_ += (backdrop == nullptr ? 0 : 1);
+  if (backdrop != nullptr && is_root_layer) {
+    const Rect parent_cull = cull_rect_state_.back();
+    Rect write_region =
+        (!options.content_is_unbounded() || options.bounds_from_caller())
+            ? bounds.TransformBounds(matrix_)
+            : parent_cull;
+    if (!parent_cull.IsMaximum()) {
+      write_region = write_region.Intersection(parent_cull).value_or(Rect());
+    }
+
+    Rect read_region = write_region;
+    if (!write_region.IsEmpty()) {
+      DlIRect input_bounds;
+      if (backdrop->get_input_device_bounds(DlIRect::RoundOut(write_region),
+                                            matrix_, input_bounds)) {
+        read_region = Rect::Make(input_bounds);
+        const Rect root_cull = cull_rect_state_.front();
+        if (!root_cull.IsMaximum()) {
+          read_region = read_region.Intersection(root_cull).value_or(Rect());
+        }
+      } else {
+        // An unbounded filter proof conflicts with every scene write.
+        read_region = cull_rect_state_.front();
+      }
+    }
+    backdrop_scopes_.push_back(
+        {.write_region = write_region,
+         .read_region = read_region,
+         .scene_color_generation = scene_color_generation_});
+  }
   if (backdrop != nullptr && backdrop_id.has_value()) {
     std::shared_ptr<flutter::DlImageFilter> shared_backdrop =
         backdrop->shared();
@@ -1036,9 +1077,23 @@ void FirstPassDispatcher::saveLayer(const DlRect& bounds,
 }
 
 void FirstPassDispatcher::restore() {
+  FML_DCHECK(!saved_scope_types_.empty());
+  const SavedScopeType scope_type = saved_scope_types_.back();
+  if (scope_type != SavedScopeType::kSave) {
+    FML_DCHECK(save_layer_depth_ > 0u);
+    save_layer_depth_--;
+    if (scope_type == SavedScopeType::kOtherLayer && save_layer_depth_ == 0u) {
+      // The contents of a non-backdrop root layer were hidden from the
+      // first-pass draw callbacks. Its restore is one conservative scene
+      // write barrier.
+      scene_color_generation_++;
+    }
+  }
+
   matrix_ = stack_.back();
   stack_.pop_back();
   cull_rect_state_.pop_back();
+  saved_scope_types_.pop_back();
 }
 
 void FirstPassDispatcher::translate(DlScalar tx, DlScalar ty) {
@@ -1100,6 +1155,8 @@ void FirstPassDispatcher::drawText(const std::shared_ptr<flutter::DlText>& text,
     return;
   }
 
+  RecordSceneWrite();
+
   properties.stroke = paint_.GetStroke();
 
   if (text_frame->HasColor()) {
@@ -1115,6 +1172,120 @@ void FirstPassDispatcher::drawText(const std::shared_ptr<flutter::DlText>& text,
                                               matrix_,      //
                                               properties    //
   );
+}
+
+void FirstPassDispatcher::RecordSceneWrite() {
+  if (save_layer_depth_ == 0u) {
+    scene_color_generation_++;
+  }
+}
+
+void FirstPassDispatcher::drawColor(flutter::DlColor, flutter::DlBlendMode) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawPaint() {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawLine(const DlPoint&, const DlPoint&) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawDashedLine(const DlPoint&,
+                                         const DlPoint&,
+                                         DlScalar,
+                                         DlScalar) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawRect(const DlRect&) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawOval(const DlRect&) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawCircle(const DlPoint&, DlScalar) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawRoundRect(const DlRoundRect&) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawDiffRoundRect(const DlRoundRect&,
+                                            const DlRoundRect&) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawRoundSuperellipse(const DlRoundSuperellipse&) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawPath(const DlPath&) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawArc(const DlRect&, DlScalar, DlScalar, bool) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawPoints(flutter::DlPointMode,
+                                     uint32_t,
+                                     const DlPoint[]) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawVertices(
+    const std::shared_ptr<flutter::DlVertices>&,
+    flutter::DlBlendMode) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawImage(const sk_sp<flutter::DlImage>,
+                                    const DlPoint&,
+                                    flutter::DlImageSampling,
+                                    bool) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawImageRect(const sk_sp<flutter::DlImage>,
+                                        const DlRect&,
+                                        const DlRect&,
+                                        flutter::DlImageSampling,
+                                        bool,
+                                        flutter::DlSrcRectConstraint) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawImageNine(const sk_sp<flutter::DlImage>,
+                                        const DlIRect&,
+                                        const DlRect&,
+                                        flutter::DlFilterMode,
+                                        bool) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawAtlas(const sk_sp<flutter::DlImage>,
+                                    const RSTransform[],
+                                    const DlRect[],
+                                    const flutter::DlColor[],
+                                    int,
+                                    flutter::DlBlendMode,
+                                    flutter::DlImageSampling,
+                                    const DlRect*,
+                                    bool) {
+  RecordSceneWrite();
+}
+
+void FirstPassDispatcher::drawShadow(const DlPath&,
+                                     const flutter::DlColor,
+                                     const DlScalar,
+                                     bool,
+                                     DlScalar) {
+  RecordSceneWrite();
 }
 
 const Rect FirstPassDispatcher::GetCurrentLocalCullingBounds() const {
@@ -1219,11 +1390,14 @@ bool PixelFormatSupportsMSAA(std::optional<PixelFormat> pixel_format) {
 }
 }  // namespace
 
-std::pair<std::unordered_map<int64_t, BackdropData>, size_t>
+std::tuple<std::unordered_map<int64_t, BackdropData>, size_t, BackdropEpochPlan>
 FirstPassDispatcher::TakeBackdropData() {
   std::unordered_map<int64_t, BackdropData> temp;
   std::swap(temp, backdrop_data_);
-  return std::make_pair(temp, backdrop_count_);
+  BackdropEpochPlan epoch_plan =
+      PlanBackdropEpochs(std::move(backdrop_scopes_));
+  return std::make_tuple(std::move(temp), backdrop_count_,
+                         std::move(epoch_plan));
 }
 
 std::shared_ptr<Texture> DisplayListToTexture(
@@ -1288,8 +1462,9 @@ std::shared_ptr<Texture> DisplayListToTexture(
       display_list->max_root_blend_mode(),       //
       impeller::IRect32::MakeSize(size)          //
   );
-  const auto& [data, count] = collector.TakeBackdropData();
-  impeller_dispatcher.SetBackdropData(data, count);
+  auto [data, count, epoch_plan] = collector.TakeBackdropData();
+  impeller_dispatcher.SetBackdropData(std::move(data), count,
+                                      std::move(epoch_plan));
   context.GetContentContext().GetTextShadowCache().MarkFrameStart();
   fml::ScopedCleanupClosure cleanup([&] {
     if (reset_host_buffer) {
@@ -1324,8 +1499,9 @@ bool RenderToTarget(ContentContext& context,
       display_list->max_root_blend_mode(),       //
       IRect32::RoundOut(cull_rect)               //
   );
-  const auto& [data, count] = collector.TakeBackdropData();
-  impeller_dispatcher.SetBackdropData(data, count);
+  auto [data, count, epoch_plan] = collector.TakeBackdropData();
+  impeller_dispatcher.SetBackdropData(std::move(data), count,
+                                      std::move(epoch_plan));
   context.GetTextShadowCache().MarkFrameStart();
   fml::ScopedCleanupClosure cleanup([&] {
     if (reset_host_buffer) {
