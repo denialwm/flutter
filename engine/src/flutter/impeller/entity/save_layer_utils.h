@@ -9,9 +9,37 @@
 #include <optional>
 
 #include "impeller/entity/contents/filters/filter_contents.h"
+#include "impeller/geometry/color.h"
 #include "impeller/geometry/rect.h"
 
 namespace impeller {
+
+/// The semantic facts required to prove that a backdrop saveLayer can be
+/// evaluated directly in its parent color target.
+///
+/// This deliberately contains no backend resources. It is a logical-plan
+/// predicate: allocation and pass scheduling happen only after it succeeds.
+struct BackdropLayerDirectPlanInputs {
+  bool has_backdrop_filter = false;
+  bool content_is_single_sample_compatible = false;
+  bool content_bounds_are_contained = false;
+  bool is_root_pass = false;
+  BlendMode restore_blend_mode = BlendMode::kSrcOver;
+  bool restore_is_opaque = false;
+  bool restore_has_effects = false;
+  bool has_backdrop_id = false;
+  Scalar inherited_opacity = 1.0f;
+};
+
+/// Returns true when the following saveLayer expression is an exact rewrite:
+///
+///   layer = backdrop; layer = children over layer; parent = layer (kSrc)
+///
+/// as:
+///
+///   parent = backdrop (kSrc); parent = children over parent
+bool CanRenderBackdropLayerDirectly(
+    const BackdropLayerDirectPlanInputs& inputs);
 
 /// @brief Compute the coverage of a subpass in the global coordinate space.
 ///

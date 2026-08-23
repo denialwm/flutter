@@ -72,8 +72,10 @@ struct BackdropLayerPlanAudit {
   using Clock = std::chrono::steady_clock;
 
   Clock::time_point period_start = Clock::now();
+  uint64_t direct_layers = 0;
   uint64_t single_sample_layers = 0;
   uint64_t multisample_layers = 0;
+  uint64_t direct_pixels = 0;
   uint64_t single_sample_pixels = 0;
   uint64_t multisample_pixels = 0;
 };
@@ -87,14 +89,19 @@ static bool IsDenialRenderAuditEnabled() {
   return enabled;
 }
 
-static void RecordBackdropLayerPlan(ISize size, bool use_msaa) {
+static void RecordBackdropLayerPlan(ISize size,
+                                    bool use_msaa,
+                                    bool is_direct = false) {
   if (!IsDenialRenderAuditEnabled()) {
     return;
   }
 
   static thread_local BackdropLayerPlanAudit audit;
   const uint64_t pixels = static_cast<uint64_t>(size.Area());
-  if (use_msaa) {
+  if (is_direct) {
+    audit.direct_layers++;
+    audit.direct_pixels += pixels;
+  } else if (use_msaa) {
     audit.multisample_layers++;
     audit.multisample_pixels += pixels;
   } else {
@@ -111,11 +118,14 @@ static void RecordBackdropLayerPlan(ISize size, bool use_msaa) {
 
   FML_LOG(INFO) << "Denial backdrop render plan"
                 << " interval_ms=" << interval.count()
+                << " direct_layers=" << audit.direct_layers
                 << " single_sample_layers=" << audit.single_sample_layers
                 << " multisample_layers=" << audit.multisample_layers
+                << " direct_pixels=" << audit.direct_pixels
                 << " single_sample_pixels=" << audit.single_sample_pixels
                 << " multisample_pixels=" << audit.multisample_pixels
-                << " avoided_color_samples=" << audit.single_sample_pixels * 3u;
+                << " avoided_color_samples="
+                << audit.direct_pixels * 4u + audit.single_sample_pixels * 3u;
   audit = BackdropLayerPlanAudit{.period_start = now};
 }
 
@@ -1634,6 +1644,39 @@ void Canvas::SaveLayer(const Paint& paint,
                                       ->GetCapabilities()
                                       ->GetMaximumRenderPassAttachmentSize());
 
+  // A backdrop layer restored with kSrc is an assignment, not an opacity
+  // group. When its child program contains no geometric draws, the exact same
+  // expression can be evaluated in the parent target:
+  //
+  //   layer = backdrop; layer = children over layer; parent = layer (kSrc)
+  //
+  // becomes:
+  //
+  //   parent = backdrop (kSrc); parent = children over parent
+  //
+  // This is the first physical plan which treats saveLayer as a compositing
+  // relationship instead of an allocation request. The DisplayList proof is
+  // conservative: geometric content, nested layers, vertices, atlases,
+  // shadows, and nested DisplayLists all reject the plan. Paint attributes on
+  // the restore and grouped/cached backdrops also retain the materialized path.
+  const bool restore_has_effects =
+      paint.color_source != nullptr || paint.color_filter != nullptr ||
+      paint.image_filter != nullptr || paint.invert_colors ||
+      paint.mask_blur_descriptor.has_value();
+  const bool can_render_backdrop_directly = CanRenderBackdropLayerDirectly({
+      .has_backdrop_filter = backdrop_filter != nullptr,
+      .content_is_single_sample_compatible =
+          content_is_single_sample_compatible,
+      .content_bounds_are_contained =
+          bounds_promise == ContentBoundsPromise::kContainsContents,
+      .is_root_pass = render_passes_.size() == 1u,
+      .restore_blend_mode = paint.blend_mode,
+      .restore_is_opaque = paint.color.IsOpaque(),
+      .restore_has_effects = restore_has_effects,
+      .has_backdrop_id = backdrop_id.has_value(),
+      .inherited_opacity = transform_stack_.back().distributed_opacity,
+  });
+
   // Backdrop filter state, ignored if there is no BDF.
   std::shared_ptr<FilterContents> backdrop_filter_contents;
   std::optional<Snapshot> isolated_backdrop_snapshot;
@@ -1746,14 +1789,14 @@ void Canvas::SaveLayer(const Paint& paint,
     }
 
     if (!isolated_backdrop_snapshot.has_value()) {
+      const Entity::RenderingMode backdrop_rendering_mode =
+          can_render_backdrop_directly ? Entity::RenderingMode::kDirect
+          : transform_stack_.back().transform.HasTranslation()
+              ? Entity::RenderingMode::kSubpassPrependSnapshotTransform
+              : Entity::RenderingMode::kSubpassAppendSnapshotTransform;
       backdrop_filter_contents = backdrop_filter_proc(
           FilterInput::Make(std::move(input_texture)),
-          transform_stack_.back().transform.Basis(),
-          // When the subpass has a translation that means the math with
-          // the snapshot has to be different.
-          transform_stack_.back().transform.HasTranslation()
-              ? Entity::RenderingMode::kSubpassPrependSnapshotTransform
-              : Entity::RenderingMode::kSubpassAppendSnapshotTransform);
+          transform_stack_.back().transform.Basis(), backdrop_rendering_mode);
 
       auto render_persistent_snapshot = [&]() {
         // A cross-frame snapshot must own its texture exclusively. Otherwise
@@ -1802,6 +1845,28 @@ void Canvas::SaveLayer(const Paint& paint,
   Paint paint_copy = paint;
   paint_copy.color.alpha *= transform_stack_.back().distributed_opacity;
   transform_stack_.back().distributed_opacity = 1.0;
+
+  if (can_render_backdrop_directly && backdrop_filter_contents &&
+      !isolated_backdrop_snapshot.has_value()) {
+    // The physical subpass used to provide this crop implicitly. A logical
+    // scope must carry the demanded output region explicitly when its filter
+    // is evaluated directly in the parent target.
+    backdrop_filter_contents->SetCoverageHint(subpass_coverage);
+
+    Entity backdrop_entity;
+    backdrop_entity.SetContents(std::move(backdrop_filter_contents));
+    backdrop_entity.SetBlendMode(BlendMode::kSrc);
+    AddRenderEntityToCurrentPass(backdrop_entity);
+
+    RecordBackdropLayerPlan(subpass_size, /*use_msaa=*/false,
+                            /*is_direct=*/true);
+
+    // The direct backdrop draw consumes the depth slot that the materialized
+    // path would have used for its restore. Child operations retain their
+    // original depth budget and clips are now recorded in the parent pass.
+    Save(total_content_depth);
+    return;
+  }
 
   const bool use_msaa = !content_is_single_sample_compatible;
   if (backdrop_filter) {
