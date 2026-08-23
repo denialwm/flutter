@@ -72,6 +72,39 @@ TEST(SaveLayerUtilsTest, DirectBackdropPlanRejectsUnprovenSemantics) {
   EXPECT_FALSE(CanRenderBackdropLayerDirectly(rejected));
 }
 
+TEST(SaveLayerUtilsTest, DirectBackdropPlanReportsEveryRejection) {
+  const uint32_t reasons = GetBackdropLayerDirectRejections({});
+  EXPECT_NE(reasons & static_cast<uint32_t>(
+                          BackdropLayerDirectRejection::kMissingBackdropFilter),
+            0u);
+  EXPECT_NE(
+      reasons & static_cast<uint32_t>(
+                    BackdropLayerDirectRejection::kContentNeedsMultisampling),
+      0u);
+  EXPECT_NE(
+      reasons & static_cast<uint32_t>(
+                    BackdropLayerDirectRejection::kContentBoundsUncontained),
+      0u);
+  EXPECT_NE(reasons & static_cast<uint32_t>(
+                          BackdropLayerDirectRejection::kNestedPass),
+            0u);
+  EXPECT_NE(reasons & static_cast<uint32_t>(
+                          BackdropLayerDirectRejection::kRestoreBlendMode),
+            0u);
+  EXPECT_NE(reasons & static_cast<uint32_t>(
+                          BackdropLayerDirectRejection::kRestoreNotOpaque),
+            0u);
+  EXPECT_EQ(reasons & static_cast<uint32_t>(
+                          BackdropLayerDirectRejection::kRestoreHasEffects),
+            0u);
+  EXPECT_EQ(reasons & static_cast<uint32_t>(
+                          BackdropLayerDirectRejection::kBackdropId),
+            0u);
+  EXPECT_EQ(reasons & static_cast<uint32_t>(
+                          BackdropLayerDirectRejection::kInheritedOpacity),
+            0u);
+}
+
 TEST(SaveLayerUtilsTest, SimplePaintComputedCoverage) {
   // Basic Case, simple paint, computed coverage
   auto coverage = ComputeSaveLayerCoverage(

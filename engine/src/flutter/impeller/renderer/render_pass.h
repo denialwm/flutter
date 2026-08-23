@@ -56,6 +56,8 @@ class RenderPass : public ResourceBinder {
   /// The debugging label to use for the command.
   virtual void SetCommandLabel(std::string_view label);
 
+  void SetCommandAuditCategory(CommandAuditCategory category);
+
   //----------------------------------------------------------------------------
   /// The reference value to use in stenciling operations. Stencil configuration
   /// is part of pipeline setup and can be read from the pipelines descriptor.

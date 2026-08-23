@@ -288,4 +288,15 @@ void FilterContents::SetRenderingMode(Entity::RenderingMode rendering_mode) {
   }
 }
 
+void FilterContents::SetIsBackdropFilter(bool is_backdrop_filter) {
+  is_backdrop_filter_ = is_backdrop_filter;
+  for (auto& input : inputs_) {
+    input->SetIsBackdropFilter(is_backdrop_filter);
+  }
+}
+
+bool FilterContents::IsBackdropFilter() const {
+  return is_backdrop_filter_;
+}
+
 }  // namespace impeller

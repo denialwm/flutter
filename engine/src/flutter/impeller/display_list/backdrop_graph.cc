@@ -74,13 +74,17 @@ BackdropEpochPlan PlanBackdropEpochs(std::vector<BackdropScopeRegion> scopes) {
     }
 
     uint32_t epoch = epoch_floor;
-    auto consume_hits = [&](const flutter::DlRTree& index, const Rect& query) {
+    auto consume_hits = [&](const flutter::DlRTree& index, const Rect& query,
+                            size_t& hazard_count) {
       hits.clear();
       index.search(query, &hits);
       for (int hit : hits) {
         const int id = index.id(hit);
-        if (id < 0 || static_cast<size_t>(id) >= later ||
-            seen_generation[id] == generation) {
+        if (id < 0 || static_cast<size_t>(id) >= later) {
+          continue;
+        }
+        hazard_count++;
+        if (seen_generation[id] == generation) {
           continue;
         }
         seen_generation[id] = generation;
@@ -90,14 +94,17 @@ BackdropEpochPlan PlanBackdropEpochs(std::vector<BackdropScopeRegion> scopes) {
     };
 
     // Earlier writes which affect this scope's backdrop value.
-    consume_hits(write_index, planned_scopes[later].read_region);
+    consume_hits(write_index, planned_scopes[later].read_region,
+                 result.write_read_hazards);
     // Earlier writes which overlap this scope's output and therefore require
     // z-order composition.
-    consume_hits(write_index, planned_scopes[later].write_region);
+    consume_hits(write_index, planned_scopes[later].write_region,
+                 result.write_write_hazards);
     // A later write which overlaps an earlier backdrop footprint is kept out
     // of the same epoch. This is conservative and permits every epoch to read
     // all of its inputs before issuing any of its writes.
-    consume_hits(read_index, planned_scopes[later].write_region);
+    consume_hits(read_index, planned_scopes[later].write_region,
+                 result.read_write_hazards);
 
     result.epoch_for_scope[later] = epoch;
     max_assigned_epoch = std::max(max_assigned_epoch, epoch);

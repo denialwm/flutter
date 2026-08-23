@@ -14,6 +14,7 @@
 #include "impeller/core/formats.h"
 #include "impeller/renderer/backend/gles/buffer_bindings_gles.h"
 #include "impeller/renderer/backend/gles/context_gles.h"
+#include "impeller/renderer/backend/gles/denial_gpu_audit_gles.h"
 #include "impeller/renderer/backend/gles/device_buffer_gles.h"
 #include "impeller/renderer/backend/gles/formats_gles.h"
 #include "impeller/renderer/backend/gles/gpu_tracer_gles.h"
@@ -258,6 +259,15 @@ static void EncodeViewport(const ProcTableGLES& gl,
   TRACE_EVENT0("impeller", "RenderPassGLES::EncodeCommandsInReactor");
 
   const auto& gl = reactor.GetProcTable();
+  const ISize target_size = pass_data.color_attachment->GetSize();
+  const uint64_t target_pixels =
+      static_cast<uint64_t>(std::max<int64_t>(0, target_size.Area()));
+  DenialGpuAuditGLES& denial_gpu_audit = GetDenialGpuAuditGLES();
+  denial_gpu_audit.Poll(gl);
+  const DenialGpuAuditGLES::Token pass_audit_token = denial_gpu_audit.Begin(
+      gl, DenialGpuAuditGLES::ClassifyPass(pass_data.label), target_pixels);
+  fml::ScopedCleanupClosure finish_pass_audit(
+      [&] { denial_gpu_audit.End(gl, pass_audit_token); });
 #ifdef IMPELLER_DEBUG
   tracer->MarkFrameStart(gl);
 
@@ -370,8 +380,6 @@ static void EncodeViewport(const ProcTableGLES& gl,
   // Both the viewport and scissor are specified in framebuffer coordinates.
   // Impeller's framebuffer coordinate system is top left origin, but OpenGL's
   // is bottom left origin, so we convert the coordinates here.
-  ISize target_size = pass_data.color_attachment->GetSize();
-
   // Offscreen FBO passes flip in the vertex shader (the swapchain is
   // left alone); see https://github.com/flutter/flutter/issues/186554.
   const bool flip_y = !is_wrapped_fbo;
@@ -605,6 +613,23 @@ static void EncodeViewport(const ProcTableGLES& gl,
           static_cast<uintptr_t>(index_buffer_view.GetRange().offset));
     }
 
+    std::optional<DenialGpuAuditStage> command_audit_stage;
+    switch (command.audit_category) {
+      case CommandAuditCategory::kNone:
+        break;
+      case CommandAuditCategory::kBackdropRestore:
+        command_audit_stage = DenialGpuAuditStage::kBackdropRestore;
+        break;
+      case CommandAuditCategory::kMsaaBackdropRestore:
+        command_audit_stage = DenialGpuAuditStage::kMsaaBackdropRestore;
+        break;
+    }
+    const DenialGpuAuditGLES::Token command_audit_token =
+        command_audit_stage.has_value()
+            ? denial_gpu_audit.Begin(gl, command_audit_stage.value(),
+                                     target_pixels)
+            : DenialGpuAuditGLES::Token{};
+
     // A non-instanced draw of the bound geometry. Used directly for ordinary
     // draws and once per instance when emulating instancing.
     const auto draw_geometry = [&]() {
@@ -630,6 +655,7 @@ static void EncodeViewport(const ProcTableGLES& gl,
                     gl, vertex_desc_gles,
                     vertex_buffers[i + command.vertex_buffers.offset], i,
                     instance)) {
+              denial_gpu_audit.End(gl, command_audit_token);
               return false;
             }
           }
@@ -656,6 +682,7 @@ static void EncodeViewport(const ProcTableGLES& gl,
     } else {
       draw_geometry();
     }
+    denial_gpu_audit.End(gl, command_audit_token);
 
     //--------------------------------------------------------------------------
     /// Unbind vertex attribs.
@@ -706,6 +733,9 @@ static void EncodeViewport(const ProcTableGLES& gl,
     RenderPassGLES::ResetGLState(gl);
     auto size = pass_data.color_attachment->GetSize();
 
+    const DenialGpuAuditGLES::Token resolve_audit_token =
+        denial_gpu_audit.Begin(gl, DenialGpuAuditStage::kResolve,
+                               static_cast<uint64_t>(size.Area()));
     gl.BlitFramebuffer(/*srcX0=*/0,
                        /*srcY0=*/0,
                        /*srcX1=*/size.width,
@@ -716,6 +746,7 @@ static void EncodeViewport(const ProcTableGLES& gl,
                        /*dstY1=*/size.height,
                        /*mask=*/GL_COLOR_BUFFER_BIT,
                        /*filter=*/GL_NEAREST);
+    denial_gpu_audit.End(gl, resolve_audit_token);
 
     gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, GL_NONE);
     gl.BindFramebuffer(GL_READ_FRAMEBUFFER, GL_NONE);

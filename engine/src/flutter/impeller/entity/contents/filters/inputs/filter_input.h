@@ -95,6 +95,9 @@ class FilterInput {
 
   /// @brief  Turns on subpass mode for filter inputs.
   virtual void SetRenderingMode(Entity::RenderingMode rendering_mode);
+
+  /// @brief  Propagates backdrop-filter semantic origin through filter graphs.
+  virtual void SetIsBackdropFilter(bool is_backdrop_filter);
 };
 
 }  // namespace impeller
