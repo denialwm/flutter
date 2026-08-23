@@ -80,6 +80,27 @@ struct BackdropLayerPlanAudit {
   uint64_t multisample_pixels = 0;
 };
 
+struct BackdropGraphPlanAudit {
+  using Clock = std::chrono::steady_clock;
+
+  Clock::time_point period_start = Clock::now();
+  uint64_t frames = 0;
+  uint64_t scopes = 0;
+  uint64_t epochs = 0;
+  uint64_t dependency_edges = 0;
+  uint64_t scene_barriers = 0;
+  uint64_t parallel_rects_max = 0;
+  uint64_t epoch_snapshot_flips = 0;
+  uint64_t epoch_snapshot_reuses = 0;
+  uint64_t epoch_plan_misses = 0;
+};
+
+enum class BackdropEpochExecution {
+  kSnapshotFlip,
+  kSnapshotReuse,
+  kPlanMiss,
+};
+
 static bool IsDenialRenderAuditEnabled() {
   static const bool enabled = [] {
     const char* value = std::getenv("DENIA_RENDER_AUDIT");
@@ -87,6 +108,29 @@ static bool IsDenialRenderAuditEnabled() {
            !(value[0] == '0' && value[1] == '\0');
   }();
   return enabled;
+}
+
+static BackdropGraphPlanAudit& GetBackdropGraphPlanAudit() {
+  static thread_local BackdropGraphPlanAudit audit;
+  return audit;
+}
+
+static void RecordBackdropEpochExecution(BackdropEpochExecution execution) {
+  if (!IsDenialRenderAuditEnabled()) {
+    return;
+  }
+  BackdropGraphPlanAudit& audit = GetBackdropGraphPlanAudit();
+  switch (execution) {
+    case BackdropEpochExecution::kSnapshotFlip:
+      audit.epoch_snapshot_flips++;
+      break;
+    case BackdropEpochExecution::kSnapshotReuse:
+      audit.epoch_snapshot_reuses++;
+      break;
+    case BackdropEpochExecution::kPlanMiss:
+      audit.epoch_plan_misses++;
+      break;
+  }
 }
 
 static void RecordBackdropLayerPlan(ISize size,
@@ -127,6 +171,44 @@ static void RecordBackdropLayerPlan(ISize size,
                 << " avoided_color_samples="
                 << audit.direct_pixels * 4u + audit.single_sample_pixels * 3u;
   audit = BackdropLayerPlanAudit{.period_start = now};
+}
+
+static void RecordBackdropGraphPlan(const BackdropEpochPlan& plan) {
+  if (!IsDenialRenderAuditEnabled()) {
+    return;
+  }
+
+  BackdropGraphPlanAudit& audit = GetBackdropGraphPlanAudit();
+  audit.frames++;
+  audit.scopes += plan.epoch_for_scope.size();
+  audit.epochs += plan.scopes_by_epoch.size();
+  audit.dependency_edges += plan.dependency_edges;
+  audit.scene_barriers += plan.scene_barriers;
+  audit.parallel_rects_max =
+      std::max<uint64_t>(audit.parallel_rects_max, plan.GetMaxEpochWidth());
+
+  const auto now = BackdropGraphPlanAudit::Clock::now();
+  const auto interval = std::chrono::duration_cast<std::chrono::milliseconds>(
+      now - audit.period_start);
+  if (interval < std::chrono::seconds(1)) {
+    return;
+  }
+
+  const double parallel_rects_avg =
+      audit.epochs == 0u ? 0.0
+                         : static_cast<double>(audit.scopes) / audit.epochs;
+  FML_LOG(INFO) << "Denial backdrop graph plan"
+                << " interval_ms=" << interval.count()
+                << " frames=" << audit.frames << " scopes=" << audit.scopes
+                << " epochs=" << audit.epochs
+                << " dependency_edges=" << audit.dependency_edges
+                << " scene_barriers=" << audit.scene_barriers
+                << " parallel_rects_avg=" << parallel_rects_avg
+                << " parallel_rects_max=" << audit.parallel_rects_max
+                << " epoch_snapshot_flips=" << audit.epoch_snapshot_flips
+                << " epoch_snapshot_reuses=" << audit.epoch_snapshot_reuses
+                << " epoch_plan_misses=" << audit.epoch_plan_misses;
+  audit = BackdropGraphPlanAudit{.period_start = now};
 }
 
 bool IsPipelineBlendOrMatrixFilter(const flutter::DlColorFilter* filter) {
@@ -1677,6 +1759,19 @@ void Canvas::SaveLayer(const Paint& paint,
       .inherited_opacity = transform_stack_.back().distributed_opacity,
   });
 
+  std::optional<uint32_t> planned_backdrop_epoch;
+  if (backdrop_filter && render_passes_.size() == 1u) {
+    planned_backdrop_epoch =
+        ClaimBackdropEpoch(subpass_coverage, *backdrop_filter);
+  }
+  if (!can_render_backdrop_directly || !planned_backdrop_epoch.has_value()) {
+    active_backdrop_epoch_.reset();
+    active_backdrop_epoch_texture_.reset();
+    if (can_render_backdrop_directly) {
+      RecordBackdropEpochExecution(BackdropEpochExecution::kPlanMiss);
+    }
+  }
+
   // Backdrop filter state, ignored if there is no BDF.
   std::shared_ptr<FilterContents> backdrop_filter_contents;
   std::optional<Snapshot> isolated_backdrop_snapshot;
@@ -1764,18 +1859,33 @@ void Canvas::SaveLayer(const Paint& paint,
         (!will_cache_backdrop_texture || !backdrop_data->texture_slot)) {
       consume_backdrop_count();
 
-      // The onscreen texture can be flipped to if:
-      // 1. The device supports framebuffer fetch
-      // 2. There are no more backdrop filters
-      // 3. The current render pass is for the onscreen pass.
-      const bool should_use_onscreen =
-          renderer_.GetDeviceCapabilities().SupportsFramebufferFetch() &&
-          backdrop_count_ == 0 && render_passes_.size() == 1u;
-      input_texture = FlipBackdrop(
-          GetGlobalPassPosition(),                                //
-          /*should_remove_texture=*/will_cache_backdrop_texture,  //
-          /*should_use_onscreen=*/should_use_onscreen             //
-      );
+      const bool can_reuse_epoch_snapshot =
+          can_render_backdrop_directly && planned_backdrop_epoch.has_value() &&
+          active_backdrop_epoch_ == planned_backdrop_epoch &&
+          active_backdrop_epoch_texture_;
+      if (can_reuse_epoch_snapshot) {
+        input_texture = active_backdrop_epoch_texture_;
+        RecordBackdropEpochExecution(BackdropEpochExecution::kSnapshotReuse);
+      } else {
+        // The onscreen texture can be flipped to if:
+        // 1. The device supports framebuffer fetch
+        // 2. There are no more backdrop filters
+        // 3. The current render pass is for the onscreen pass.
+        const bool should_use_onscreen =
+            renderer_.GetDeviceCapabilities().SupportsFramebufferFetch() &&
+            backdrop_count_ == 0 && render_passes_.size() == 1u;
+        input_texture = FlipBackdrop(
+            GetGlobalPassPosition(),                                //
+            /*should_remove_texture=*/will_cache_backdrop_texture,  //
+            /*should_use_onscreen=*/should_use_onscreen             //
+        );
+        if (input_texture && can_render_backdrop_directly &&
+            planned_backdrop_epoch.has_value()) {
+          active_backdrop_epoch_ = planned_backdrop_epoch;
+          active_backdrop_epoch_texture_ = input_texture;
+          RecordBackdropEpochExecution(BackdropEpochExecution::kSnapshotFlip);
+        }
+      }
       if (!input_texture) {
         // Validation failures are logged in FlipBackdrop.
         return;
@@ -2375,15 +2485,52 @@ RenderPass& Canvas::GetCurrentRenderPass() const {
 
 void Canvas::SetBackdropData(
     std::unordered_map<int64_t, BackdropData> backdrop_data,
-    size_t backdrop_count) {
+    size_t backdrop_count,
+    BackdropEpochPlan backdrop_epoch_plan) {
   backdrop_data_ = std::move(backdrop_data);
   backdrop_count_ = backdrop_count;
+  backdrop_epoch_plan_ = std::move(backdrop_epoch_plan);
+  backdrop_epoch_cursor_.Reset();
+  active_backdrop_epoch_.reset();
+  active_backdrop_epoch_texture_.reset();
+  RecordBackdropGraphPlan(backdrop_epoch_plan_);
+}
+
+std::optional<uint32_t> Canvas::ClaimBackdropEpoch(
+    const Rect& write_region,
+    const flutter::DlImageFilter& backdrop_filter) {
+  Rect read_region = write_region;
+  if (!write_region.IsEmpty()) {
+    flutter::DlIRect input_bounds;
+    if (backdrop_filter.get_input_device_bounds(
+            flutter::DlIRect::RoundOut(write_region), GetCurrentTransform(),
+            input_bounds)) {
+      read_region = Rect::Make(input_bounds);
+      if (initial_cull_rect_.has_value() && !initial_cull_rect_->IsMaximum()) {
+        read_region = read_region.Intersection(initial_cull_rect_.value())
+                          .value_or(Rect());
+      }
+    } else if (initial_cull_rect_.has_value()) {
+      read_region = initial_cull_rect_.value();
+    } else {
+      return std::nullopt;
+    }
+  }
+
+  return backdrop_epoch_cursor_.Claim(backdrop_epoch_plan_, write_region,
+                                      read_region);
 }
 
 std::shared_ptr<Texture> Canvas::FlipBackdrop(Point global_pass_position,
                                               bool should_remove_texture,
                                               bool should_use_onscreen,
                                               bool post_depth_increment) {
+  // Any standalone readback closes the active graph epoch. A direct backdrop
+  // caller may install the returned scene snapshot as the input for a new
+  // epoch after this method returns.
+  active_backdrop_epoch_.reset();
+  active_backdrop_epoch_texture_.reset();
+
   LazyRenderingConfig rendering_config = std::move(render_passes_.back());
   render_passes_.pop_back();
 
@@ -2585,6 +2732,10 @@ void Canvas::EndReplay() {
   render_passes_.back().GetInlinePassContext()->EndPass(
       /*is_onscreen=*/!requires_readback_ && is_onscreen_);
   backdrop_data_.clear();
+  backdrop_epoch_plan_ = {};
+  backdrop_epoch_cursor_.Reset();
+  active_backdrop_epoch_.reset();
+  active_backdrop_epoch_texture_.reset();
 
   // If requires_readback_ was true, then we rendered to an offscreen texture
   // instead of to the onscreen provided in the render target. Now we need to

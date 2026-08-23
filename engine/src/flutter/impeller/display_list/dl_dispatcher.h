@@ -6,6 +6,7 @@
 #define FLUTTER_IMPELLER_DISPLAY_LIST_DL_DISPATCHER_H_
 
 #include <memory>
+#include <tuple>
 
 #include "flutter/display_list/dl_op_receiver.h"
 #include "flutter/display_list/geometry/dl_geometry_types.h"
@@ -305,7 +306,8 @@ class CanvasDlDispatcher : public DlDispatcherBase {
   ~CanvasDlDispatcher() = default;
 
   void SetBackdropData(std::unordered_map<int64_t, BackdropData> backdrop,
-                       size_t backdrop_count);
+                       size_t backdrop_count,
+                       BackdropEpochPlan backdrop_epoch_plan = {});
 
   // |flutter::DlOpReceiver|
   void save() override {
@@ -390,6 +392,60 @@ class FirstPassDispatcher : public flutter::IgnoreAttributeDispatchHelper,
                 DlScalar x,
                 DlScalar y) override;
 
+  void drawColor(flutter::DlColor color, flutter::DlBlendMode mode) override;
+  void drawPaint() override;
+  void drawLine(const DlPoint& p0, const DlPoint& p1) override;
+  void drawDashedLine(const DlPoint& p0,
+                      const DlPoint& p1,
+                      DlScalar on_length,
+                      DlScalar off_length) override;
+  void drawRect(const DlRect& rect) override;
+  void drawOval(const DlRect& bounds) override;
+  void drawCircle(const DlPoint& center, DlScalar radius) override;
+  void drawRoundRect(const DlRoundRect& rrect) override;
+  void drawDiffRoundRect(const DlRoundRect& outer,
+                         const DlRoundRect& inner) override;
+  void drawRoundSuperellipse(const DlRoundSuperellipse& rse) override;
+  void drawPath(const DlPath& path) override;
+  void drawArc(const DlRect& oval_bounds,
+               DlScalar start_degrees,
+               DlScalar sweep_degrees,
+               bool use_center) override;
+  void drawPoints(flutter::DlPointMode mode,
+                  uint32_t count,
+                  const DlPoint points[]) override;
+  void drawVertices(const std::shared_ptr<flutter::DlVertices>& vertices,
+                    flutter::DlBlendMode mode) override;
+  void drawImage(const sk_sp<flutter::DlImage> image,
+                 const DlPoint& point,
+                 flutter::DlImageSampling sampling,
+                 bool render_with_attributes) override;
+  void drawImageRect(const sk_sp<flutter::DlImage> image,
+                     const DlRect& src,
+                     const DlRect& dst,
+                     flutter::DlImageSampling sampling,
+                     bool render_with_attributes,
+                     flutter::DlSrcRectConstraint constraint) override;
+  void drawImageNine(const sk_sp<flutter::DlImage> image,
+                     const DlIRect& center,
+                     const DlRect& dst,
+                     flutter::DlFilterMode filter,
+                     bool render_with_attributes) override;
+  void drawAtlas(const sk_sp<flutter::DlImage> atlas,
+                 const RSTransform xform[],
+                 const DlRect tex[],
+                 const flutter::DlColor colors[],
+                 int count,
+                 flutter::DlBlendMode mode,
+                 flutter::DlImageSampling sampling,
+                 const DlRect* cull_rect,
+                 bool render_with_attributes) override;
+  void drawShadow(const DlPath& path,
+                  const flutter::DlColor color,
+                  const DlScalar elevation,
+                  bool transparent_occluder,
+                  DlScalar dpr) override;
+
   void drawDisplayList(const sk_sp<flutter::DisplayList> display_list,
                        DlScalar opacity) override;
 
@@ -414,20 +470,33 @@ class FirstPassDispatcher : public flutter::IgnoreAttributeDispatchHelper,
   // |flutter::DlOpReceiver|
   void setImageFilter(const flutter::DlImageFilter* filter) override;
 
-  std::pair<std::unordered_map<int64_t, BackdropData>, size_t>
+  std::tuple<std::unordered_map<int64_t, BackdropData>,
+             size_t,
+             BackdropEpochPlan>
   TakeBackdropData();
 
  private:
+  enum class SavedScopeType {
+    kSave,
+    kBackdropLayer,
+    kOtherLayer,
+  };
+
   const Rect GetCurrentLocalCullingBounds() const;
+  void RecordSceneWrite();
 
   const ContentContext& renderer_;
   Matrix matrix_;
   std::vector<Matrix> stack_;
+  std::vector<SavedScopeType> saved_scope_types_;
   std::unordered_map<int64_t, BackdropData> backdrop_data_;
+  std::vector<BackdropScopeRegion> backdrop_scopes_;
   // note: cull rects are always in the global coordinate space.
   std::vector<Rect> cull_rect_state_;
   bool has_image_filter_ = false;
   size_t backdrop_count_ = 0;
+  size_t save_layer_depth_ = 0u;
+  uint64_t scene_color_generation_ = 0u;
   Paint paint_;
 };
 

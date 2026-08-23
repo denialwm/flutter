@@ -15,6 +15,7 @@
 #include "flutter/display_list/effects/dl_image_filter.h"
 #include "flutter/display_list/geometry/dl_path.h"
 #include "impeller/core/sampler_descriptor.h"
+#include "impeller/display_list/backdrop_graph.h"
 #include "impeller/display_list/paint.h"
 #include "impeller/entity/contents/atlas_contents.h"
 #include "impeller/entity/contents/clip_contents.h"
@@ -147,7 +148,8 @@ class Canvas {
   /// @brief Update the backdrop data used to group together backdrop filters
   ///        within the same layer
   void SetBackdropData(std::unordered_map<int64_t, BackdropData> backdrop_data,
-                       size_t backdrop_count);
+                       size_t backdrop_count,
+                       BackdropEpochPlan backdrop_epoch_plan = {});
 
   /// @brief Return the culling bounds of the current render target, or nullopt
   ///        if there is no coverage.
@@ -285,6 +287,10 @@ class Canvas {
   bool EnsureFinalMipmapGeneration() const;
 
  private:
+  std::optional<uint32_t> ClaimBackdropEpoch(
+      const Rect& write_region,
+      const flutter::DlImageFilter& backdrop_filter);
+
   class BlurShape {
    public:
     virtual ~BlurShape() = default;
@@ -314,6 +320,14 @@ class Canvas {
   /// all backdrop filters will have an identified backdrop id. The
   /// backdrop_count_ is also mutated during rendering.
   std::unordered_map<int64_t, BackdropData> backdrop_data_;
+
+  /// Region-sensitive scene-color dependencies collected before rendering.
+  /// Physical scheduling may consume this without rediscovering relationships
+  /// from already-lowered entities.
+  BackdropEpochPlan backdrop_epoch_plan_;
+  BackdropEpochCursor backdrop_epoch_cursor_;
+  std::optional<uint32_t> active_backdrop_epoch_;
+  std::shared_ptr<Texture> active_backdrop_epoch_texture_;
 
   /// The remaining number of backdrop filters.
   ///

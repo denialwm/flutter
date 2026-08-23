@@ -24,6 +24,8 @@ impeller_component("display_list") {
   sources = [
     "aiks_context.cc",
     "aiks_context.h",
+    "backdrop_graph.cc",
+    "backdrop_graph.h",
     "canvas.cc",
     "canvas.h",
     "color_filter.cc",
@@ -82,6 +84,7 @@ template("display_list_unittests_component") {
     "aiks_dl_text_unittests.cc",
     "aiks_dl_unittests.cc",
     "aiks_dl_vertices_unittests.cc",
+    "backdrop_graph_unittests.cc",
     "dl_golden_blur_unittests.cc",
     "dl_golden_unittests.cc",
     "dl_playground.cc",
