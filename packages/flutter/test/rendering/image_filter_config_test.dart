@@ -53,6 +53,7 @@ void main() {
       const config2 = ImageFilterConfig.blur(sigmaX: 5.1, sigmaY: 5.1);
       const config3 = ImageFilterConfig.blur(sigmaX: 10.1, sigmaY: 10.1);
       const config4 = ImageFilterConfig.blur(sigmaX: 5.1, sigmaY: 5.1, bounded: true);
+      const config5 = ImageFilterConfig.blur(sigmaX: 5.1, sigmaY: 5.1, downsampleScale: 0.5);
 
       expect(config1, config2);
       expect(config1.hashCode, config2.hashCode);
@@ -60,6 +61,8 @@ void main() {
       expect(config1.hashCode, isNot(equals(config3.hashCode)));
       expect(config1, isNot(equals(config4)));
       expect(config1.hashCode, isNot(equals(config4.hashCode)));
+      expect(config1, isNot(equals(config5)));
+      expect(config1.hashCode, isNot(equals(config5.hashCode)));
     });
 
     test('ImageFilterConfig.blur toString and debugShortDescription', () {
@@ -70,6 +73,9 @@ void main() {
       const config2 = ImageFilterConfig.blur(sigmaX: 2.5, sigmaY: 3.5, bounded: true);
       expect(config2.debugShortDescription, 'blur(2.5, 3.5, clamp, bounded)');
       expect(config2.toString(), 'ImageFilterConfig.blur(2.5, 3.5, clamp, bounded)');
+
+      const config3 = ImageFilterConfig.blur(sigmaX: 2.5, sigmaY: 3.5, downsampleScale: 0.25);
+      expect(config3.debugShortDescription, 'blur(2.5, 3.5, clamp, unbounded, downsample: 0.25)');
     });
 
     test('ImageFilterConfig.compose == and hashCode', () {
@@ -112,6 +118,16 @@ void main() {
       final ui.ImageFilter resolvedBlur = blurConfig.resolve(context);
       expect(resolvedBlur, isA<ui.ImageFilter>());
       expect(resolvedBlur.debugShortDescription, 'blur(10.1, 10.1, clamp)');
+
+      const fastBlurConfig = ImageFilterConfig.blur(
+        sigmaX: 10.1,
+        sigmaY: 10.1,
+        downsampleScale: 0.5,
+      );
+      expect(
+        fastBlurConfig.resolve(context).debugShortDescription,
+        'blur(10.1, 10.1, clamp, downsampleScale: 0.5)',
+      );
 
       const boundedBlurConfig = ImageFilterConfig.blur(sigmaX: 10.1, sigmaY: 10.1, bounded: true);
       final ui.ImageFilter resolvedBoundedBlur = boundedBlurConfig.resolve(context);

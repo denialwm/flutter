@@ -62,8 +62,9 @@ const std::shared_ptr<DlImageFilter> ImageFilter::filter(
     const DlBlurImageFilter* blur_filter = filter_->asBlur();
     FML_DCHECK(blur_filter != nullptr);
     if (blur_filter->tile_mode() != mode) {
-      return DlBlurImageFilter::Make(blur_filter->sigma_x(),
-                                     blur_filter->sigma_y(), mode);
+      return DlBlurImageFilter::Make(
+          blur_filter->sigma_x(), blur_filter->sigma_y(), mode,
+          blur_filter->bounds(), blur_filter->downsample_scale());
     }
   }
   return filter_;
@@ -76,7 +77,8 @@ void ImageFilter::initBlur(double sigma_x,
                            double bounds_left,
                            double bounds_top,
                            double bounds_right,
-                           double bounds_bottom) {
+                           double bounds_bottom,
+                           double downsample_scale) {
   DlTileMode tile_mode;
   bool is_dynamic;
   if (tile_mode_index < 0) {
@@ -92,8 +94,9 @@ void ImageFilter::initBlur(double sigma_x,
         DlRect::MakeLTRB(SafeNarrow(bounds_left), SafeNarrow(bounds_top),
                          SafeNarrow(bounds_right), SafeNarrow(bounds_bottom));
   }
-  filter_ = DlBlurImageFilter::Make(SafeNarrow(sigma_x), SafeNarrow(sigma_y),
-                                    tile_mode, bounds);
+  filter_ =
+      DlBlurImageFilter::Make(SafeNarrow(sigma_x), SafeNarrow(sigma_y),
+                              tile_mode, bounds, SafeNarrow(downsample_scale));
   // If it was a NOP filter, don't bother processing dynamic substitutions
   // (They'd fail the FML_DCHECK anyway)
   is_dynamic_tile_mode_ = is_dynamic && filter_;

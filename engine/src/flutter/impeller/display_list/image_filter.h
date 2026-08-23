@@ -15,8 +15,7 @@ namespace impeller {
 ///
 std::shared_ptr<FilterContents> WrapInput(const ContentContext& renderer,
                                           const flutter::DlImageFilter* filter,
-                                          const FilterInput::Ref& input,
-                                          Scalar blur_downsample_scale = 1.0f);
+                                          const FilterInput::Ref& input);
 
 }  // namespace impeller
 

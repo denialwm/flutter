@@ -1904,7 +1904,7 @@ void Canvas::SaveLayer(const Paint& paint,
     if (!isolated_backdrop_snapshot.has_value()) {
       backdrop_filter_contents =
           WrapInput(renderer_, backdrop_filter,
-                    FilterInput::Make(std::move(input_texture)), 0.5f);
+                    FilterInput::Make(std::move(input_texture)));
       backdrop_filter_contents->SetEffectTransform(
           transform_stack_.back().transform.Basis());
       backdrop_filter_contents->SetRenderingMode(
