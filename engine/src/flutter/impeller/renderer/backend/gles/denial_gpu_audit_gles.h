@@ -33,6 +33,8 @@ enum class DenialGpuAuditStage : uint8_t {
   kRootClipDirect,
   kRootClipStencil,
   kRootClipCover,
+  kRootClipReplayStencil,
+  kRootClipReplayCover,
   kRootSolid,
   kRootText,
   kRootAtlas,

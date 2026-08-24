@@ -51,7 +51,8 @@ class ClipContents {
 
   bool Render(const ContentContext& renderer,
               RenderPass& pass,
-              uint32_t clip_depth) const;
+              uint32_t clip_depth,
+              bool is_backdrop_replay = false) const;
 
  private:
   // Pre-tessellated clip geometry.
