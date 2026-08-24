@@ -69,7 +69,8 @@ ClipCoverage ClipContents::GetClipCoverage(
 
 bool ClipContents::Render(const ContentContext& renderer,
                           RenderPass& pass,
-                          uint32_t clip_depth) const {
+                          uint32_t clip_depth,
+                          bool is_backdrop_replay) const {
   if (!clip_geometry_.vertex_buffer) {
     return true;
   }
@@ -124,7 +125,9 @@ bool ClipContents::Render(const ContentContext& renderer,
           ContentContextOptions::StencilMode::kStencilIncrementAll;
       break;
   }
-  pass.SetCommandAuditCategory(CommandAuditCategory::kClipStencil);
+  pass.SetCommandAuditCategory(is_backdrop_replay
+                                   ? CommandAuditCategory::kClipReplayStencil
+                                   : CommandAuditCategory::kClipStencil);
   pass.SetPipeline(renderer.GetClipPipeline(options));
 
   VS::BindFrameInfo(pass,
@@ -156,7 +159,9 @@ bool ClipContents::Render(const ContentContext& renderer,
   pass.SetVertexBuffer(
       CreateVertexBuffer(points, renderer.GetTransientsDataBuffer()));
 
-  pass.SetCommandAuditCategory(CommandAuditCategory::kClipCover);
+  pass.SetCommandAuditCategory(is_backdrop_replay
+                                   ? CommandAuditCategory::kClipReplayCover
+                                   : CommandAuditCategory::kClipCover);
   pass.SetPipeline(renderer.GetClipPipeline(options));
 
   info.mvp = pass.GetOrthographicTransform();

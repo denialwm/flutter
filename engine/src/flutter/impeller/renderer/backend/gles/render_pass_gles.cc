@@ -571,6 +571,12 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
         case CommandAuditCategory::kClipCover:
           command_audit_stage = DenialGpuAuditStage::kRootClipCover;
           break;
+        case CommandAuditCategory::kClipReplayStencil:
+          command_audit_stage = DenialGpuAuditStage::kRootClipReplayStencil;
+          break;
+        case CommandAuditCategory::kClipReplayCover:
+          command_audit_stage = DenialGpuAuditStage::kRootClipReplayCover;
+          break;
         case CommandAuditCategory::kSolid:
           command_audit_stage = DenialGpuAuditStage::kRootSolid;
           break;

@@ -28,6 +28,8 @@ enum class CommandAuditCategory : uint8_t {
   kClipDirect,
   kClipStencil,
   kClipCover,
+  kClipReplayStencil,
+  kClipReplayCover,
   kSolid,
   kText,
   kAtlas,
