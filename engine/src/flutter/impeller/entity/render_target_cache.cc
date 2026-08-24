@@ -72,6 +72,10 @@ RenderTarget RenderTargetCache::CreateOffscreen(
       .mip_count = static_cast<size_t>(mip_count),
       .has_msaa = false,
       .has_depth_stencil = stencil_attachment_config.has_value(),
+      .depth_stencil_storage_mode =
+          stencil_attachment_config.has_value()
+              ? stencil_attachment_config->storage_mode
+              : StorageMode::kDeviceTransient,
   };
 
   if (CacheEnabled()) {
@@ -132,6 +136,10 @@ RenderTarget RenderTargetCache::CreateOffscreenMSAA(
       .mip_count = static_cast<size_t>(mip_count),
       .has_msaa = true,
       .has_depth_stencil = stencil_attachment_config.has_value(),
+      .depth_stencil_storage_mode =
+          stencil_attachment_config.has_value()
+              ? stencil_attachment_config->storage_mode
+              : StorageMode::kDeviceTransient,
   };
   if (CacheEnabled()) {
     for (RenderTargetData& render_target_data : render_target_data_) {

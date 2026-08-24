@@ -145,6 +145,40 @@ TEST_P(RenderTargetCacheTest, CachedTextureGetsNewAttachmentConfig) {
   EXPECT_EQ(color2.clear_color, Color::Red());
 }
 
+TEST_P(RenderTargetCacheTest, SeparatesPersistentDepthStencilStorage) {
+  auto render_target_cache = RenderTargetCache(
+      GetContext()->GetResourceAllocator(), /*keep_alive_frame_count=*/4);
+
+  render_target_cache.Start();
+  RenderTarget transient =
+      render_target_cache.CreateOffscreen(*GetContext(), {100, 100}, 1);
+  render_target_cache.End();
+
+  render_target_cache.Start();
+  RenderTarget persistent = render_target_cache.CreateOffscreen(
+      *GetContext(), {100, 100}, 1, "Persistent Depth Stencil",
+      RenderTarget::kDefaultColorAttachmentConfig,
+      RenderTarget::AttachmentConfig{
+          .storage_mode = StorageMode::kDevicePrivate,
+          .load_action = LoadAction::kClear,
+          .store_action = StoreAction::kDontCare,
+      });
+  render_target_cache.End();
+
+  ASSERT_TRUE(transient.GetDepthAttachment().has_value());
+  ASSERT_TRUE(persistent.GetDepthAttachment().has_value());
+  EXPECT_NE(transient.GetDepthAttachment()->texture,
+            persistent.GetDepthAttachment()->texture);
+  EXPECT_EQ(transient.GetDepthAttachment()
+                ->texture->GetTextureDescriptor()
+                .storage_mode,
+            StorageMode::kDeviceTransient);
+  EXPECT_EQ(persistent.GetDepthAttachment()
+                ->texture->GetTextureDescriptor()
+                .storage_mode,
+            StorageMode::kDevicePrivate);
+}
+
 TEST_P(RenderTargetCacheTest, CreateWithEmptySize) {
   auto render_target_cache = RenderTargetCache(
       GetContext()->GetResourceAllocator(), /*keep_alive_frame_count=*/0);

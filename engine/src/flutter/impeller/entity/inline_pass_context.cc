@@ -18,8 +18,12 @@
 namespace impeller {
 
 InlinePassContext::InlinePassContext(const ContentContext& renderer,
-                                     EntityPassTarget& pass_target)
-    : renderer_(renderer), pass_target_(pass_target) {}
+                                     EntityPassTarget& pass_target,
+                                     bool preserve_depth_stencil_between_passes)
+    : renderer_(renderer),
+      pass_target_(pass_target),
+      preserve_depth_stencil_between_passes_(
+          preserve_depth_stencil_between_passes) {}
 
 InlinePassContext::~InlinePassContext() {
   EndPass();
@@ -120,20 +124,24 @@ const std::shared_ptr<RenderPass>& InlinePassContext::GetRenderPass() {
                       "EntityPass render target.";
     return pass_;
   }
-  depth->load_action = LoadAction::kClear;
-  depth->store_action = StoreAction::kDontCare;
-  pass_target_.target_.SetDepthAttachment(depth.value());
-
   auto stencil = pass_target_.GetRenderTarget().GetStencilAttachment();
   if (!depth.has_value() || !stencil.has_value()) {
     VALIDATION_LOG << "Stencil/Depth attachment unexpectedly missing from the "
                       "EntityPass render target.";
     return pass_;
   }
-  stencil->load_action = LoadAction::kClear;
-  stencil->store_action = StoreAction::kDontCare;
-  depth->load_action = LoadAction::kClear;
-  depth->store_action = StoreAction::kDontCare;
+  const bool load_preserved_depth_stencil =
+      preserve_depth_stencil_between_passes_ && pass_count_ > 0u;
+  depth->load_action =
+      load_preserved_depth_stencil ? LoadAction::kLoad : LoadAction::kClear;
+  depth->store_action = preserve_depth_stencil_between_passes_
+                            ? StoreAction::kStore
+                            : StoreAction::kDontCare;
+  stencil->load_action =
+      load_preserved_depth_stencil ? LoadAction::kLoad : LoadAction::kClear;
+  stencil->store_action = preserve_depth_stencil_between_passes_
+                              ? StoreAction::kStore
+                              : StoreAction::kDontCare;
   pass_target_.target_.SetDepthAttachment(depth);
   pass_target_.target_.SetStencilAttachment(stencil.value());
   pass_target_.target_.SetColorAttachment(color0, 0);
@@ -151,6 +159,10 @@ const std::shared_ptr<RenderPass>& InlinePassContext::GetRenderPass() {
 
 uint32_t InlinePassContext::GetPassCount() const {
   return pass_count_;
+}
+
+bool InlinePassContext::PreservesDepthStencilBetweenPasses() const {
+  return preserve_depth_stencil_between_passes_;
 }
 
 }  // namespace impeller
