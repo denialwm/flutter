@@ -630,8 +630,14 @@ static void EncodeViewport(const ProcTableGLES& gl,
         case CommandAuditCategory::kTiledTexture:
           command_audit_stage = DenialGpuAuditStage::kRootTiledTexture;
           break;
-        case CommandAuditCategory::kClip:
-          command_audit_stage = DenialGpuAuditStage::kRootClip;
+        case CommandAuditCategory::kClipDirect:
+          command_audit_stage = DenialGpuAuditStage::kRootClipDirect;
+          break;
+        case CommandAuditCategory::kClipStencil:
+          command_audit_stage = DenialGpuAuditStage::kRootClipStencil;
+          break;
+        case CommandAuditCategory::kClipCover:
+          command_audit_stage = DenialGpuAuditStage::kRootClipCover;
           break;
         case CommandAuditCategory::kSolid:
           command_audit_stage = DenialGpuAuditStage::kRootSolid;
