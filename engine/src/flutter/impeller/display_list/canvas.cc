@@ -81,6 +81,9 @@ struct BackdropLayerPlanAudit {
   uint64_t multisample_pixels = 0;
   uint64_t direct_attempts = 0;
   uint64_t direct_predicate_accepts = 0;
+  uint64_t direct_filter_evaluations = 0;
+  uint64_t direct_snapshot_builds = 0;
+  uint64_t direct_snapshot_hits = 0;
   std::array<uint64_t, 9> direct_rejections = {};
   bool first_report_pending = true;
 };
@@ -108,6 +111,12 @@ enum class BackdropEpochExecution {
   kSnapshotFlip,
   kSnapshotReuse,
   kPlanMiss,
+};
+
+enum class BackdropDirectSource {
+  kFilterEvaluation,
+  kSnapshotBuild,
+  kSnapshotHit,
 };
 
 static bool IsDenialRenderAuditEnabled() {
@@ -147,18 +156,30 @@ static void RecordBackdropEpochExecution(BackdropEpochExecution execution) {
   }
 }
 
-static void RecordBackdropLayerPlan(ISize size,
-                                    bool use_msaa,
-                                    bool is_direct = false) {
+static void RecordBackdropLayerPlan(
+    ISize size,
+    bool use_msaa,
+    std::optional<BackdropDirectSource> direct_source = std::nullopt) {
   if (!IsDenialRenderAuditEnabled()) {
     return;
   }
 
   BackdropLayerPlanAudit& audit = GetBackdropLayerPlanAudit();
   const uint64_t pixels = static_cast<uint64_t>(size.Area());
-  if (is_direct) {
+  if (direct_source.has_value()) {
     audit.direct_layers++;
     audit.direct_pixels += pixels;
+    switch (direct_source.value()) {
+      case BackdropDirectSource::kFilterEvaluation:
+        audit.direct_filter_evaluations++;
+        break;
+      case BackdropDirectSource::kSnapshotBuild:
+        audit.direct_snapshot_builds++;
+        break;
+      case BackdropDirectSource::kSnapshotHit:
+        audit.direct_snapshot_hits++;
+        break;
+    }
   } else if (use_msaa) {
     audit.multisample_layers++;
     audit.multisample_pixels += pixels;
@@ -217,6 +238,9 @@ static void FlushBackdropLayerPlanAudit() {
       << audit.direct_pixels * 4u + audit.single_sample_pixels * 3u
       << " direct_attempts=" << audit.direct_attempts
       << " direct_predicate_accepts=" << audit.direct_predicate_accepts
+      << " direct_filter_evaluations=" << audit.direct_filter_evaluations
+      << " direct_snapshot_builds=" << audit.direct_snapshot_builds
+      << " direct_snapshot_hits=" << audit.direct_snapshot_hits
       << " reject_missing_backdrop=" << audit.direct_rejections[0]
       << " reject_content_msaa=" << audit.direct_rejections[1]
       << " reject_uncontained_bounds=" << audit.direct_rejections[2]
@@ -224,7 +248,7 @@ static void FlushBackdropLayerPlanAudit() {
       << " reject_restore_blend=" << audit.direct_rejections[4]
       << " reject_restore_alpha=" << audit.direct_rejections[5]
       << " reject_restore_effects=" << audit.direct_rejections[6]
-      << " reject_backdrop_id=" << audit.direct_rejections[7]
+      << " reject_shared_backdrop=" << audit.direct_rejections[7]
       << " reject_inherited_opacity=" << audit.direct_rejections[8];
   audit = BackdropLayerPlanAudit{.period_start = now,
                                  .first_report_pending = false};
@@ -1820,6 +1844,21 @@ void Canvas::SaveLayer(const Paint& paint,
                                       ->GetCapabilities()
                                       ->GetMaximumRenderPassAttachmentSize());
 
+  // Flutter's retained-layer diff supplies a versioned cache token for every
+  // backdrop filter. Sharing is a separate semantic fact: only multiple uses
+  // of the same token in this DisplayList must observe one common input.
+  bool will_cache_backdrop_texture = false;
+  BackdropData* backdrop_data = nullptr;
+  size_t backdrop_count = 1u;
+  if (backdrop_filter && backdrop_id.has_value()) {
+    auto backdrop_data_it = backdrop_data_.find(backdrop_id.value());
+    if (backdrop_data_it != backdrop_data_.end()) {
+      backdrop_data = &backdrop_data_it->second;
+      will_cache_backdrop_texture = backdrop_data->backdrop_count > 1u;
+      backdrop_count = backdrop_data->backdrop_count;
+    }
+  }
+
   // A backdrop layer restored with kSrc is an assignment, not an opacity
   // group. When its child program contains no geometric draws, the exact same
   // expression can be evaluated in the parent target:
@@ -1834,7 +1873,8 @@ void Canvas::SaveLayer(const Paint& paint,
   // relationship instead of an allocation request. The DisplayList proof is
   // conservative: geometric content, nested layers, vertices, atlases,
   // shadows, and nested DisplayLists all reject the plan. Paint attributes on
-  // the restore and grouped/cached backdrops also retain the materialized path.
+  // the restore and semantically grouped backdrops retain the materialized
+  // path. A single-use cache identity does not change the expression.
   const bool restore_has_effects =
       paint.color_source != nullptr || paint.color_filter != nullptr ||
       paint.image_filter != nullptr || paint.invert_colors ||
@@ -1849,7 +1889,7 @@ void Canvas::SaveLayer(const Paint& paint,
       .restore_blend_mode = paint.blend_mode,
       .restore_is_opaque = paint.color.IsOpaque(),
       .restore_has_effects = restore_has_effects,
-      .has_backdrop_id = backdrop_id.has_value(),
+      .shares_backdrop_input = will_cache_backdrop_texture,
       .inherited_opacity = transform_stack_.back().distributed_opacity,
   };
   const uint32_t direct_plan_rejections =
@@ -1875,7 +1915,22 @@ void Canvas::SaveLayer(const Paint& paint,
   // Backdrop filter state, ignored if there is no BDF.
   std::shared_ptr<FilterContents> backdrop_filter_contents;
   std::optional<Snapshot> isolated_backdrop_snapshot;
+  bool isolated_backdrop_cache_hit = false;
   Point local_position = Point(0, 0);
+  auto render_backdrop_snapshot = [&](const Snapshot& snapshot) {
+    std::shared_ptr<TextureContents> contents = TextureContents::MakeRect(
+        subpass_coverage.Shift(-GetGlobalPassPosition()));
+    auto scaled = subpass_coverage.TransformBounds(snapshot.transform.Invert());
+    contents->SetTexture(snapshot.texture);
+    contents->SetSourceRect(scaled);
+    contents->SetSamplerDescriptor(snapshot.sampler_descriptor);
+
+    Entity backdrop_entity;
+    backdrop_entity.SetContents(std::move(contents));
+    backdrop_entity.SetClipDepth(++current_depth_);
+    backdrop_entity.SetBlendMode(paint.blend_mode);
+    backdrop_entity.Render(renderer_, GetCurrentRenderPass());
+  };
   if (backdrop_filter) {
     local_position = subpass_coverage.GetOrigin() - GetGlobalPassPosition();
     Canvas::BackdropFilterProc backdrop_filter_proc =
@@ -1894,23 +1949,6 @@ void Canvas::SaveLayer(const Paint& paint,
     // If the backdrop ID is not nullopt and there is more than one usage
     // of it in the current scene, cache the backdrop texture and remove it from
     // the current entity pass flip.
-    bool will_cache_backdrop_texture = false;
-    BackdropData* backdrop_data = nullptr;
-    // If we've reached this point, there is at least one backdrop filter. But
-    // potentially more if there is a backdrop id. We may conditionally set this
-    // to a higher value in the if block below.
-    size_t backdrop_count = 1;
-    if (backdrop_id.has_value()) {
-      std::unordered_map<int64_t, BackdropData>::iterator backdrop_data_it =
-          backdrop_data_.find(backdrop_id.value());
-      if (backdrop_data_it != backdrop_data_.end()) {
-        backdrop_data = &backdrop_data_it->second;
-        will_cache_backdrop_texture =
-            backdrop_data_it->second.backdrop_count > 1;
-        backdrop_count = backdrop_data_it->second.backdrop_count;
-      }
-    }
-
     auto consume_backdrop_count = [&]() {
       if (!backdrop_data || !backdrop_data->backdrop_count_consumed) {
         backdrop_count_ -= backdrop_count;
@@ -1918,23 +1956,6 @@ void Canvas::SaveLayer(const Paint& paint,
           backdrop_data->backdrop_count_consumed = true;
         }
       }
-    };
-
-    auto render_backdrop_snapshot = [&](const Snapshot& snapshot) {
-      std::shared_ptr<TextureContents> contents = TextureContents::MakeRect(
-          subpass_coverage.Shift(-GetGlobalPassPosition()));
-      auto scaled =
-          subpass_coverage.TransformBounds(snapshot.transform.Invert());
-      contents->SetTexture(snapshot.texture);
-      contents->SetSourceRect(scaled);
-      contents->SetSamplerDescriptor(snapshot.sampler_descriptor);
-
-      Entity backdrop_entity;
-      backdrop_entity.SetContents(std::move(contents));
-      backdrop_entity.SetClipDepth(++current_depth_);
-      backdrop_entity.SetBlendMode(paint.blend_mode);
-      backdrop_entity.Render(renderer_, GetCurrentRenderPass());
-      Save(0);
     };
 
     const bool can_cache_across_frames = backdrop_id.has_value() &&
@@ -1950,9 +1971,11 @@ void Canvas::SaveLayer(const Paint& paint,
         if (will_cache_backdrop_texture) {
           backdrop_data->shared_filter_snapshot = cached;
           render_backdrop_snapshot(cached.value());
+          Save(0);
           return;
         }
         isolated_backdrop_snapshot = std::move(cached);
+        isolated_backdrop_cache_hit = true;
       }
     }
 
@@ -2034,7 +2057,10 @@ void Canvas::SaveLayer(const Paint& paint,
           backdrop_data->shared_filter_snapshot = render_persistent_snapshot();
         }
         maybe_snapshot = backdrop_data->shared_filter_snapshot;
-      } else if (can_cache_across_frames) {
+      } else if (can_cache_across_frames &&
+                 (!can_render_backdrop_directly ||
+                  renderer_.ShouldMaterializeBackdropSnapshot(
+                      backdrop_id.value()))) {
         maybe_snapshot = render_persistent_snapshot();
       }
 
@@ -2057,20 +2083,28 @@ void Canvas::SaveLayer(const Paint& paint,
   paint_copy.color.alpha *= transform_stack_.back().distributed_opacity;
   transform_stack_.back().distributed_opacity = 1.0;
 
-  if (can_render_backdrop_directly && backdrop_filter_contents &&
-      !isolated_backdrop_snapshot.has_value()) {
+  if (can_render_backdrop_directly &&
+      (backdrop_filter_contents || isolated_backdrop_snapshot.has_value())) {
     // The physical subpass used to provide this crop implicitly. A logical
     // scope must carry the demanded output region explicitly when its filter
     // is evaluated directly in the parent target.
-    backdrop_filter_contents->SetCoverageHint(subpass_coverage);
+    if (isolated_backdrop_snapshot.has_value()) {
+      render_backdrop_snapshot(isolated_backdrop_snapshot.value());
+    } else {
+      backdrop_filter_contents->SetCoverageHint(subpass_coverage);
 
-    Entity backdrop_entity;
-    backdrop_entity.SetContents(std::move(backdrop_filter_contents));
-    backdrop_entity.SetBlendMode(BlendMode::kSrc);
-    AddRenderEntityToCurrentPass(backdrop_entity);
+      Entity backdrop_entity;
+      backdrop_entity.SetContents(std::move(backdrop_filter_contents));
+      backdrop_entity.SetBlendMode(BlendMode::kSrc);
+      AddRenderEntityToCurrentPass(backdrop_entity);
+    }
 
-    RecordBackdropLayerPlan(subpass_size, /*use_msaa=*/false,
-                            /*is_direct=*/true);
+    const BackdropDirectSource direct_source =
+        !isolated_backdrop_snapshot.has_value()
+            ? BackdropDirectSource::kFilterEvaluation
+        : isolated_backdrop_cache_hit ? BackdropDirectSource::kSnapshotHit
+                                      : BackdropDirectSource::kSnapshotBuild;
+    RecordBackdropLayerPlan(subpass_size, /*use_msaa=*/false, direct_source);
 
     // The direct backdrop draw consumes the depth slot that the materialized
     // path would have used for its restore. Child operations retain their
