@@ -264,8 +264,10 @@ static void EncodeViewport(const ProcTableGLES& gl,
       static_cast<uint64_t>(std::max<int64_t>(0, target_size.Area()));
   DenialGpuAuditGLES& denial_gpu_audit = GetDenialGpuAuditGLES();
   denial_gpu_audit.Poll(gl);
-  const DenialGpuAuditGLES::Token pass_audit_token = denial_gpu_audit.Begin(
-      gl, DenialGpuAuditGLES::ClassifyPass(pass_data.label), target_pixels);
+  const DenialGpuAuditStage pass_audit_stage =
+      DenialGpuAuditGLES::ClassifyPass(pass_data.label);
+  const DenialGpuAuditGLES::Token pass_audit_token =
+      denial_gpu_audit.Begin(gl, pass_audit_stage, target_pixels);
   fml::ScopedCleanupClosure finish_pass_audit(
       [&] { denial_gpu_audit.End(gl, pass_audit_token); });
 #ifdef IMPELLER_DEBUG
@@ -614,20 +616,34 @@ static void EncodeViewport(const ProcTableGLES& gl,
     }
 
     std::optional<DenialGpuAuditStage> command_audit_stage;
-    switch (command.audit_category) {
-      case CommandAuditCategory::kNone:
-        break;
-      case CommandAuditCategory::kBackdropRestore:
-        command_audit_stage = DenialGpuAuditStage::kBackdropRestore;
-        break;
-      case CommandAuditCategory::kMsaaBackdropRestore:
-        command_audit_stage = DenialGpuAuditStage::kMsaaBackdropRestore;
-        break;
+    if (pass_audit_stage == DenialGpuAuditStage::kRootPass) {
+      switch (command.audit_category) {
+        case CommandAuditCategory::kNone:
+          command_audit_stage = DenialGpuAuditStage::kRootOtherDraw;
+          break;
+        case CommandAuditCategory::kSceneTexture:
+          command_audit_stage = DenialGpuAuditStage::kRootSceneTexture;
+          break;
+        case CommandAuditCategory::kExternalTexture:
+          command_audit_stage = DenialGpuAuditStage::kRootExternalTexture;
+          break;
+        case CommandAuditCategory::kBackdropRestore:
+          command_audit_stage = DenialGpuAuditStage::kBackdropRestore;
+          break;
+        case CommandAuditCategory::kMsaaBackdropRestore:
+          command_audit_stage = DenialGpuAuditStage::kMsaaBackdropRestore;
+          break;
+      }
+    }
+    uint64_t command_pixels = target_pixels;
+    if (command.scissor.has_value()) {
+      command_pixels = static_cast<uint64_t>(
+          std::max<int64_t>(0, command.scissor->GetSize().Area()));
     }
     const DenialGpuAuditGLES::Token command_audit_token =
         command_audit_stage.has_value()
             ? denial_gpu_audit.Begin(gl, command_audit_stage.value(),
-                                     target_pixels)
+                                     command_pixels)
             : DenialGpuAuditGLES::Token{};
 
     // A non-instanced draw of the bound geometry. Used directly for ordinary

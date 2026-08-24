@@ -22,6 +22,8 @@ namespace impeller {
 
 enum class CommandAuditCategory : uint8_t {
   kNone,
+  kSceneTexture,
+  kExternalTexture,
   kBackdropRestore,
   kMsaaBackdropRestore,
 };

@@ -33,7 +33,8 @@ class DlImageImpeller : public flutter::DlImage {
 
   static sk_sp<DlImageImpeller> Make(
       std::shared_ptr<Texture> texture,
-      OwningContext owning_context = OwningContext::kIO);
+      OwningContext owning_context = OwningContext::kIO,
+      bool is_external_texture = false);
 
   static sk_sp<DlImageImpeller> MakeFromYUVTextures(
       AiksContext* aiks_context,
@@ -45,7 +46,8 @@ class DlImageImpeller : public flutter::DlImage {
 class DlImageImpellerTexture final : public DlImageImpeller {
  public:
   DlImageImpellerTexture(std::shared_ptr<Texture> texture,
-                         OwningContext owning_context);
+                         OwningContext owning_context,
+                         bool is_external_texture = false);
 
   ~DlImageImpellerTexture() override;
 
@@ -55,6 +57,10 @@ class DlImageImpellerTexture final : public DlImageImpeller {
 
   flutter::DlColorSpace GetColorSpace() const override;
   bool isOpaque() const override;
+
+  // |DlImage|
+  bool isExternalTexture() const override { return is_external_texture_; }
+
   bool isUIThreadSafe() const override;
   flutter::DlISize GetSize() const override;
   size_t GetApproximateByteSize() const override;
@@ -63,6 +69,7 @@ class DlImageImpellerTexture final : public DlImageImpeller {
  private:
   std::shared_ptr<Texture> texture_;
   OwningContext owning_context_;
+  bool is_external_texture_ = false;
 
   DlImageImpellerTexture(const DlImageImpellerTexture&) = delete;
   DlImageImpellerTexture& operator=(const DlImageImpellerTexture&) = delete;

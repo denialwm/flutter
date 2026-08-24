@@ -18,8 +18,8 @@
 namespace impeller {
 
 // Physical GLES stages measured by the Denial render audit. Pass stages are
-// mutually exclusive. Restore and resolve stages are nested subspans and are
-// reported separately rather than added to the accounted pass total.
+// mutually exclusive. Root-command, restore, and resolve stages are nested
+// subspans and are reported separately from the accounted pass total.
 enum class DenialGpuAuditStage : uint8_t {
   kRootPass,
   kBackdropLayerColor,
@@ -27,6 +27,9 @@ enum class DenialGpuAuditStage : uint8_t {
   kBackdropBlurVertical,
   kBackdropBlurHorizontal,
   kOtherPass,
+  kRootSceneTexture,
+  kRootExternalTexture,
+  kRootOtherDraw,
   kBackdropRestore,
   kMsaaBackdropRestore,
   kResolve,

@@ -1628,7 +1628,8 @@ void Canvas::DrawImageRect(const std::shared_ptr<Texture>& image,
                            Rect dest,
                            const Paint& paint,
                            const SamplerDescriptor& sampler,
-                           SourceRectConstraint src_rect_constraint) {
+                           SourceRectConstraint src_rect_constraint,
+                           bool is_external_texture) {
   if (!image || source.IsEmpty() || dest.IsEmpty()) {
     return;
   }
@@ -1660,6 +1661,7 @@ void Canvas::DrawImageRect(const std::shared_ptr<Texture>& image,
 
   auto texture_contents = TextureContents::MakeRect(dest);
   texture_contents->SetTexture(image);
+  texture_contents->SetIsExternalTexture(is_external_texture);
   texture_contents->SetSourceRect(*clipped_source);
   texture_contents->SetStrictSourceRect(src_rect_constraint ==
                                         SourceRectConstraint::kStrict);
