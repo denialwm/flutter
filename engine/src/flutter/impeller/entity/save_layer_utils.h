@@ -27,7 +27,7 @@ struct BackdropLayerDirectPlanInputs {
   BlendMode restore_blend_mode = BlendMode::kSrcOver;
   bool restore_is_opaque = false;
   bool restore_has_effects = false;
-  bool has_backdrop_id = false;
+  bool shares_backdrop_input = false;
   Scalar inherited_opacity = 1.0f;
 };
 
@@ -39,7 +39,7 @@ enum class BackdropLayerDirectRejection : uint32_t {
   kRestoreBlendMode = 1u << 4u,
   kRestoreNotOpaque = 1u << 5u,
   kRestoreHasEffects = 1u << 6u,
-  kBackdropId = 1u << 7u,
+  kSharedBackdropInput = 1u << 7u,
   kInheritedOpacity = 1u << 8u,
 };
 
