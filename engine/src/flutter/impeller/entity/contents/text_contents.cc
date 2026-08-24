@@ -245,6 +245,8 @@ bool TextContents::Render(const ContentContext& renderer,
     return true;
   }
 
+  pass.SetCommandAuditCategory(CommandAuditCategory::kText);
+
   GlyphAtlas::Type type = frame_->GetAtlasType();
   const std::shared_ptr<GlyphAtlas>& atlas =
       renderer.GetLazyGlyphAtlas()->CreateOrGetGlyphAtlas(

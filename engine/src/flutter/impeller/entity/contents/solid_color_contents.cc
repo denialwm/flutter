@@ -52,6 +52,7 @@ std::optional<Rect> SolidColorContents::GetCoverage(
 bool SolidColorContents::Render(const ContentContext& renderer,
                                 const Entity& entity,
                                 RenderPass& pass) const {
+  pass.SetCommandAuditCategory(CommandAuditCategory::kSolid);
   using VS = SolidFillPipeline::VertexShader;
   using FS = SolidFillPipeline::FragmentShader;
   auto& data_host_buffer = renderer.GetTransientsDataBuffer();

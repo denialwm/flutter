@@ -92,6 +92,7 @@ bool ClipContents::Render(const ContentContext& renderer,
        clip_geometry_.mode == GeometryResult::Mode::kPreventOverdraw) &&
       clip_op_ == Entity::ClipOperation::kDifference) {
     options.depth_write_enabled = true;
+    pass.SetCommandAuditCategory(CommandAuditCategory::kClip);
     pass.SetPipeline(renderer.GetClipPipeline(options));
 
     VS::BindFrameInfo(pass,
@@ -123,6 +124,7 @@ bool ClipContents::Render(const ContentContext& renderer,
           ContentContextOptions::StencilMode::kStencilIncrementAll;
       break;
   }
+  pass.SetCommandAuditCategory(CommandAuditCategory::kClip);
   pass.SetPipeline(renderer.GetClipPipeline(options));
 
   VS::BindFrameInfo(pass,
@@ -154,6 +156,7 @@ bool ClipContents::Render(const ContentContext& renderer,
   pass.SetVertexBuffer(
       CreateVertexBuffer(points, renderer.GetTransientsDataBuffer()));
 
+  pass.SetCommandAuditCategory(CommandAuditCategory::kClip);
   pass.SetPipeline(renderer.GetClipPipeline(options));
 
   info.mvp = pass.GetOrthographicTransform();

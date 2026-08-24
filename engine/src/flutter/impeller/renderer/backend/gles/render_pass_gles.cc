@@ -559,6 +559,21 @@ void RenderPassGLES::ResetGLState(const ProcTableGLES& gl) {
         case CommandAuditCategory::kExternalTexture:
           command_audit_stage = DenialGpuAuditStage::kRootExternalTexture;
           break;
+        case CommandAuditCategory::kTiledTexture:
+          command_audit_stage = DenialGpuAuditStage::kRootTiledTexture;
+          break;
+        case CommandAuditCategory::kClip:
+          command_audit_stage = DenialGpuAuditStage::kRootClip;
+          break;
+        case CommandAuditCategory::kSolid:
+          command_audit_stage = DenialGpuAuditStage::kRootSolid;
+          break;
+        case CommandAuditCategory::kText:
+          command_audit_stage = DenialGpuAuditStage::kRootText;
+          break;
+        case CommandAuditCategory::kAtlas:
+          command_audit_stage = DenialGpuAuditStage::kRootAtlas;
+          break;
         case CommandAuditCategory::kBackdropRestore:
           command_audit_stage = DenialGpuAuditStage::kBackdropRestore;
           break;

@@ -24,6 +24,11 @@ enum class CommandAuditCategory : uint8_t {
   kNone,
   kSceneTexture,
   kExternalTexture,
+  kTiledTexture,
+  kClip,
+  kSolid,
+  kText,
+  kAtlas,
   kBackdropRestore,
   kMsaaBackdropRestore,
 };
