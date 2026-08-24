@@ -101,7 +101,8 @@ enum class ContentBoundsPromise {
 class LazyRenderingConfig {
  public:
   LazyRenderingConfig(ContentContext& renderer,
-                      std::unique_ptr<EntityPassTarget> p_entity_pass_target);
+                      std::unique_ptr<EntityPassTarget> p_entity_pass_target,
+                      bool preserve_depth_stencil_between_passes = false);
 
   LazyRenderingConfig(LazyRenderingConfig&&) = default;
 

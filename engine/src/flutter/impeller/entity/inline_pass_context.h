@@ -17,7 +17,8 @@ namespace impeller {
 class InlinePassContext {
  public:
   InlinePassContext(const ContentContext& renderer,
-                    EntityPassTarget& pass_target);
+                    EntityPassTarget& pass_target,
+                    bool preserve_depth_stencil_between_passes = false);
 
   ~InlinePassContext();
 
@@ -33,6 +34,8 @@ class InlinePassContext {
 
   uint32_t GetPassCount() const;
 
+  bool PreservesDepthStencilBetweenPasses() const;
+
   const std::shared_ptr<RenderPass>& GetRenderPass();
 
  private:
@@ -41,6 +44,7 @@ class InlinePassContext {
   std::shared_ptr<CommandBuffer> command_buffer_;
   std::shared_ptr<RenderPass> pass_;
   uint32_t pass_count_ = 0;
+  bool preserve_depth_stencil_between_passes_ = false;
 
   InlinePassContext(const InlinePassContext&) = delete;
 

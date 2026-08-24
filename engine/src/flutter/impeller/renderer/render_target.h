@@ -23,15 +23,18 @@ struct RenderTargetConfig {
   size_t mip_count = 0;
   bool has_msaa = false;
   bool has_depth_stencil = false;
+  StorageMode depth_stencil_storage_mode = StorageMode::kDeviceTransient;
 
   constexpr bool operator==(const RenderTargetConfig& o) const {
     return size == o.size && mip_count == o.mip_count &&
-           has_msaa == o.has_msaa && has_depth_stencil == o.has_depth_stencil;
+           has_msaa == o.has_msaa && has_depth_stencil == o.has_depth_stencil &&
+           depth_stencil_storage_mode == o.depth_stencil_storage_mode;
   }
 
   constexpr size_t Hash() const {
     return fml::HashCombine(size.width, size.height, mip_count, has_msaa,
-                            has_depth_stencil);
+                            has_depth_stencil,
+                            static_cast<uint8_t>(depth_stencil_storage_mode));
   }
 };
 

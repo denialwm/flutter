@@ -308,7 +308,11 @@ RenderTargetConfig RenderTarget::ToConfig() const {
       .size = color_attachment.texture->GetSize(),
       .mip_count = color_attachment.texture->GetMipCount(),
       .has_msaa = color_attachment.resolve_texture != nullptr,
-      .has_depth_stencil = depth_.has_value() && stencil_.has_value()};
+      .has_depth_stencil = depth_.has_value() && stencil_.has_value(),
+      .depth_stencil_storage_mode =
+          depth_.has_value()
+              ? depth_->texture->GetTextureDescriptor().storage_mode
+              : StorageMode::kDeviceTransient};
 }
 
 RenderTargetAllocator::RenderTargetAllocator(

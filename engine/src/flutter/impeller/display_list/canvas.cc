@@ -353,11 +353,19 @@ static const constexpr RenderTarget::AttachmentConfig kDefaultStencilConfig =
         .store_action = StoreAction::kDontCare,
     };
 
+static const constexpr RenderTarget::AttachmentConfig kPersistentStencilConfig =
+    RenderTarget::AttachmentConfig{
+        .storage_mode = StorageMode::kDevicePrivate,
+        .load_action = LoadAction::kDontCare,
+        .store_action = StoreAction::kDontCare,
+    };
+
 static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
     ContentContext& renderer,
     ISize size,
     const Color& clear_color,
-    bool use_msaa) {
+    bool use_msaa,
+    bool preserve_depth_stencil_between_passes = false) {
   const std::shared_ptr<Context>& context = renderer.GetContext();
 
   /// All of the load/store actions are managed by `InlinePassContext` when
@@ -366,6 +374,9 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
   /// changed for the lifetime of the textures.
 
   RenderTarget target;
+  const RenderTarget::AttachmentConfig stencil_config =
+      preserve_depth_stencil_between_passes ? kPersistentStencilConfig
+                                            : kDefaultStencilConfig;
   if (use_msaa && context->GetCapabilities()->SupportsOffscreenMSAA()) {
     target = renderer.GetRenderTargetCache()->CreateOffscreenMSAA(
         /*context=*/*context,
@@ -379,7 +390,7 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
             .load_action = LoadAction::kDontCare,
             .store_action = StoreAction::kMultisampleResolve,
             .clear_color = clear_color},
-        /*stencil_attachment_config=*/kDefaultStencilConfig);
+        /*stencil_attachment_config=*/stencil_config);
   } else {
     target = renderer.GetRenderTargetCache()->CreateOffscreen(
         *context,  // context
@@ -391,8 +402,8 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
             .load_action = LoadAction::kDontCare,
             .store_action = StoreAction::kDontCare,
             .clear_color = clear_color,
-        },                     // color_attachment_config
-        kDefaultStencilConfig  //
+        },              // color_attachment_config
+        stencil_config  //
     );
   }
 
@@ -1605,11 +1616,26 @@ void Canvas::SetupRenderPass() {
   renderer_.GetRenderTargetCache()->Start();
   ColorAttachment color0 = render_target_.GetColorAttachment(0);
 
+  // Set up the clear color of the root pass.
+  color0.clear_color = Color::BlackTransparent();
+  render_target_.SetColorAttachment(color0, 0);
+
+  const TextureDescriptor& root_texture =
+      color0.texture->GetTextureDescriptor();
+  const bool preserve_depth_stencil_between_passes = requires_readback_;
+  if (requires_readback_ && (root_texture.usage & TextureUsage::kShaderRead) &&
+      root_texture.sample_count == SampleCount::kCount1) {
+    requires_readback_ = false;
+  }
+
+  const bool root_preserves_depth_stencil =
+      preserve_depth_stencil_between_passes && !requires_readback_;
   auto& stencil_attachment = render_target_.GetStencilAttachment();
   auto& depth_attachment = render_target_.GetDepthAttachment();
-  if (!stencil_attachment.has_value() || !depth_attachment.has_value()) {
-    // Setup a new root stencil with an optimal configuration if one wasn't
-    // provided by the caller.
+  if (root_preserves_depth_stencil || !stencil_attachment.has_value() ||
+      !depth_attachment.has_value()) {
+    // Inter-pass readback needs persistent attachments. All other root targets
+    // retain the cheaper transient depth/stencil allocation.
     render_target_.SetupDepthStencilAttachments(
         *renderer_.GetContext(),
         *renderer_.GetContext()->GetResourceAllocator(),
@@ -1617,18 +1643,9 @@ void Canvas::SetupRenderPass() {
         renderer_.GetContext()->GetCapabilities()->SupportsOffscreenMSAA() &&
             color0.texture->GetTextureDescriptor().sample_count >
                 SampleCount::kCount1,
-        "ImpellerOnscreen", kDefaultStencilConfig);
-  }
-
-  // Set up the clear color of the root pass.
-  color0.clear_color = Color::BlackTransparent();
-  render_target_.SetColorAttachment(color0, 0);
-
-  const TextureDescriptor& root_texture =
-      color0.texture->GetTextureDescriptor();
-  if (requires_readback_ && (root_texture.usage & TextureUsage::kShaderRead) &&
-      root_texture.sample_count == SampleCount::kCount1) {
-    requires_readback_ = false;
+        "ImpellerOnscreen",
+        root_preserves_depth_stencil ? kPersistentStencilConfig
+                                     : kDefaultStencilConfig);
   }
 
   // If requires_readback is true, then there is a backdrop filter or emulated
@@ -1641,9 +1658,11 @@ void Canvas::SetupRenderPass() {
         CreateRenderTarget(renderer_,                  //
                            color0.texture->GetSize(),  //
                            /*clear_color=*/Color::BlackTransparent(),
-                           /*use_msaa=*/true);
+                           /*use_msaa=*/true,
+                           /*preserve_depth_stencil_between_passes=*/true);
     render_passes_.push_back(
-        LazyRenderingConfig(renderer_, std::move(entity_pass_target)));
+        LazyRenderingConfig(renderer_, std::move(entity_pass_target),
+                            preserve_depth_stencil_between_passes));
   } else {
     auto entity_pass_target = std::make_unique<EntityPassTarget>(
         render_target_,                                                    //
@@ -1651,7 +1670,8 @@ void Canvas::SetupRenderPass() {
         renderer_.GetDeviceCapabilities().SupportsImplicitResolvingMSAA()  //
     );
     render_passes_.push_back(
-        LazyRenderingConfig(renderer_, std::move(entity_pass_target)));
+        LazyRenderingConfig(renderer_, std::move(entity_pass_target),
+                            preserve_depth_stencil_between_passes));
   }
 }
 
@@ -2662,6 +2682,10 @@ std::shared_ptr<Texture> Canvas::FlipBackdrop(Point global_pass_position,
     return nullptr;
   }
 
+  const bool clip_state_is_preserved =
+      !should_use_onscreen && rendering_config.GetInlinePassContext()
+                                  ->PreservesDepthStencilBetweenPasses();
+
   if (should_use_onscreen) {
     ColorAttachment color0 = render_target_.GetColorAttachment(0);
     // When MSAA is being used, we end up overriding the entire backdrop by
@@ -2717,22 +2741,25 @@ std::shared_ptr<Texture> Canvas::FlipBackdrop(Point global_pass_position,
     }
   }
 
-  // Restore any clips that were recorded before the backdrop filter was
-  // applied.
-  auto& replay_entities = clip_coverage_stack_.GetReplayEntities();
-  uint64_t current_depth =
-      post_depth_increment ? current_depth_ - 1 : current_depth_;
-  for (const auto& replay : replay_entities) {
-    if (replay.clip_depth <= current_depth) {
-      continue;
-    }
+  // A resumed pass over the same target loads its existing depth/stencil
+  // attachments. Rebuild clip state only when the flip moved to a different
+  // target or the pass was not configured to preserve those attachments.
+  if (!clip_state_is_preserved) {
+    auto& replay_entities = clip_coverage_stack_.GetReplayEntities();
+    uint64_t current_depth =
+        post_depth_increment ? current_depth_ - 1 : current_depth_;
+    for (const auto& replay : replay_entities) {
+      if (replay.clip_depth <= current_depth) {
+        continue;
+      }
 
-    SetClipScissor(replay.clip_coverage, current_render_pass,
-                   global_pass_position);
-    if (!replay.clip_contents.Render(renderer_, current_render_pass,
-                                     replay.clip_depth,
-                                     /*is_backdrop_replay=*/true)) {
-      VALIDATION_LOG << "Failed to render entity for clip restore.";
+      SetClipScissor(replay.clip_coverage, current_render_pass,
+                     global_pass_position);
+      if (!replay.clip_contents.Render(renderer_, current_render_pass,
+                                       replay.clip_depth,
+                                       /*is_backdrop_replay=*/true)) {
+        VALIDATION_LOG << "Failed to render entity for clip restore.";
+      }
     }
   }
 
@@ -2851,10 +2878,11 @@ void Canvas::EndReplay() {
 
 LazyRenderingConfig::LazyRenderingConfig(
     ContentContext& renderer,
-    std::unique_ptr<EntityPassTarget> p_entity_pass_target)
+    std::unique_ptr<EntityPassTarget> p_entity_pass_target,
+    bool preserve_depth_stencil_between_passes)
     : entity_pass_target_(std::move(p_entity_pass_target)) {
-  inline_pass_context_ =
-      std::make_unique<InlinePassContext>(renderer, *entity_pass_target_);
+  inline_pass_context_ = std::make_unique<InlinePassContext>(
+      renderer, *entity_pass_target_, preserve_depth_stencil_between_passes);
 }
 
 bool LazyRenderingConfig::IsApplyingClearColor() const {

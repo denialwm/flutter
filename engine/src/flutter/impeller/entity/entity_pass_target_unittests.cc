@@ -34,6 +34,45 @@ TEST_P(EntityPassTargetTest, FirstPassPreservesCallerLoadAction) {
             LoadAction::kLoad);
 }
 
+TEST_P(EntityPassTargetTest, PreservesDepthStencilAcrossInlinePasses) {
+  auto content_context = GetContentContext();
+  auto render_target = content_context->GetRenderTargetCache()->CreateOffscreen(
+      *content_context->GetContext(), {100, 100}, /*mip_count=*/1,
+      /*label=*/"Persistent Depth Stencil Test",
+      RenderTarget::kDefaultColorAttachmentConfig,
+      RenderTarget::AttachmentConfig{
+          .storage_mode = StorageMode::kDevicePrivate,
+          .load_action = LoadAction::kClear,
+          .store_action = StoreAction::kStore,
+      });
+
+  EntityPassTarget entity_pass_target(render_target, false, false);
+  InlinePassContext pass_context(
+      *content_context, entity_pass_target,
+      /*preserve_depth_stencil_between_passes=*/true);
+
+  const auto& first_pass = pass_context.GetRenderPass();
+  ASSERT_TRUE(first_pass);
+  ASSERT_TRUE(first_pass->GetRenderTarget().GetDepthAttachment().has_value());
+  ASSERT_TRUE(first_pass->GetRenderTarget().GetStencilAttachment().has_value());
+  EXPECT_EQ(first_pass->GetRenderTarget().GetDepthAttachment()->load_action,
+            LoadAction::kClear);
+  EXPECT_EQ(first_pass->GetRenderTarget().GetDepthAttachment()->store_action,
+            StoreAction::kStore);
+  EXPECT_EQ(first_pass->GetRenderTarget().GetStencilAttachment()->load_action,
+            LoadAction::kClear);
+  EXPECT_EQ(first_pass->GetRenderTarget().GetStencilAttachment()->store_action,
+            StoreAction::kStore);
+
+  ASSERT_TRUE(pass_context.EndPass());
+  const auto& resumed_pass = pass_context.GetRenderPass();
+  ASSERT_TRUE(resumed_pass);
+  EXPECT_EQ(resumed_pass->GetRenderTarget().GetDepthAttachment()->load_action,
+            LoadAction::kLoad);
+  EXPECT_EQ(resumed_pass->GetRenderTarget().GetStencilAttachment()->load_action,
+            LoadAction::kLoad);
+}
+
 TEST_P(EntityPassTargetTest, SwapWithMSAATexture) {
   if (GetContentContext()
           ->GetDeviceCapabilities()
