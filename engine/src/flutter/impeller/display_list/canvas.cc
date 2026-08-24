@@ -2742,9 +2742,13 @@ std::shared_ptr<Texture> Canvas::FlipBackdrop(Point global_pass_position,
   }
 
   // A resumed pass over the same target loads its existing depth/stencil
-  // attachments. Rebuild clip state only when the flip moved to a different
-  // target or the pass was not configured to preserve those attachments.
-  if (!clip_state_is_preserved) {
+  // attachments. The scissor is encoder state rather than attachment state,
+  // however, and every new render pass starts without it. Restore the current
+  // scissor even when replaying the stencil clips is unnecessary.
+  if (clip_state_is_preserved) {
+    SetClipScissor(clip_coverage_stack_.CurrentClipCoverage(),
+                   current_render_pass, global_pass_position);
+  } else {
     auto& replay_entities = clip_coverage_stack_.GetReplayEntities();
     uint64_t current_depth =
         post_depth_increment ? current_depth_ - 1 : current_depth_;
