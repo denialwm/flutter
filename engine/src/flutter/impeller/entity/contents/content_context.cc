@@ -8,8 +8,8 @@
 #include <memory>
 #include <utility>
 
-#include "flutter/common/backdrop_filter_cache_key.h"
 #include "fml/trace_event.h"
+#include "flutter/common/backdrop_filter_cache_key.h"
 #include "impeller/base/validation.h"
 #include "impeller/core/formats.h"
 #include "impeller/core/texture_descriptor.h"
@@ -33,7 +33,6 @@ namespace {
 
 constexpr size_t kBackdropSnapshotCacheMaxEntries = 64u;
 constexpr size_t kBackdropSnapshotCacheMaxBytes = 64u * 1024u * 1024u;
-constexpr size_t kBackdropSnapshotObservationMaxEntries = 128u;
 
 /// A generic version of `Variants` which mostly exists to reduce code size.
 class GenericVariants {
@@ -1030,78 +1029,27 @@ std::optional<Snapshot> ContentContext::GetCachedBackdropSnapshot(int64_t key) {
   return found->second.snapshot;
 }
 
-void ContentContext::RetireOlderBackdropSnapshotGenerations(int64_t key) {
-  const uint32_t family = flutter::GetBackdropFilterCacheFamily(key);
-  if (family == 0u) {
-    return;
-  }
-  for (auto existing = backdrop_snapshot_cache_.begin();
-       existing != backdrop_snapshot_cache_.end();) {
-    if (existing->first != key &&
-        flutter::GetBackdropFilterCacheFamily(existing->first) == family) {
-      backdrop_snapshot_cache_bytes_ -= existing->second.byte_size;
-      existing = backdrop_snapshot_cache_.erase(existing);
-    } else {
-      existing++;
-    }
-  }
-}
-
-bool ContentContext::ShouldMaterializeBackdropSnapshot(int64_t key) {
-  const uint32_t family = flutter::GetBackdropFilterCacheFamily(key);
-  if (family == 0u) {
-    // Legacy IDs do not encode a generation. Preserve their eager caching
-    // behavior because a changing value cannot be distinguished from a new
-    // semantic group.
-    return true;
-  }
-
-  RetireOlderBackdropSnapshotGenerations(key);
-  const uint64_t access = ++backdrop_snapshot_observation_access_;
-  auto [found, inserted] = backdrop_snapshot_observations_.try_emplace(
-      family, BackdropSnapshotObservation{key, 1u, access});
-  if (!inserted) {
-    BackdropSnapshotObservation& observation = found->second;
-    observation.last_access = access;
-    if (observation.key != key) {
-      observation.key = key;
-      observation.observations = 1u;
-    } else if (observation.observations < 2u) {
-      observation.observations++;
-    }
-  }
-
-  while (backdrop_snapshot_observations_.size() >
-         kBackdropSnapshotObservationMaxEntries) {
-    auto oldest = backdrop_snapshot_observations_.end();
-    for (auto candidate = backdrop_snapshot_observations_.begin();
-         candidate != backdrop_snapshot_observations_.end(); ++candidate) {
-      if (candidate->first == family) {
-        continue;
-      }
-      if (oldest == backdrop_snapshot_observations_.end() ||
-          candidate->second.last_access < oldest->second.last_access) {
-        oldest = candidate;
-      }
-    }
-    if (oldest == backdrop_snapshot_observations_.end()) {
-      break;
-    }
-    backdrop_snapshot_observations_.erase(oldest);
-  }
-
-  return found->second.observations >= 2u;
-}
-
 void ContentContext::CacheBackdropSnapshot(int64_t key,
                                            const Snapshot& snapshot) {
   if (!snapshot.texture) {
     return;
   }
 
-  // A filter's previous generations can never become valid again. Retiring
-  // them here prevents moving filters from evicting unrelated snapshots.
-  RetireOlderBackdropSnapshotGenerations(key);
+  const uint32_t family = flutter::GetBackdropFilterCacheFamily(key);
+  if (family != 0u) {
+    // A filter's previous generations can never become valid again. Retiring
+    // them here prevents moving filters from evicting unrelated snapshots.
+    for (auto existing = backdrop_snapshot_cache_.begin();
+         existing != backdrop_snapshot_cache_.end();) {
+      if (existing->first != key &&
+          flutter::GetBackdropFilterCacheFamily(existing->first) == family) {
+        backdrop_snapshot_cache_bytes_ -= existing->second.byte_size;
+        existing = backdrop_snapshot_cache_.erase(existing);
+      } else {
+        existing++;
+      }
+    }
+  }
 
   const size_t byte_size =
       snapshot.texture->GetTextureDescriptor().GetByteSizeOfBaseMipLevel();

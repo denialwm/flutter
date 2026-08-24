@@ -89,31 +89,9 @@ TEST_P(AiksTest, BackdropSnapshotCacheReplacesOlderFamilyGeneration) {
   context.CacheBackdropSnapshot(first, snapshot);
   EXPECT_TRUE(context.GetCachedBackdropSnapshot(first).has_value());
 
-  // A newly changed generation is rendered directly once. Observing it also
-  // retires the obsolete cached generation immediately.
-  EXPECT_FALSE(context.ShouldMaterializeBackdropSnapshot(second));
-  EXPECT_FALSE(context.GetCachedBackdropSnapshot(first).has_value());
-  EXPECT_TRUE(context.ShouldMaterializeBackdropSnapshot(second));
-
   context.CacheBackdropSnapshot(second, snapshot);
+  EXPECT_FALSE(context.GetCachedBackdropSnapshot(first).has_value());
   EXPECT_TRUE(context.GetCachedBackdropSnapshot(second).has_value());
-}
-
-TEST_P(AiksTest, BackdropSnapshotMaterializesOnlyAfterGenerationIsStable) {
-  ContentContext context(GetContext(), nullptr);
-  const int64_t first = flutter::MakeBackdropFilterCacheKey(11u, 1u);
-  const int64_t second = flutter::MakeBackdropFilterCacheKey(11u, 2u);
-
-  EXPECT_FALSE(context.ShouldMaterializeBackdropSnapshot(first));
-  EXPECT_TRUE(context.ShouldMaterializeBackdropSnapshot(first));
-  EXPECT_TRUE(context.ShouldMaterializeBackdropSnapshot(first));
-
-  EXPECT_FALSE(context.ShouldMaterializeBackdropSnapshot(second));
-  EXPECT_TRUE(context.ShouldMaterializeBackdropSnapshot(second));
-
-  // Legacy public backdrop IDs do not encode a generation, so their previous
-  // eager-cache behavior is preserved.
-  EXPECT_TRUE(context.ShouldMaterializeBackdropSnapshot(17));
 }
 
 TEST_P(AiksTest, TransformMultipliesCorrectly) {
