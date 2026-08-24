@@ -33,6 +33,7 @@ enum class CommandAuditCategory : uint8_t {
   kSolid,
   kText,
   kAtlas,
+  kBackdropCachedComposite,
   kBackdropRestore,
   kMsaaBackdropRestore,
 };
