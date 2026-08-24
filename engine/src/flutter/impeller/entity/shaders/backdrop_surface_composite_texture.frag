@@ -5,13 +5,13 @@
 precision highp float;
 
 #include <impeller/constants.glsl>
-#include <impeller/external_texture_oes.glsl>
 #include <impeller/types.glsl>
 
-uniform sampler2D SAMPLER_EXTERNAL_OES_surface_texture_sampler;
+uniform f16sampler2D surface_texture_sampler;
 
 vec4 sampleSurface(highp vec2 coords) {
-  return texture(SAMPLER_EXTERNAL_OES_surface_texture_sampler, coords);
+  return vec4(texture(surface_texture_sampler, coords,
+                      float16_t(kDefaultMipBias)));
 }
 
 #include "backdrop_surface_composite.glsl"
