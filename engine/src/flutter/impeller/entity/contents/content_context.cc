@@ -314,6 +314,8 @@ struct ContentContext::Pipelines {
 // Web doesn't support external texture OpenGL extensions
 #if defined(IMPELLER_ENABLE_OPENGLES) && !defined(FML_OS_EMSCRIPTEN)
   Variants<BackdropSurfaceCompositePipeline> backdrop_surface_composite;
+  Variants<BackdropSurfaceCompositeTexturePipeline>
+      backdrop_surface_composite_texture;
   Variants<TiledTextureExternalPipeline> tiled_texture_external;
   Variants<TiledTextureUvExternalPipeline> tiled_texture_uv_external;
 #endif
@@ -1667,6 +1669,13 @@ PipelineRef ContentContext::GetBackdropSurfaceCompositePipeline(
     ContentContextOptions opts) const {
   FML_DCHECK(GetContext()->GetBackendType() == Context::BackendType::kOpenGLES);
   return GetPipeline(this, pipelines_->backdrop_surface_composite, opts);
+}
+
+PipelineRef ContentContext::GetBackdropSurfaceCompositeTexturePipeline(
+    ContentContextOptions opts) const {
+  FML_DCHECK(GetContext()->GetBackendType() == Context::BackendType::kOpenGLES);
+  return GetPipeline(this, pipelines_->backdrop_surface_composite_texture,
+                     opts);
 }
 
 PipelineRef ContentContext::GetTiledTextureUvExternalPipeline(

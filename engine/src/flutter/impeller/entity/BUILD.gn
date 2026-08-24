@@ -17,6 +17,7 @@ impeller_shaders("entity_shaders") {
     "shaders/blending/advanced_blend.vert",
     "shaders/blending/advanced_blend.frag",
     "shaders/backdrop_surface_composite.frag",
+    "shaders/backdrop_surface_composite_texture.frag",
     "shaders/backdrop_surface_composite.vert",
     "shaders/circle.frag",
     "shaders/circle.vert",

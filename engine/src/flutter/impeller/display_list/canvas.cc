@@ -2839,10 +2839,7 @@ bool Canvas::TryBackdropSurfaceComposite(
           Context::BackendType::kOpenGLES,
       .backdrop_is_texture = backdrop != nullptr,
       .surface_is_external_texture =
-          surface != nullptr && surface->IsExternalTexture() &&
-          surface_texture != nullptr &&
-          surface_texture->GetTextureDescriptor().type ==
-              TextureType::kTextureExternalOES,
+          BackdropSurfaceContents::SupportsSurfaceTexture(surface),
       .surface_sampling_is_direct = surface_sampling_is_direct,
       .surface_blend_mode = surface_entity.GetBlendMode(),
       .transforms_are_translation_scale =

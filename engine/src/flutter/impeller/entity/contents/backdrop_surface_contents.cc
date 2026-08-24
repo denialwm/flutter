@@ -17,6 +17,7 @@
 #if defined(IMPELLER_ENABLE_OPENGLES) && !defined(FML_OS_EMSCRIPTEN)
 #include "impeller/entity/backdrop_surface_composite.frag.h"
 #include "impeller/entity/backdrop_surface_composite.vert.h"
+#include "impeller/entity/backdrop_surface_composite_texture.frag.h"
 #endif
 
 namespace impeller {
@@ -31,7 +32,52 @@ Point MapPoint(const Rect& destination,
   return normalized_source.GetOrigin() + unit * normalized_source.GetSize();
 }
 
+#if defined(IMPELLER_ENABLE_OPENGLES) && !defined(FML_OS_EMSCRIPTEN)
+template <typename FragmentShader>
+void BindCompositeFragmentState(
+    RenderPass& pass,
+    HostBuffer& data,
+    Scalar surface_opacity,
+    Scalar backdrop_opacity,
+    const std::optional<BackdropSurfaceContents::AnalyticRRect>& analytic_clip,
+    const std::shared_ptr<Texture>& backdrop_texture,
+    raw_ptr<const Sampler> backdrop_sampler,
+    const std::shared_ptr<Texture>& scene_texture,
+    raw_ptr<const Sampler> scene_sampler) {
+  typename FragmentShader::FragInfo frag_info;
+  frag_info.surface_opacity = surface_opacity;
+  frag_info.backdrop_opacity = backdrop_opacity;
+  frag_info.has_analytic_clip = analytic_clip.has_value() ? 1.0f : 0.0f;
+  if (analytic_clip.has_value()) {
+    frag_info.clip_bounds = Vector4(analytic_clip->bounds.GetLTRB());
+    frag_info.clip_radii = Vector2(analytic_clip->radii);
+  } else {
+    frag_info.clip_bounds = Vector4();
+    frag_info.clip_radii = Vector2();
+  }
+  FragmentShader::BindFragInfo(pass, data.EmplaceUniform(frag_info));
+  FragmentShader::BindBackdropTextureSampler(pass, backdrop_texture,
+                                             backdrop_sampler);
+  FragmentShader::BindSceneTextureSampler(pass, scene_texture, scene_sampler);
+}
+#endif
+
 }  // namespace
+
+bool BackdropSurfaceContents::SupportsSurfaceTexture(
+    const std::shared_ptr<TextureContents>& surface_contents) {
+  if (!surface_contents || !surface_contents->IsExternalTexture() ||
+      !surface_contents->GetTexture()) {
+    return false;
+  }
+  switch (surface_contents->GetTexture()->GetTextureDescriptor().type) {
+    case TextureType::kTexture2D:
+    case TextureType::kTextureExternalOES:
+      return true;
+    default:
+      return false;
+  }
+}
 
 std::shared_ptr<BackdropSurfaceContents> BackdropSurfaceContents::Make(
     const Entity& backdrop_entity,
@@ -41,10 +87,7 @@ std::shared_ptr<BackdropSurfaceContents> BackdropSurfaceContents::Make(
     const Matrix& surface_transform,
     const Rect& composite_coverage,
     std::optional<AnalyticRRect> analytic_clip) {
-  if (!surface_contents || !surface_contents->IsExternalTexture() ||
-      !surface_contents->GetTexture() ||
-      surface_contents->GetTexture()->GetTextureDescriptor().type !=
-          TextureType::kTextureExternalOES ||
+  if (!SupportsSurfaceTexture(surface_contents) ||
       surface_contents->GetStrictSourceRect() ||
       !Rect::MakeSize(surface_contents->GetTexture()->GetSize())
            .Contains(surface_contents->GetSourceRect()) ||
@@ -120,7 +163,8 @@ bool BackdropSurfaceContents::Render(const ContentContext& renderer,
                                      RenderPass& pass) const {
 #if defined(IMPELLER_ENABLE_OPENGLES) && !defined(FML_OS_EMSCRIPTEN)
   using VS = BackdropSurfaceCompositeVertexShader;
-  using FS = BackdropSurfaceCompositeFragmentShader;
+  using FSExternal = BackdropSurfaceCompositeFragmentShader;
+  using FSTexture = BackdropSurfaceCompositeTextureFragmentShader;
 
   const Rect destination = destination_;
   const auto surface_texture = surface_->GetTexture();
@@ -154,7 +198,14 @@ bool BackdropSurfaceContents::Render(const ContentContext& renderer,
   options.blend_mode = BlendMode::kSrc;
   options.primitive_type = PrimitiveType::kTriangleStrip;
   options.depth_write_enabled = false;
-  pass.SetPipeline(renderer.GetBackdropSurfaceCompositePipeline(options));
+  const bool uses_external_oes = surface_texture->GetTextureDescriptor().type ==
+                                 TextureType::kTextureExternalOES;
+  if (uses_external_oes) {
+    pass.SetPipeline(renderer.GetBackdropSurfaceCompositePipeline(options));
+  } else {
+    pass.SetPipeline(
+        renderer.GetBackdropSurfaceCompositeTexturePipeline(options));
+  }
   pass.SetCommandLabel("Denial backdrop surface composite");
   pass.SetCommandAuditCategory(CommandAuditCategory::kBackdropSurfaceComposite);
 
@@ -172,38 +223,36 @@ bool BackdropSurfaceContents::Render(const ContentContext& renderer,
   frame_info.scene_sampler_y_coord_scale = scene_texture->GetYCoordScale();
   VS::BindFrameInfo(pass, data.EmplaceUniform(frame_info));
 
-  FS::FragInfo frag_info;
-  frag_info.surface_opacity = surface_->GetOpacity();
-  frag_info.backdrop_opacity = backdrop_.opacity;
-  frag_info.has_analytic_clip = analytic_clip_.has_value() ? 1.0f : 0.0f;
-  if (analytic_clip_.has_value()) {
-    frag_info.clip_bounds = Vector4(analytic_clip_->bounds.GetLTRB());
-    frag_info.clip_radii = Vector2(analytic_clip_->radii);
-  } else {
-    frag_info.clip_bounds = Vector4();
-    frag_info.clip_radii = Vector2();
-  }
-  FS::BindFragInfo(pass, data.EmplaceUniform(frag_info));
-
   SamplerDescriptor surface_sampler = surface_->GetSamplerDescriptor();
   surface_sampler.width_address_mode = SamplerAddressMode::kClampToEdge;
   surface_sampler.height_address_mode = SamplerAddressMode::kClampToEdge;
   surface_sampler.mip_filter = MipFilter::kBase;
-  FS::BindSAMPLEREXTERNALOESSurfaceTextureSampler(
-      pass, surface_texture,
-      renderer.GetContext()->GetSamplerLibrary()->GetSampler(surface_sampler));
-  FS::BindBackdropTextureSampler(
-      pass, backdrop_.texture,
-      renderer.GetContext()->GetSamplerLibrary()->GetSampler(
-          backdrop_.sampler));
+  const auto resolved_surface_sampler =
+      renderer.GetContext()->GetSamplerLibrary()->GetSampler(surface_sampler);
+  const auto resolved_backdrop_sampler =
+      renderer.GetContext()->GetSamplerLibrary()->GetSampler(backdrop_.sampler);
   SamplerDescriptor scene_sampler =
       scene_.has_value() ? scene_->sampler_descriptor : backdrop_.sampler;
   scene_sampler.width_address_mode = SamplerAddressMode::kClampToEdge;
   scene_sampler.height_address_mode = SamplerAddressMode::kClampToEdge;
   scene_sampler.mip_filter = MipFilter::kBase;
-  FS::BindSceneTextureSampler(
-      pass, scene_texture,
-      renderer.GetContext()->GetSamplerLibrary()->GetSampler(scene_sampler));
+  const auto resolved_scene_sampler =
+      renderer.GetContext()->GetSamplerLibrary()->GetSampler(scene_sampler);
+  if (uses_external_oes) {
+    BindCompositeFragmentState<FSExternal>(
+        pass, data, surface_->GetOpacity(), backdrop_.opacity, analytic_clip_,
+        backdrop_.texture, resolved_backdrop_sampler, scene_texture,
+        resolved_scene_sampler);
+    FSExternal::BindSAMPLEREXTERNALOESSurfaceTextureSampler(
+        pass, surface_texture, resolved_surface_sampler);
+  } else {
+    BindCompositeFragmentState<FSTexture>(
+        pass, data, surface_->GetOpacity(), backdrop_.opacity, analytic_clip_,
+        backdrop_.texture, resolved_backdrop_sampler, scene_texture,
+        resolved_scene_sampler);
+    FSTexture::BindSurfaceTextureSampler(pass, surface_texture,
+                                         resolved_surface_sampler);
+  }
   return pass.Draw().ok();
 #else
   (void)renderer;

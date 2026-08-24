@@ -30,6 +30,11 @@ class BackdropSurfaceContents final : public Contents {
     Size radii;
   };
 
+  /// Returns true when a semantically external Flutter texture can be sampled
+  /// directly by one of the fused GLES shader variants.
+  static bool SupportsSurfaceTexture(
+      const std::shared_ptr<TextureContents>& surface_contents);
+
   static std::shared_ptr<BackdropSurfaceContents> Make(
       const Entity& backdrop_entity,
       const std::shared_ptr<TextureContents>& backdrop_contents,
