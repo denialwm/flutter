@@ -8,7 +8,9 @@
 #include "flutter/display_list/dl_builder.h"
 #include "flutter/display_list/dl_color.h"
 #include "flutter/display_list/dl_paint.h"
+#include "flutter/display_list/dl_tile_mode.h"
 #include "flutter/display_list/effects/dl_color_filter.h"
+#include "flutter/display_list/effects/dl_image_filter.h"
 #include "flutter/display_list/geometry/dl_path_builder.h"
 #include "flutter/testing/testing.h"
 
@@ -135,6 +137,74 @@ TEST_P(AiksTest, FramebufferBlendsRespectClips) {
   paint.setColor(DlColor::kGreen());
   paint.setBlendMode(DlBlendMode::kSrcOver);
   builder.DrawCircle(DlPoint(150, 150), 50, paint);
+
+  ASSERT_TRUE(OpenPlaygroundHere(builder.Build()));
+}
+
+// Backdrop filters split the parent render pass. Depth/stencil attachment
+// contents may survive that split, but dynamic encoder state such as the
+// scissor does not. The frame drawn after the backdrop restore must remain
+// bounded by the outer reveal clip instead of appearing at its final bounds.
+TEST_P(AiksTest, BackdropFlipRestoresOuterClipForPostFilterFrame) {
+  DisplayListBuilder builder;
+
+  DlPaint paint;
+  paint.setColor(DlColor::kDarkSlateBlue());
+  builder.DrawPaint(paint);
+
+  builder.Save();
+  builder.ClipPath(DlPath::MakeCircle(DlPoint(200, 200), 72));
+
+  DlPaint backdrop_paint;
+  backdrop_paint.setBlendMode(DlBlendMode::kSrc);
+  auto backdrop_filter = DlImageFilter::MakeBlur(12, 12, DlTileMode::kClamp);
+  builder.SaveLayer(DlRect::MakeXYWH(48, 48, 304, 304), &backdrop_paint,
+                    backdrop_filter.get());
+  paint.setColor(DlColor::ARGB(0x88, 0x10, 0x18, 0x24));
+  builder.DrawRect(DlRect::MakeXYWH(48, 48, 304, 304), paint);
+  builder.Restore();
+
+  paint.setColor(DlColor::kLimeGreen());
+  paint.setDrawStyle(DlDrawStyle::kStroke);
+  paint.setStrokeWidth(8);
+  builder.DrawRoundRect(
+      DlRoundRect::MakeRectXY(DlRect::MakeXYWH(48, 48, 304, 304), 28, 28),
+      paint);
+  builder.Restore();
+
+  ASSERT_TRUE(OpenPlaygroundHere(builder.Build()));
+}
+
+// Integral non-AA rectangle clips are represented only by the render-pass
+// scissor. Unlike a stencil clip, no attachment contents can preserve them.
+TEST_P(AiksTest, BackdropFlipRestoresScissorOnlyClip) {
+  DisplayListBuilder builder;
+
+  DlPaint paint;
+  paint.setColor(DlColor::kDarkSlateBlue());
+  builder.DrawPaint(paint);
+
+  builder.Save();
+  builder.ClipRect(DlRect::MakeXYWH(128, 128, 144, 144), DlClipOp::kIntersect,
+                   /*is_aa=*/false);
+
+  DlPaint backdrop_paint;
+  backdrop_paint.setBlendMode(DlBlendMode::kSrc);
+  auto backdrop_filter = DlImageFilter::MakeBlur(12, 12, DlTileMode::kClamp);
+  builder.SaveLayer(DlRect::MakeXYWH(48, 48, 304, 304), &backdrop_paint,
+                    backdrop_filter.get());
+  paint.setColor(DlColor::ARGB(0x88, 0x10, 0x18, 0x24));
+  builder.DrawRect(DlRect::MakeXYWH(48, 48, 304, 304), paint);
+  builder.Restore();
+
+  // The frame lies completely outside the active scissor and must not appear.
+  paint.setColor(DlColor::kLimeGreen());
+  paint.setDrawStyle(DlDrawStyle::kStroke);
+  paint.setStrokeWidth(8);
+  builder.DrawRoundRect(
+      DlRoundRect::MakeRectXY(DlRect::MakeXYWH(48, 48, 304, 304), 28, 28),
+      paint);
+  builder.Restore();
 
   ASSERT_TRUE(OpenPlaygroundHere(builder.Build()));
 }
