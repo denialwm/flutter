@@ -40,8 +40,16 @@ void TextureContents::SetIsExternalTexture(bool is_external_texture) {
   is_external_texture_ = is_external_texture;
 }
 
+bool TextureContents::IsExternalTexture() const {
+  return is_external_texture_;
+}
+
 void TextureContents::SetDestinationRect(Rect rect) {
   destination_rect_ = rect;
+}
+
+const Rect& TextureContents::GetDestinationRect() const {
+  return destination_rect_;
 }
 
 void TextureContents::SetTexture(std::shared_ptr<Texture> texture) {

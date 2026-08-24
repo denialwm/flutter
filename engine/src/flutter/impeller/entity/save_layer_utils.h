@@ -58,6 +58,34 @@ uint32_t GetBackdropLayerDirectRejections(
 bool CanRenderBackdropLayerDirectly(
     const BackdropLayerDirectPlanInputs& inputs);
 
+/// Backend and draw facts required to collapse the final direct-backdrop draw
+/// and its first external-surface child into one physical command.
+struct BackdropSurfaceCompositePlanInputs {
+  bool backend_supports_external_sampler = false;
+  bool backdrop_is_texture = false;
+  bool surface_is_external_texture = false;
+  bool surface_sampling_is_direct = false;
+  BlendMode surface_blend_mode = BlendMode::kSrcOver;
+  bool transforms_are_translation_scale = false;
+  bool surface_covers_backdrop_scope = false;
+};
+
+enum class BackdropSurfaceCompositeRejection : uint32_t {
+  kBackend = 1u << 0u,
+  kBackdropNotTexture = 1u << 1u,
+  kSurfaceNotExternalTexture = 1u << 2u,
+  kSurfaceSampling = 1u << 3u,
+  kSurfaceBlendMode = 1u << 4u,
+  kTransform = 1u << 5u,
+  kCoverage = 1u << 6u,
+};
+
+uint32_t GetBackdropSurfaceCompositeRejections(
+    const BackdropSurfaceCompositePlanInputs& inputs);
+
+bool CanRenderBackdropSurfaceComposite(
+    const BackdropSurfaceCompositePlanInputs& inputs);
+
 /// @brief Compute the coverage of a subpass in the global coordinate space.
 ///
 /// @param content_coverage the computed coverage of the contents of the save

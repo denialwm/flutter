@@ -57,6 +57,8 @@ class TextureContents final : public Contents {
   /// space.
   void SetDestinationRect(Rect rect);
 
+  const Rect& GetDestinationRect() const;
+
   void SetTexture(std::shared_ptr<Texture> texture);
 
   std::shared_ptr<Texture> GetTexture() const;
@@ -95,6 +97,8 @@ class TextureContents final : public Contents {
   void SetStencilEnabled(bool enabled);
 
   void SetIsExternalTexture(bool is_external_texture);
+
+  bool IsExternalTexture() const;
 
   // |Contents|
   std::optional<Rect> GetCoverage(const Entity& entity) const override;

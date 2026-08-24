@@ -16,6 +16,8 @@ impeller_shaders("entity_shaders") {
   shaders = [
     "shaders/blending/advanced_blend.vert",
     "shaders/blending/advanced_blend.frag",
+    "shaders/backdrop_surface_composite.frag",
+    "shaders/backdrop_surface_composite.vert",
     "shaders/circle.frag",
     "shaders/circle.vert",
     "shaders/uber_sdf.frag",
@@ -120,6 +122,8 @@ impeller_component("entity") {
     "contents/anonymous_contents.h",
     "contents/atlas_contents.cc",
     "contents/atlas_contents.h",
+    "contents/backdrop_surface_contents.cc",
+    "contents/backdrop_surface_contents.h",
     "contents/circle_contents.cc",
     "contents/circle_contents.h",
     "contents/clip_contents.cc",

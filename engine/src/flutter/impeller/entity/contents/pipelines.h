@@ -70,6 +70,8 @@
 #include "impeller/renderer/pipeline.h"
 
 #ifdef IMPELLER_ENABLE_OPENGLES
+#include "impeller/entity/backdrop_surface_composite.frag.h"
+#include "impeller/entity/backdrop_surface_composite.vert.h"
 #include "impeller/entity/texture_downsample_gles.frag.h"
 #include "impeller/entity/tiled_texture_fill_external.frag.h"
 #endif  // IMPELLER_ENABLE_OPENGLES
@@ -169,6 +171,9 @@ using YUVToRGBFilterPipeline = RenderPipelineHandle<FilterPositionVertexShader, 
 
 // Web doesn't support external texture OpenGL extensions
 #if !defined(FML_OS_EMSCRIPTEN)
+using BackdropSurfaceCompositePipeline =
+    RenderPipelineHandle<BackdropSurfaceCompositeVertexShader,
+                         BackdropSurfaceCompositeFragmentShader>;
 using TiledTextureExternalPipeline =
     RenderPipelineHandle<TextureFillVertexShader,
                          TiledTextureFillExternalFragmentShader>;

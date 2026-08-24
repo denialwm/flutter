@@ -18,6 +18,7 @@
 #include "impeller/display_list/backdrop_graph.h"
 #include "impeller/display_list/paint.h"
 #include "impeller/entity/contents/atlas_contents.h"
+#include "impeller/entity/contents/backdrop_surface_contents.h"
 #include "impeller/entity/contents/clip_contents.h"
 #include "impeller/entity/contents/solid_rrect_like_blur_contents.h"
 #include "impeller/entity/contents/text_contents.h"
@@ -49,6 +50,21 @@ struct BackdropData {
   std::shared_ptr<flutter::DlImageFilter> last_backdrop;
 };
 
+struct PendingBackdropComposite {
+  Entity fallback_entity;
+  std::shared_ptr<TextureContents> backdrop_contents;
+  std::optional<Snapshot> scene_snapshot;
+  Rect coverage;
+  IRect32 scissor;
+};
+
+struct DeferredRRectClip {
+  ClipContents contents;
+  uint32_t clip_depth = 0u;
+  std::optional<IRect32> cover_scissor;
+  BackdropSurfaceContents::AnalyticRRect analytic_clip;
+};
+
 struct CanvasStackEntry {
   Matrix transform;
   uint32_t clip_depth = 0u;
@@ -62,6 +78,12 @@ struct CanvasStackEntry {
   // Whether subpass coverage was rounded out to pixel coverage, or if false
   // truncated.
   bool did_round_out = false;
+  // Root rounded clips and direct backdrops may wait for the first compatible
+  // external texture. The eventual physical plan either consumes both in one
+  // composite or flushes these exact fallback entities before any draw whose
+  // ordering depends on them.
+  std::shared_ptr<PendingBackdropComposite> pending_backdrop_composite;
+  std::shared_ptr<DeferredRRectClip> deferred_rrect_clip;
 };
 
 enum class PointStyle {
@@ -258,7 +280,9 @@ class Canvas {
 
   void ClipGeometry(const Geometry& geometry,
                     Entity::ClipOperation clip_op,
-                    bool is_aa = true);
+                    bool is_aa = true,
+                    std::optional<BackdropSurfaceContents::AnalyticRRect>
+                        analytic_round_rect = std::nullopt);
 
   void EndReplay();
 
@@ -290,6 +314,18 @@ class Canvas {
   bool EnsureFinalMipmapGeneration() const;
 
  private:
+  std::shared_ptr<PendingBackdropComposite>* FindPendingBackdropComposite();
+
+  std::shared_ptr<DeferredRRectClip>* FindDeferredRRectClip();
+
+  void FlushDeferredRRectClip();
+
+  void FlushPendingBackdropComposite();
+
+  bool TryBackdropSurfaceComposite(
+      Entity& surface_entity,
+      const std::shared_ptr<TextureContents>& surface_contents);
+
   std::optional<uint32_t> ClaimBackdropEpoch(
       const Rect& write_region,
       const flutter::DlImageFilter& backdrop_filter);
@@ -406,7 +442,10 @@ class Canvas {
       const Paint& paint,
       std::shared_ptr<ColorSourceContents> contents);
 
-  void AddRenderEntityToCurrentPass(Entity& entity, bool reuse_depth = false);
+  void AddRenderEntityToCurrentPass(
+      Entity& entity,
+      bool reuse_depth = false,
+      std::shared_ptr<TextureContents> texture_contents = nullptr);
 
   /// Returns true if this operation is consistent with a DrawShadow-like
   /// operation.

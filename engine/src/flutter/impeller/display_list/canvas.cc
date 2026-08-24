@@ -84,6 +84,15 @@ struct BackdropLayerPlanAudit {
   uint64_t direct_filter_evaluations = 0;
   uint64_t direct_snapshot_builds = 0;
   uint64_t direct_snapshot_hits = 0;
+  uint64_t fused_candidates = 0;
+  uint64_t fusion_attempts = 0;
+  uint64_t fusion_predicate_accepts = 0;
+  uint64_t fused_composites = 0;
+  uint64_t fused_fallbacks = 0;
+  uint64_t deferred_rrect_clips = 0;
+  uint64_t analytic_rrect_clips = 0;
+  uint64_t flushed_rrect_clips = 0;
+  std::array<uint64_t, 7> fusion_rejections = {};
   std::array<uint64_t, 9> direct_rejections = {};
   bool first_report_pending = true;
 };
@@ -206,6 +215,59 @@ static void RecordBackdropDirectPredicate(uint32_t rejections) {
   }
 }
 
+enum class BackdropFusionAuditEvent {
+  kCandidate,
+  kComposite,
+  kFallback,
+  kDeferredRRect,
+  kAnalyticRRect,
+  kFlushedRRect,
+};
+
+static void RecordBackdropFusionEvent(BackdropFusionAuditEvent event) {
+  if (!IsDenialRenderAuditEnabled()) {
+    return;
+  }
+  BackdropLayerPlanAudit& audit = GetBackdropLayerPlanAudit();
+  switch (event) {
+    case BackdropFusionAuditEvent::kCandidate:
+      audit.fused_candidates++;
+      break;
+    case BackdropFusionAuditEvent::kComposite:
+      audit.fused_composites++;
+      break;
+    case BackdropFusionAuditEvent::kFallback:
+      audit.fused_fallbacks++;
+      break;
+    case BackdropFusionAuditEvent::kDeferredRRect:
+      audit.deferred_rrect_clips++;
+      break;
+    case BackdropFusionAuditEvent::kAnalyticRRect:
+      audit.analytic_rrect_clips++;
+      break;
+    case BackdropFusionAuditEvent::kFlushedRRect:
+      audit.flushed_rrect_clips++;
+      break;
+  }
+}
+
+static void RecordBackdropFusionPredicate(uint32_t rejections) {
+  if (!IsDenialRenderAuditEnabled()) {
+    return;
+  }
+  BackdropLayerPlanAudit& audit = GetBackdropLayerPlanAudit();
+  audit.fusion_attempts++;
+  if (rejections == 0u) {
+    audit.fusion_predicate_accepts++;
+    return;
+  }
+  for (size_t bit = 0u; bit < audit.fusion_rejections.size(); bit++) {
+    if ((rejections & (1u << bit)) != 0u) {
+      audit.fusion_rejections[bit]++;
+    }
+  }
+}
+
 static void FlushBackdropLayerPlanAudit() {
   if (!IsDenialRenderAuditEnabled()) {
     return;
@@ -241,6 +303,21 @@ static void FlushBackdropLayerPlanAudit() {
       << " direct_filter_evaluations=" << audit.direct_filter_evaluations
       << " direct_snapshot_builds=" << audit.direct_snapshot_builds
       << " direct_snapshot_hits=" << audit.direct_snapshot_hits
+      << " fused_candidates=" << audit.fused_candidates
+      << " fusion_attempts=" << audit.fusion_attempts
+      << " fusion_predicate_accepts=" << audit.fusion_predicate_accepts
+      << " fused_composites=" << audit.fused_composites
+      << " fused_fallbacks=" << audit.fused_fallbacks
+      << " deferred_rrect_clips=" << audit.deferred_rrect_clips
+      << " analytic_rrect_clips=" << audit.analytic_rrect_clips
+      << " flushed_rrect_clips=" << audit.flushed_rrect_clips
+      << " fusion_reject_backend=" << audit.fusion_rejections[0]
+      << " fusion_reject_backdrop_texture=" << audit.fusion_rejections[1]
+      << " fusion_reject_external_surface=" << audit.fusion_rejections[2]
+      << " fusion_reject_surface_sampling=" << audit.fusion_rejections[3]
+      << " fusion_reject_surface_blend=" << audit.fusion_rejections[4]
+      << " fusion_reject_transform=" << audit.fusion_rejections[5]
+      << " fusion_reject_coverage=" << audit.fusion_rejections[6]
       << " reject_missing_backdrop=" << audit.direct_rejections[0]
       << " reject_content_msaa=" << audit.direct_rejections[1]
       << " reject_uncontained_bounds=" << audit.direct_rejections[2]
@@ -1329,9 +1406,11 @@ void Canvas::DrawCircle(const Point& center,
   }
 }
 
-void Canvas::ClipGeometry(const Geometry& geometry,
-                          Entity::ClipOperation clip_op,
-                          bool is_aa) {
+void Canvas::ClipGeometry(
+    const Geometry& geometry,
+    Entity::ClipOperation clip_op,
+    bool is_aa,
+    std::optional<BackdropSurfaceContents::AnalyticRRect> analytic_round_rect) {
   if (IsSkipping()) {
     return;
   }
@@ -1390,6 +1469,26 @@ void Canvas::ClipGeometry(const Geometry& geometry,
     return;
   }
 
+  const bool can_defer_round_rect =
+      analytic_round_rect.has_value() &&
+      clip_op == Entity::ClipOperation::kIntersect && is_aa &&
+      render_passes_.size() == 1u && clip_transform.IsTranslationScaleOnly() &&
+      FindPendingBackdropComposite() != nullptr &&
+      FindDeferredRRectClip() == nullptr &&
+      renderer_.GetContext()->GetBackendType() ==
+          Context::BackendType::kOpenGLES;
+
+  // Scissor-only clips remain logical and can participate in fusion. A clip
+  // that emits GPU work must follow the pending backdrop, so materialize the
+  // exact fallback state before constructing this command.
+  if (!can_defer_round_rect) {
+    if (FindPendingBackdropComposite() != nullptr) {
+      FlushPendingBackdropComposite();
+    } else {
+      FlushDeferredRRectClip();
+    }
+  }
+
   // Note: this is a bit of a hack. Its not possible to construct a geometry
   // result without begninning the render pass. We should refactor the geometry
   // objects so that they only need a reference to the render pass size and/or
@@ -1406,6 +1505,26 @@ void Canvas::ClipGeometry(const Geometry& geometry,
   clip_contents.SetGeometry(geometry_result);
   clip_coverage_stack_.GetLastReplayResult().clip_contents.SetGeometry(
       geometry_result);
+
+  if (can_defer_round_rect) {
+    const Matrix basis = clip_transform.Basis();
+    const Size radii = analytic_round_rect->radii;
+    const Size transformed_radii(
+        (basis * Vector2(radii.width, 0.0f)).GetLength(),
+        (basis * Vector2(0.0f, radii.height)).GetLength());
+    transform_stack_.back().deferred_rrect_clip =
+        std::make_shared<DeferredRRectClip>(DeferredRRectClip{
+            .contents = std::move(clip_contents),
+            .clip_depth = clip_depth,
+            .cover_scissor = clip_scissor,
+            .analytic_clip = {.bounds =
+                                  analytic_round_rect->bounds.TransformBounds(
+                                      clip_transform),
+                              .radii = transformed_radii},
+        });
+    RecordBackdropFusionEvent(BackdropFusionAuditEvent::kDeferredRRect);
+    return;
+  }
 
   clip_contents.Render(
       renderer_, *render_passes_.back().GetInlinePassContext()->GetRenderPass(),
@@ -1495,8 +1614,15 @@ void Canvas::DrawImageRect(const std::shared_ptr<Texture>& image,
   entity.SetTransform(GetCurrentTransform());
 
   if (!paint.mask_blur_descriptor.has_value()) {
-    entity.SetContents(paint.WithFilters(std::move(texture_contents)));
-    AddRenderEntityToCurrentPass(entity);
+    std::shared_ptr<TextureContents> texture_candidate = texture_contents;
+    std::shared_ptr<Contents> filtered_contents =
+        paint.WithFilters(std::move(texture_contents));
+    const bool is_unwrapped_texture =
+        filtered_contents.get() == texture_candidate.get();
+    entity.SetContents(std::move(filtered_contents));
+    AddRenderEntityToCurrentPass(
+        entity, /*reuse_depth=*/false,
+        is_unwrapped_texture ? std::move(texture_candidate) : nullptr);
     return;
   }
 
@@ -1774,6 +1900,11 @@ void Canvas::SaveLayer(const Paint& paint,
   if (IsSkipping()) {
     return SkipUntilMatchingRestore(total_content_depth);
   }
+  if (FindPendingBackdropComposite() != nullptr) {
+    FlushPendingBackdropComposite();
+  } else {
+    FlushDeferredRRectClip();
+  }
 
   auto maybe_coverage_limit = GetLocalCoverageLimit();
   if (!maybe_coverage_limit.has_value()) {
@@ -1917,30 +2048,40 @@ void Canvas::SaveLayer(const Paint& paint,
   // Backdrop filter state, ignored if there is no BDF.
   std::shared_ptr<FilterContents> backdrop_filter_contents;
   std::optional<Snapshot> isolated_backdrop_snapshot;
+  std::optional<Snapshot> direct_scene_snapshot;
   bool isolated_backdrop_cache_hit = false;
   bool should_materialize_isolated_snapshot = false;
   Point local_position = Point(0, 0);
+  auto make_backdrop_snapshot_entity =
+      [&](const Snapshot& snapshot, bool is_direct_cache_composite = false) {
+        // Snapshot::transform maps texture pixels into scene coordinates. Crop
+        // both sides of that mapping to the demanded saveLayer coverage instead
+        // of throwing the transform away and treating the texture as a screen
+        // copy. This makes the draw exactly equivalent to placing the snapshot
+        // in a coverage-sized subpass and restoring that subpass into the
+        // parent.
+        std::shared_ptr<TextureContents> contents = TextureContents::MakeRect(
+            subpass_coverage.Shift(-GetGlobalPassPosition()));
+        auto scaled =
+            subpass_coverage.TransformBounds(snapshot.transform.Invert());
+        contents->SetTexture(snapshot.texture);
+        contents->SetSourceRect(scaled);
+        contents->SetSamplerDescriptor(snapshot.sampler_descriptor);
+        if (is_direct_cache_composite) {
+          contents->SetLabel("Denial backdrop cached composite");
+        }
+
+        Entity backdrop_entity;
+        backdrop_entity.SetContents(std::move(contents));
+        backdrop_entity.SetBlendMode(paint.blend_mode);
+        return backdrop_entity;
+      };
   auto render_backdrop_snapshot = [&](const Snapshot& snapshot,
                                       bool is_direct_cache_composite = false) {
-    // Snapshot::transform maps texture pixels into scene coordinates. Crop
-    // both sides of that mapping to the demanded saveLayer coverage instead
-    // of throwing the transform away and treating the texture as a screen
-    // copy. This makes the draw exactly equivalent to placing the snapshot in
-    // a coverage-sized subpass and restoring that subpass into the parent.
-    std::shared_ptr<TextureContents> contents = TextureContents::MakeRect(
-        subpass_coverage.Shift(-GetGlobalPassPosition()));
-    auto scaled = subpass_coverage.TransformBounds(snapshot.transform.Invert());
-    contents->SetTexture(snapshot.texture);
-    contents->SetSourceRect(scaled);
-    contents->SetSamplerDescriptor(snapshot.sampler_descriptor);
-    if (is_direct_cache_composite) {
-      contents->SetLabel("Denial backdrop cached composite");
-    }
-
-    Entity backdrop_entity;
-    backdrop_entity.SetContents(std::move(contents));
+    Entity backdrop_entity =
+        make_backdrop_snapshot_entity(snapshot, is_direct_cache_composite);
     backdrop_entity.SetClipDepth(++current_depth_);
-    backdrop_entity.SetBlendMode(paint.blend_mode);
+    FlushDeferredRRectClip();
     backdrop_entity.Render(renderer_, GetCurrentRenderPass());
   };
   if (backdrop_filter) {
@@ -2034,6 +2175,13 @@ void Canvas::SaveLayer(const Paint& paint,
         return;
       }
 
+      if (can_render_backdrop_directly) {
+        direct_scene_snapshot = Snapshot{
+            .texture = input_texture,
+            .transform = Matrix(),
+        };
+      }
+
       if (will_cache_backdrop_texture) {
         backdrop_data->texture_slot = input_texture;
       }
@@ -2105,16 +2253,44 @@ void Canvas::SaveLayer(const Paint& paint,
     // The physical subpass used to provide this crop implicitly. A logical
     // scope must carry the demanded output region explicitly when its filter
     // is evaluated directly in the parent target.
+    Entity backdrop_entity;
+    std::optional<Entity> resolved_backdrop_entity;
+    std::shared_ptr<TextureContents> resolved_backdrop_contents;
     if (isolated_backdrop_snapshot.has_value()) {
-      render_backdrop_snapshot(isolated_backdrop_snapshot.value(),
-                               /*is_direct_cache_composite=*/true);
+      resolved_backdrop_entity =
+          make_backdrop_snapshot_entity(isolated_backdrop_snapshot.value(),
+                                        /*is_direct_cache_composite=*/true);
+      resolved_backdrop_contents = std::static_pointer_cast<TextureContents>(
+          resolved_backdrop_entity->GetContents());
     } else {
       backdrop_filter_contents->SetCoverageHint(subpass_coverage);
-
-      Entity backdrop_entity;
-      backdrop_entity.SetContents(std::move(backdrop_filter_contents));
+      backdrop_entity.SetContents(backdrop_filter_contents);
       backdrop_entity.SetBlendMode(BlendMode::kSrc);
-      AddRenderEntityToCurrentPass(backdrop_entity);
+      backdrop_entity.SetTransform(
+          Matrix::MakeTranslation(Vector3(-GetGlobalPassPosition())));
+    }
+
+    // Reserve the depth slot consumed by the logical backdrop assignment even
+    // when its final texture draw is deferred and fused with the first proven
+    // external surface. Filter evaluation is resolved now: Gaussian blur
+    // already returns a texture-backed entity, so this does not allocate or
+    // draw another intermediate.
+    const uint32_t backdrop_depth = ++current_depth_;
+    if (!resolved_backdrop_entity.has_value()) {
+      backdrop_entity.SetClipDepth(backdrop_depth);
+      resolved_backdrop_entity = backdrop_filter_contents->GetEntity(
+          renderer_, backdrop_entity, subpass_coverage);
+      if (resolved_backdrop_entity.has_value() &&
+          backdrop_filter->type() == flutter::DlImageFilterType::kBlur) {
+        // GaussianBlurFilterContents resolves its final pass through
+        // Entity::FromSnapshot. The filter discriminator is the explicit type
+        // proof; Flutter's engine deliberately builds without C++ RTTI.
+        resolved_backdrop_contents = std::static_pointer_cast<TextureContents>(
+            resolved_backdrop_entity->GetContents());
+      }
+    }
+    if (resolved_backdrop_entity.has_value()) {
+      resolved_backdrop_entity->SetClipDepth(backdrop_depth);
     }
 
     const BackdropDirectSource direct_source =
@@ -2124,10 +2300,30 @@ void Canvas::SaveLayer(const Paint& paint,
                                       : BackdropDirectSource::kSnapshotBuild;
     RecordBackdropLayerPlan(subpass_size, /*use_msaa=*/false, direct_source);
 
-    // The direct backdrop draw consumes the depth slot that the materialized
-    // path would have used for its restore. Child operations retain their
-    // original depth budget and clips are now recorded in the parent pass.
+    // Child operations retain their original depth budget. On GLES, hold a
+    // texture-backed result until the first child draw. A compatible external
+    // texture consumes it through BackdropSurfaceContents; every other child
+    // causes the exact old draw to flush first.
     Save(total_content_depth);
+    if (resolved_backdrop_entity.has_value() &&
+        resolved_backdrop_contents != nullptr &&
+        renderer_.GetContext()->GetBackendType() ==
+            Context::BackendType::kOpenGLES) {
+      transform_stack_.back().pending_backdrop_composite =
+          std::make_shared<PendingBackdropComposite>(PendingBackdropComposite{
+              .fallback_entity = std::move(*resolved_backdrop_entity),
+              .backdrop_contents = std::move(resolved_backdrop_contents),
+              .scene_snapshot = std::move(direct_scene_snapshot),
+              .coverage = subpass_coverage,
+              .scissor = SetClipScissor(
+                  clip_coverage_stack_.CurrentClipCoverage(),
+                  GetCurrentRenderPass(), GetGlobalPassPosition()),
+          });
+      RecordBackdropFusionEvent(BackdropFusionAuditEvent::kCandidate);
+    } else if (resolved_backdrop_entity.has_value()) {
+      FlushDeferredRRectClip();
+      resolved_backdrop_entity->Render(renderer_, GetCurrentRenderPass());
+    }
     return;
   }
 
@@ -2194,6 +2390,14 @@ bool Canvas::Restore() {
   FML_DCHECK(transform_stack_.size() > 0);
   if (transform_stack_.size() == 1) {
     return false;
+  }
+
+  // A rounded clip that reached its matching restore without another physical
+  // consumer was either used analytically by a fused composite or guarded no
+  // pixels at all. In both cases its stencil-and-cover fallback is unnecessary.
+  transform_stack_.back().deferred_rrect_clip.reset();
+  if (transform_stack_.back().pending_backdrop_composite) {
+    FlushPendingBackdropComposite();
   }
 
   // This check is important to make sure we didn't exceed the depth
@@ -2541,7 +2745,154 @@ void Canvas::AddRenderEntityWithFiltersToCurrentPass(
   AddRenderEntityToCurrentPass(entity, reuse_depth);
 }
 
-void Canvas::AddRenderEntityToCurrentPass(Entity& entity, bool reuse_depth) {
+std::shared_ptr<PendingBackdropComposite>*
+Canvas::FindPendingBackdropComposite() {
+  for (auto entry = transform_stack_.rbegin(); entry != transform_stack_.rend();
+       entry++) {
+    if (entry->pending_backdrop_composite) {
+      return &entry->pending_backdrop_composite;
+    }
+  }
+  return nullptr;
+}
+
+std::shared_ptr<DeferredRRectClip>* Canvas::FindDeferredRRectClip() {
+  for (auto entry = transform_stack_.rbegin(); entry != transform_stack_.rend();
+       entry++) {
+    if (entry->deferred_rrect_clip) {
+      return &entry->deferred_rrect_clip;
+    }
+  }
+  return nullptr;
+}
+
+void Canvas::FlushDeferredRRectClip() {
+  auto* slot = FindDeferredRRectClip();
+  if (slot == nullptr) {
+    return;
+  }
+  std::shared_ptr<DeferredRRectClip> deferred = std::move(*slot);
+  slot->reset();
+  const std::shared_ptr<RenderPass>& pass =
+      render_passes_.back().GetInlinePassContext()->GetRenderPass();
+  if (pass) {
+    deferred->contents.Render(renderer_, *pass, deferred->clip_depth,
+                              /*is_backdrop_replay=*/false,
+                              deferred->cover_scissor);
+    // ClipContents emits two commands and consumes encoder state. Re-establish
+    // the current logical scissor for the draw that forced materialization.
+    SetClipScissor(clip_coverage_stack_.CurrentClipCoverage(), *pass,
+                   GetGlobalPassPosition());
+  }
+  RecordBackdropFusionEvent(BackdropFusionAuditEvent::kFlushedRRect);
+}
+
+void Canvas::FlushPendingBackdropComposite() {
+  auto* slot = FindPendingBackdropComposite();
+  if (slot == nullptr) {
+    return;
+  }
+  std::shared_ptr<PendingBackdropComposite> pending = std::move(*slot);
+  slot->reset();
+  const std::shared_ptr<RenderPass>& pass =
+      render_passes_.back().GetInlinePassContext()->GetRenderPass();
+  if (pass) {
+    pass->SetScissor(pending->scissor);
+    pending->fallback_entity.Render(renderer_, *pass);
+    SetClipScissor(clip_coverage_stack_.CurrentClipCoverage(), *pass,
+                   GetGlobalPassPosition());
+  }
+  // The rounded clip is a child operation, so it follows the backdrop
+  // assignment when this deferred plan falls back.
+  FlushDeferredRRectClip();
+  RecordBackdropFusionEvent(BackdropFusionAuditEvent::kFallback);
+}
+
+bool Canvas::TryBackdropSurfaceComposite(
+    Entity& surface_entity,
+    const std::shared_ptr<TextureContents>& surface) {
+  auto* pending_slot = FindPendingBackdropComposite();
+  if (pending_slot == nullptr) {
+    return false;
+  }
+  const auto surface_coverage = surface_entity.GetCoverage();
+  const Rect& required_coverage = (*pending_slot)->coverage;
+  const bool coverage_matches =
+      surface_coverage.has_value() &&
+      surface_coverage->Expand(1.0f).Contains(required_coverage) &&
+      required_coverage.Expand(1.0f).Contains(surface_coverage.value());
+  const std::shared_ptr<TextureContents>& backdrop =
+      (*pending_slot)->backdrop_contents;
+  const std::shared_ptr<Texture> surface_texture =
+      surface != nullptr ? surface->GetTexture() : nullptr;
+  const bool surface_sampling_is_direct =
+      surface_texture != nullptr && !surface->GetStrictSourceRect() &&
+      Rect::MakeSize(surface_texture->GetSize())
+          .Contains(surface->GetSourceRect()) &&
+      surface->GetSamplerDescriptor().width_address_mode ==
+          SamplerAddressMode::kClampToEdge &&
+      surface->GetSamplerDescriptor().height_address_mode ==
+          SamplerAddressMode::kClampToEdge;
+  const BackdropSurfaceCompositePlanInputs plan_inputs = {
+      .backend_supports_external_sampler =
+          renderer_.GetContext()->GetBackendType() ==
+          Context::BackendType::kOpenGLES,
+      .backdrop_is_texture = backdrop != nullptr,
+      .surface_is_external_texture =
+          surface != nullptr && surface->IsExternalTexture() &&
+          surface_texture != nullptr &&
+          surface_texture->GetTextureDescriptor().type ==
+              TextureType::kTextureExternalOES,
+      .surface_sampling_is_direct = surface_sampling_is_direct,
+      .surface_blend_mode = surface_entity.GetBlendMode(),
+      .transforms_are_translation_scale =
+          surface_entity.GetTransform().IsTranslationScaleOnly() &&
+          (*pending_slot)
+              ->fallback_entity.GetTransform()
+              .IsTranslationScaleOnly(),
+      .surface_covers_backdrop_scope = coverage_matches,
+  };
+  const uint32_t rejections =
+      GetBackdropSurfaceCompositeRejections(plan_inputs);
+  RecordBackdropFusionPredicate(rejections);
+  if (rejections != 0u) {
+    return false;
+  }
+
+  std::optional<BackdropSurfaceContents::AnalyticRRect> analytic_clip;
+  std::shared_ptr<DeferredRRectClip>* deferred_slot = FindDeferredRRectClip();
+  const bool use_analytic_clip =
+      deferred_slot != nullptr && (*pending_slot)->scene_snapshot.has_value();
+  if (use_analytic_clip) {
+    analytic_clip = (*deferred_slot)->analytic_clip;
+  }
+  auto fused = BackdropSurfaceContents::Make(
+      (*pending_slot)->fallback_entity, backdrop,
+      (*pending_slot)->scene_snapshot, surface, surface_entity.GetTransform(),
+      required_coverage, analytic_clip);
+  if (!fused) {
+    return false;
+  }
+
+  pending_slot->reset();
+  surface_entity.SetContents(std::move(fused));
+  surface_entity.SetBlendMode(BlendMode::kSrc);
+  if (use_analytic_clip) {
+    RecordBackdropFusionEvent(BackdropFusionAuditEvent::kAnalyticRRect);
+  } else if (deferred_slot != nullptr) {
+    // A cached filtered backdrop may outlive its unfiltered scene snapshot.
+    // Preserve exact clip antialiasing by materializing the already-deferred
+    // clip after the logical backdrop has been consumed into the composite.
+    FlushDeferredRRectClip();
+  }
+  RecordBackdropFusionEvent(BackdropFusionAuditEvent::kComposite);
+  return true;
+}
+
+void Canvas::AddRenderEntityToCurrentPass(
+    Entity& entity,
+    bool reuse_depth,
+    std::shared_ptr<TextureContents> texture_contents) {
   if (IsSkipping()) {
     return;
   }
@@ -2550,6 +2901,13 @@ void Canvas::AddRenderEntityToCurrentPass(Entity& entity, bool reuse_depth) {
       Matrix::MakeTranslation(Vector3(-GetGlobalPassPosition())) *
       entity.GetTransform());
   entity.SetInheritedOpacity(transform_stack_.back().distributed_opacity);
+  if (!TryBackdropSurfaceComposite(entity, texture_contents)) {
+    if (FindPendingBackdropComposite() != nullptr) {
+      FlushPendingBackdropComposite();
+    } else {
+      FlushDeferredRRectClip();
+    }
+  }
   if (entity.GetBlendMode() == BlendMode::kSrcOver &&
       entity.GetContents()->IsOpaque(entity.GetTransform())) {
     entity.SetBlendMode(BlendMode::kSrc);
