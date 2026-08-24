@@ -64,7 +64,7 @@ TEST(SaveLayerUtilsTest, DirectBackdropPlanRejectsUnprovenSemantics) {
   EXPECT_FALSE(CanRenderBackdropLayerDirectly(rejected));
 
   rejected = accepted;
-  rejected.has_backdrop_id = true;
+  rejected.shares_backdrop_input = true;
   EXPECT_FALSE(CanRenderBackdropLayerDirectly(rejected));
 
   rejected = accepted;
@@ -98,7 +98,7 @@ TEST(SaveLayerUtilsTest, DirectBackdropPlanReportsEveryRejection) {
                           BackdropLayerDirectRejection::kRestoreHasEffects),
             0u);
   EXPECT_EQ(reasons & static_cast<uint32_t>(
-                          BackdropLayerDirectRejection::kBackdropId),
+                          BackdropLayerDirectRejection::kSharedBackdropInput),
             0u);
   EXPECT_EQ(reasons & static_cast<uint32_t>(
                           BackdropLayerDirectRejection::kInheritedOpacity),

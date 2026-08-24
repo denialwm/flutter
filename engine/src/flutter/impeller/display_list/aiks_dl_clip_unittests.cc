@@ -4,6 +4,7 @@
 
 #include "flutter/impeller/display_list/aiks_unittests.h"
 
+#include "flutter/common/backdrop_filter_cache_key.h"
 #include "flutter/display_list/dl_blend_mode.h"
 #include "flutter/display_list/dl_builder.h"
 #include "flutter/display_list/dl_color.h"
@@ -11,6 +12,7 @@
 #include "flutter/display_list/dl_tile_mode.h"
 #include "flutter/display_list/effects/dl_color_filter.h"
 #include "flutter/display_list/effects/dl_image_filter.h"
+#include "flutter/display_list/effects/dl_mask_filter.h"
 #include "flutter/display_list/geometry/dl_path_builder.h"
 #include "flutter/testing/testing.h"
 
@@ -207,6 +209,65 @@ TEST_P(AiksTest, BackdropFlipRestoresScissorOnlyClip) {
   builder.Restore();
 
   ASSERT_TRUE(OpenPlaygroundHere(builder.Build()));
+}
+
+// A direct backdrop is evaluated in the loaded parent target instead of a
+// physical saveLayer. Its filter footprint may read the preceding shadow, but
+// neither that footprint nor the resumed pass may write outside the active
+// hard clip. The orange ring makes any escaped blur immediately visible.
+TEST_P(AiksTest, DirectBackdropPreservesPrecedingShadowOutsideHardClip) {
+  uint32_t generation = 0u;
+  auto build_frame = [&]() {
+    DisplayListBuilder builder;
+
+    DlPaint paint;
+    paint.setColor(DlColor::kCornflowerBlue());
+    builder.DrawPaint(paint);
+
+    const DlRect window_bounds = DlRect::MakeXYWH(96, 96, 288, 208);
+    const DlRoundRect window_shape =
+        DlRoundRect::MakeRectXY(window_bounds, 24, 24);
+
+    DlPaint shadow_paint;
+    shadow_paint.setColor(DlColor::ARGB(0xA0, 0x08, 0x0C, 0x14));
+    shadow_paint.setMaskFilter(
+        DlBlurMaskFilter::Make(DlBlurStyle::kNormal, 18));
+    builder.Save();
+    builder.Translate(0, 14);
+    builder.DrawRoundRect(window_shape, shadow_paint);
+    builder.Restore();
+
+    DlPaint canary_paint;
+    canary_paint.setColor(DlColor::ARGB(0xFF, 0xFF, 0x98, 0x18));
+    canary_paint.setDrawStyle(DlDrawStyle::kStroke);
+    canary_paint.setStrokeWidth(6);
+    builder.DrawRoundRect(
+        DlRoundRect::MakeRectXY(window_bounds.Expand(20), 40, 40),
+        canary_paint);
+
+    builder.Save();
+    builder.ClipRect(window_bounds, DlClipOp::kIntersect, /*is_aa=*/false);
+
+    DlPaint backdrop_paint;
+    backdrop_paint.setBlendMode(DlBlendMode::kSrc);
+    auto backdrop_filter = DlImageFilter::MakeBlur(14, 14, DlTileMode::kClamp);
+    const int64_t backdrop_key = MakeBackdropFilterCacheKey(91u, ++generation);
+    builder.SaveLayer(window_bounds.Expand(40), &backdrop_paint,
+                      backdrop_filter.get(), backdrop_key);
+    builder.Restore();
+
+    paint.setColor(DlColor::ARGB(0x70, 0x10, 0x18, 0x24));
+    builder.DrawRect(window_bounds, paint);
+    paint.setColor(DlColor::kLimeGreen());
+    paint.setDrawStyle(DlDrawStyle::kStroke);
+    paint.setStrokeWidth(5);
+    builder.DrawRoundRect(window_shape, paint);
+    builder.Restore();
+
+    return builder.Build();
+  };
+
+  ASSERT_TRUE(OpenPlaygroundHere(build_frame));
 }
 
 }  // namespace testing
