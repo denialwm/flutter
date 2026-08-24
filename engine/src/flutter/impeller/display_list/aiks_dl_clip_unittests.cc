@@ -149,7 +149,7 @@ TEST_P(AiksTest, BackdropFlipRestoresOuterClipForPostFilterFrame) {
   DisplayListBuilder builder;
 
   DlPaint paint;
-  paint.setColor(DlColor::kDarkSlateBlue());
+  paint.setColor(DlColor::kCornflowerBlue());
   builder.DrawPaint(paint);
 
   builder.Save();
@@ -181,7 +181,7 @@ TEST_P(AiksTest, BackdropFlipRestoresScissorOnlyClip) {
   DisplayListBuilder builder;
 
   DlPaint paint;
-  paint.setColor(DlColor::kDarkSlateBlue());
+  paint.setColor(DlColor::kCornflowerBlue());
   builder.DrawPaint(paint);
 
   builder.Save();
