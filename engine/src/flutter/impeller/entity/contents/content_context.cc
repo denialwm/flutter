@@ -870,6 +870,8 @@ ContentContext::ContentContext(
     !defined(FML_OS_EMSCRIPTEN)
     // GLES only shader that is unsupported on macOS and web.
     pipelines_->backdrop_surface_composite.CreateDefault(*context_, options);
+    pipelines_->backdrop_surface_composite_texture.CreateDefault(*context_,
+                                                                 options);
     pipelines_->tiled_texture_external.CreateDefault(*context_, options);
     pipelines_->tiled_texture_uv_external.CreateDefault(*context_, options);
 #endif  // !defined(FML_OS_MACOSX)
