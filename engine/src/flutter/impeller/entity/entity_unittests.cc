@@ -18,6 +18,7 @@
 #include "impeller/core/host_buffer.h"
 #include "impeller/core/raw_ptr.h"
 #include "impeller/core/texture_descriptor.h"
+#include "impeller/entity/contents/clip_contents.h"
 #include "impeller/entity/contents/conical_gradient_contents.h"
 #include "impeller/entity/contents/content_context.h"
 #include "impeller/entity/contents/contents.h"
@@ -39,6 +40,7 @@
 #include "impeller/entity/entity_playground.h"
 #include "impeller/entity/geometry/geometry.h"
 #include "impeller/entity/geometry/point_field_geometry.h"
+#include "impeller/entity/geometry/round_rect_geometry.h"
 #include "impeller/entity/geometry/round_superellipse_geometry.h"
 #include "impeller/entity/geometry/stroke_path_geometry.h"
 #include "impeller/entity/geometry/superellipse_geometry.h"
@@ -74,6 +76,36 @@ Rect RectMakeCenterSize(Point center, Size size) {
 TEST_P(EntityTest, CanCreateEntity) {
   Entity entity;
   ASSERT_TRUE(entity.GetTransform().IsIdentity());
+}
+
+TEST_P(EntityTest, ClipCoverRetainsCanvasScissorAfterStencilDraw) {
+  auto content_context = GetContentContext();
+  auto render_target =
+      content_context->GetRenderTargetCache()->CreateOffscreenMSAA(
+          *content_context->GetContext(), {400, 300}, /*mip_count=*/1);
+  MockRenderPass pass(GetContext(), render_target);
+
+  const Rect clip_bounds = Rect::MakeXYWH(40, 30, 180, 120);
+  RoundRectGeometry geometry(clip_bounds, Size(18, 18));
+  Entity entity;
+  const Geometry& public_geometry = geometry;
+  GeometryResult geometry_result =
+      public_geometry.GetPositionBuffer(*content_context, entity, pass);
+
+  ClipContents clip_contents(clip_bounds, /*is_axis_aligned_rect=*/false);
+  clip_contents.SetGeometry(std::move(geometry_result));
+  clip_contents.SetClipOperation(Entity::ClipOperation::kIntersect);
+
+  const IRect32 canvas_scissor = IRect32::MakeXYWH(40, 30, 180, 120);
+  pass.SetScissor(canvas_scissor);
+  ASSERT_TRUE(clip_contents.Render(*content_context, pass, /*clip_depth=*/10u,
+                                   /*is_backdrop_replay=*/false,
+                                   canvas_scissor));
+
+  const std::vector<Command>& commands = pass.GetCommands();
+  ASSERT_EQ(commands.size(), 2u);
+  EXPECT_EQ(commands[0].scissor, canvas_scissor);
+  EXPECT_EQ(commands[1].scissor, canvas_scissor);
 }
 
 TEST_P(EntityTest, FilterCoverageRespectsCropRect) {

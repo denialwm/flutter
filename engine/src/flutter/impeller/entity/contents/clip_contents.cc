@@ -70,7 +70,8 @@ ClipCoverage ClipContents::GetClipCoverage(
 bool ClipContents::Render(const ContentContext& renderer,
                           RenderPass& pass,
                           uint32_t clip_depth,
-                          bool is_backdrop_replay) const {
+                          bool is_backdrop_replay,
+                          std::optional<IRect32> cover_scissor) const {
   if (!clip_geometry_.vertex_buffer) {
     return true;
   }
@@ -138,6 +139,15 @@ bool ClipContents::Render(const ContentContext& renderer,
   }
 
   /// Write depth.
+
+  // RenderPass::Draw consumes all pending command state. Canvas clips narrow
+  // the active scissor before entering this method, so explicitly carry that
+  // proven cumulative coverage into the second command. Without this rebind,
+  // every local clip emits a full-target cover quad even though subsequent
+  // content remains bounded by the narrower Canvas scissor.
+  if (cover_scissor.has_value()) {
+    pass.SetScissor(cover_scissor.value());
+  }
 
   options.depth_write_enabled = true;
   options.primitive_type = PrimitiveType::kTriangleStrip;

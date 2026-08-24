@@ -326,9 +326,9 @@ static bool UseColorSourceContents(
   return !vertices->HasTextureCoordinates();
 }
 
-static void SetClipScissor(std::optional<Rect> clip_coverage,
-                           RenderPass& pass,
-                           Point global_pass_position) {
+static IRect32 SetClipScissor(std::optional<Rect> clip_coverage,
+                              RenderPass& pass,
+                              Point global_pass_position) {
   // Set the scissor to the clip coverage area. We do this prior to rendering
   // the clip itself and all its contents.
   IRect32 scissor;
@@ -341,6 +341,7 @@ static void SetClipScissor(std::optional<Rect> clip_coverage,
             .value_or(IRect32());
   }
   pass.SetScissor(scissor);
+  return scissor;
 }
 
 static void ApplyFramebufferBlend(Entity& entity) {
@@ -1373,9 +1374,10 @@ void Canvas::ClipGeometry(const Geometry& geometry,
           /*clip_height_floor=*/GetClipHeightFloor(),        //
           /*is_aa=*/is_aa);
 
+  std::optional<IRect32> clip_scissor;
   if (clip_state_result.clip_did_change) {
     // We only need to update the pass scissor if the clip state has changed.
-    SetClipScissor(
+    clip_scissor = SetClipScissor(
         clip_coverage_stack_.CurrentClipCoverage(),
         *render_passes_.back().GetInlinePassContext()->GetRenderPass(),
         GetGlobalPassPosition());
@@ -1407,7 +1409,7 @@ void Canvas::ClipGeometry(const Geometry& geometry,
 
   clip_contents.Render(
       renderer_, *render_passes_.back().GetInlinePassContext()->GetRenderPass(),
-      clip_depth);
+      clip_depth, /*is_backdrop_replay=*/false, clip_scissor);
 }
 
 void Canvas::DrawPoints(const Point points[],
@@ -2807,11 +2809,11 @@ std::shared_ptr<Texture> Canvas::FlipBackdrop(Point global_pass_position,
         continue;
       }
 
-      SetClipScissor(replay.clip_coverage, current_render_pass,
-                     global_pass_position);
-      if (!replay.clip_contents.Render(renderer_, current_render_pass,
-                                       replay.clip_depth,
-                                       /*is_backdrop_replay=*/true)) {
+      const IRect32 clip_scissor = SetClipScissor(
+          replay.clip_coverage, current_render_pass, global_pass_position);
+      if (!replay.clip_contents.Render(
+              renderer_, current_render_pass, replay.clip_depth,
+              /*is_backdrop_replay=*/true, clip_scissor)) {
         VALIDATION_LOG << "Failed to render entity for clip restore.";
       }
     }
