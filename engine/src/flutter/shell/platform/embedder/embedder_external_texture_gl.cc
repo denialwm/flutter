@@ -210,7 +210,8 @@ sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTextureImpeller(
 
   scoped_cleanup.Release();
 
-  return impeller::DlImageImpeller::Make(image);
+  return impeller::DlImageImpeller::Make(image, DlImage::OwningContext::kIO,
+                                         /*is_external_texture=*/true);
 }
 
 // |flutter::Texture|

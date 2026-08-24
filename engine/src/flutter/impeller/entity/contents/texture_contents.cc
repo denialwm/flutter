@@ -36,6 +36,10 @@ void TextureContents::SetLabel(std::string_view label) {
   label_ = label;
 }
 
+void TextureContents::SetIsExternalTexture(bool is_external_texture) {
+  is_external_texture_ = is_external_texture;
+}
+
 void TextureContents::SetDestinationRect(Rect rect) {
   destination_rect_ = rect;
 }
@@ -153,6 +157,10 @@ bool TextureContents::Render(const ContentContext& renderer,
     pass.SetCommandAuditCategory(CommandAuditCategory::kBackdropRestore);
   } else if (label_ == "MSAA backdrop") {
     pass.SetCommandAuditCategory(CommandAuditCategory::kMsaaBackdropRestore);
+  } else if (is_external_texture_) {
+    pass.SetCommandAuditCategory(CommandAuditCategory::kExternalTexture);
+  } else {
+    pass.SetCommandAuditCategory(CommandAuditCategory::kSceneTexture);
   }
 
   auto pipeline_options = OptionsFromPassAndEntity(pass, entity);

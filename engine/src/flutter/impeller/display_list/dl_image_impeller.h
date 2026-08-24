@@ -16,7 +16,8 @@ class DlImageImpeller final : public flutter::DlImage {
  public:
   static sk_sp<DlImageImpeller> Make(
       std::shared_ptr<Texture> texture,
-      OwningContext owning_context = OwningContext::kIO);
+      OwningContext owning_context = OwningContext::kIO,
+      bool is_external_texture = false);
 
   static sk_sp<DlImageImpeller> MakeFromYUVTextures(
       AiksContext* aiks_context,
@@ -40,6 +41,9 @@ class DlImageImpeller final : public flutter::DlImage {
   bool isTextureBacked() const override;
 
   // |DlImage|
+  bool isExternalTexture() const override { return is_external_texture_; }
+
+  // |DlImage|
   bool isUIThreadSafe() const override;
 
   // |DlImage|
@@ -54,9 +58,11 @@ class DlImageImpeller final : public flutter::DlImage {
  private:
   std::shared_ptr<Texture> texture_;
   OwningContext owning_context_;
+  bool is_external_texture_ = false;
 
   explicit DlImageImpeller(std::shared_ptr<Texture> texture,
-                           OwningContext owning_context = OwningContext::kIO);
+                           OwningContext owning_context = OwningContext::kIO,
+                           bool is_external_texture = false);
 
   DlImageImpeller(const DlImageImpeller&) = delete;
 

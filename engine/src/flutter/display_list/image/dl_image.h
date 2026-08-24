@@ -69,6 +69,11 @@ class DlImage : public SkRefCnt {
 
   virtual bool isTextureBacked() const = 0;
 
+  // True for an embedder-owned texture whose pixels originate outside the
+  // Flutter scene. Denial uses this only to attribute opt-in GPU audit time;
+  // it does not alter rendering or lifetime semantics.
+  virtual bool isExternalTexture() const { return false; }
+
   //----------------------------------------------------------------------------
   /// @brief      If the underlying platform image held by this object has no
   ///             threading requirements for the release of that image (or if

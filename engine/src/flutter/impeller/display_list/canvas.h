@@ -241,7 +241,8 @@ class Canvas {
       Rect dest,
       const Paint& paint,
       const SamplerDescriptor& sampler = {},
-      SourceRectConstraint src_rect_constraint = SourceRectConstraint::kFast);
+      SourceRectConstraint src_rect_constraint = SourceRectConstraint::kFast,
+      bool is_external_texture = false);
 
   void DrawTextFrame(const std::shared_ptr<TextFrame>& text_frame,
                      Point position,

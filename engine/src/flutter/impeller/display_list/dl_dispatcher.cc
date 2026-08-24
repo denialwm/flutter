@@ -723,12 +723,13 @@ void DlDispatcherBase::drawImageRect(const sk_sp<flutter::DlImage> image,
   AUTO_DEPTH_WATCHER(1u);
 
   GetCanvas().DrawImageRect(
-      image->impeller_texture(),                       // image
-      src,                                             // source rect
-      dst,                                             // destination rect
-      render_with_attributes ? paint_ : Paint(),       // paint
-      skia_conversions::ToSamplerDescriptor(sampling)  // sampling
-  );
+      image->impeller_texture(),                        // image
+      src,                                              // source rect
+      dst,                                              // destination rect
+      render_with_attributes ? paint_ : Paint(),        // paint
+      skia_conversions::ToSamplerDescriptor(sampling),  // sampling
+      SourceRectConstraint::kFast,
+      image->isExternalTexture());
 }
 
 // |flutter::DlOpReceiver|
