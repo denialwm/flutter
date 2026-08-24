@@ -105,6 +105,44 @@ TEST(SaveLayerUtilsTest, DirectBackdropPlanReportsEveryRejection) {
             0u);
 }
 
+TEST(SaveLayerUtilsTest, BackdropSurfaceCompositeRequiresExactPhysicalProof) {
+  const BackdropSurfaceCompositePlanInputs accepted = {
+      .backend_supports_external_sampler = true,
+      .backdrop_is_texture = true,
+      .surface_is_external_texture = true,
+      .surface_sampling_is_direct = true,
+      .surface_blend_mode = BlendMode::kSrcOver,
+      .transforms_are_translation_scale = true,
+      .surface_covers_backdrop_scope = true,
+  };
+  EXPECT_TRUE(CanRenderBackdropSurfaceComposite(accepted));
+
+  auto rejected = accepted;
+  rejected.surface_is_external_texture = false;
+  EXPECT_FALSE(CanRenderBackdropSurfaceComposite(rejected));
+
+  rejected = accepted;
+  rejected.surface_sampling_is_direct = false;
+  EXPECT_FALSE(CanRenderBackdropSurfaceComposite(rejected));
+
+  rejected = accepted;
+  rejected.surface_blend_mode = BlendMode::kSrc;
+  EXPECT_FALSE(CanRenderBackdropSurfaceComposite(rejected));
+
+  rejected = accepted;
+  rejected.transforms_are_translation_scale = false;
+  EXPECT_FALSE(CanRenderBackdropSurfaceComposite(rejected));
+
+  rejected = accepted;
+  rejected.surface_covers_backdrop_scope = false;
+  EXPECT_FALSE(CanRenderBackdropSurfaceComposite(rejected));
+}
+
+TEST(SaveLayerUtilsTest, BackdropSurfaceCompositeReportsEveryRejection) {
+  const uint32_t reasons = GetBackdropSurfaceCompositeRejections({});
+  EXPECT_EQ(reasons, (1u << 7u) - 1u);
+}
+
 TEST(SaveLayerUtilsTest, SimplePaintComputedCoverage) {
   // Basic Case, simple paint, computed coverage
   auto coverage = ComputeSaveLayerCoverage(

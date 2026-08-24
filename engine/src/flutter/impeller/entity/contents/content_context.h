@@ -219,6 +219,7 @@ class ContentContext {
   PipelineRef GetComplexRSEPipeline(ContentContextOptions opts) const;
 #ifdef IMPELLER_ENABLE_OPENGLES
 #if !defined(FML_OS_EMSCRIPTEN)
+  PipelineRef GetBackdropSurfaceCompositePipeline(ContentContextOptions opts) const;
   PipelineRef GetTiledTextureExternalPipeline(ContentContextOptions opts) const;
   PipelineRef GetTiledTextureUvExternalPipeline(ContentContextOptions opts) const;
 #endif

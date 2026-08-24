@@ -315,6 +315,7 @@ struct ContentContext::Pipelines {
 
 // Web doesn't support external texture OpenGL extensions
 #if defined(IMPELLER_ENABLE_OPENGLES) && !defined(FML_OS_EMSCRIPTEN)
+  Variants<BackdropSurfaceCompositePipeline> backdrop_surface_composite;
   Variants<TiledTextureExternalPipeline> tiled_texture_external;
   Variants<TiledTextureUvExternalPipeline> tiled_texture_uv_external;
 #endif
@@ -870,6 +871,7 @@ ContentContext::ContentContext(
 #if defined(IMPELLER_ENABLE_OPENGLES) && !defined(FML_OS_MACOSX) && \
     !defined(FML_OS_EMSCRIPTEN)
     // GLES only shader that is unsupported on macOS and web.
+    pipelines_->backdrop_surface_composite.CreateDefault(*context_, options);
     pipelines_->tiled_texture_external.CreateDefault(*context_, options);
     pipelines_->tiled_texture_uv_external.CreateDefault(*context_, options);
 #endif  // !defined(FML_OS_MACOSX)
@@ -1670,6 +1672,12 @@ PipelineRef ContentContext::GetLinePipeline(ContentContextOptions opts) const {
 #ifdef IMPELLER_ENABLE_OPENGLES
 
 #if !defined(FML_OS_EMSCRIPTEN)
+PipelineRef ContentContext::GetBackdropSurfaceCompositePipeline(
+    ContentContextOptions opts) const {
+  FML_DCHECK(GetContext()->GetBackendType() == Context::BackendType::kOpenGLES);
+  return GetPipeline(this, pipelines_->backdrop_surface_composite, opts);
+}
+
 PipelineRef ContentContext::GetTiledTextureUvExternalPipeline(
     ContentContextOptions opts) const {
   FML_DCHECK(GetContext()->GetBackendType() == Context::BackendType::kOpenGLES);

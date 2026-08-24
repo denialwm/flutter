@@ -49,6 +49,37 @@ uint32_t GetBackdropLayerDirectRejections(
   return result;
 }
 
+bool CanRenderBackdropSurfaceComposite(
+    const BackdropSurfaceCompositePlanInputs& inputs) {
+  return GetBackdropSurfaceCompositeRejections(inputs) == 0u;
+}
+
+uint32_t GetBackdropSurfaceCompositeRejections(
+    const BackdropSurfaceCompositePlanInputs& inputs) {
+  uint32_t result = 0u;
+  const auto reject = [&](bool condition,
+                          BackdropSurfaceCompositeRejection reason) {
+    if (condition) {
+      result |= static_cast<uint32_t>(reason);
+    }
+  };
+  reject(!inputs.backend_supports_external_sampler,
+         BackdropSurfaceCompositeRejection::kBackend);
+  reject(!inputs.backdrop_is_texture,
+         BackdropSurfaceCompositeRejection::kBackdropNotTexture);
+  reject(!inputs.surface_is_external_texture,
+         BackdropSurfaceCompositeRejection::kSurfaceNotExternalTexture);
+  reject(!inputs.surface_sampling_is_direct,
+         BackdropSurfaceCompositeRejection::kSurfaceSampling);
+  reject(inputs.surface_blend_mode != BlendMode::kSrcOver,
+         BackdropSurfaceCompositeRejection::kSurfaceBlendMode);
+  reject(!inputs.transforms_are_translation_scale,
+         BackdropSurfaceCompositeRejection::kTransform);
+  reject(!inputs.surface_covers_backdrop_scope,
+         BackdropSurfaceCompositeRejection::kCoverage);
+  return result;
+}
+
 std::optional<Rect> ComputeSaveLayerCoverage(
     const Rect& content_coverage,
     const Matrix& effect_transform,

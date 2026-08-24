@@ -657,6 +657,9 @@ static void EncodeViewport(const ProcTableGLES& gl,
         case CommandAuditCategory::kBackdropCachedComposite:
           command_audit_stage = DenialGpuAuditStage::kBackdropCachedComposite;
           break;
+        case CommandAuditCategory::kBackdropSurfaceComposite:
+          command_audit_stage = DenialGpuAuditStage::kBackdropSurfaceComposite;
+          break;
         case CommandAuditCategory::kBackdropRestore:
           command_audit_stage = DenialGpuAuditStage::kBackdropRestore;
           break;

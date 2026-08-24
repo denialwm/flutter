@@ -457,7 +457,11 @@ void DlDispatcherBase::clipRoundRect(const DlRoundRect& rrect,
     GetCanvas().ClipGeometry(geom, clip_op);
   } else if (rrect.GetRadii().AreAllCornersSame()) {
     RoundRectGeometry geom(rrect.GetBounds(), rrect.GetRadii().top_left);
-    GetCanvas().ClipGeometry(geom, clip_op);
+    GetCanvas().ClipGeometry(geom, clip_op, /*is_aa=*/is_aa,
+                             BackdropSurfaceContents::AnalyticRRect{
+                                 .bounds = rrect.GetBounds(),
+                                 .radii = rrect.GetRadii().top_left,
+                             });
   } else {
     FillRoundRectGeometry geom(rrect);
     GetCanvas().ClipGeometry(geom, clip_op);
@@ -502,7 +506,11 @@ void DlDispatcherBase::clipPath(const DlPath& path,
     DlRoundRect rrect;
     if (path.IsRoundRect(&rrect) && rrect.GetRadii().AreAllCornersSame()) {
       RoundRectGeometry geom(rrect.GetBounds(), rrect.GetRadii().top_left);
-      GetCanvas().ClipGeometry(geom, clip_op);
+      GetCanvas().ClipGeometry(geom, clip_op, /*is_aa=*/is_aa,
+                               BackdropSurfaceContents::AnalyticRRect{
+                                   .bounds = rrect.GetBounds(),
+                                   .radii = rrect.GetRadii().top_left,
+                               });
     } else {
       FillPathGeometry geom(path);
       GetCanvas().ClipGeometry(geom, clip_op);

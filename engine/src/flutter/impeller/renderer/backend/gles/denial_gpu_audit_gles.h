@@ -40,6 +40,7 @@ enum class DenialGpuAuditStage : uint8_t {
   kRootAtlas,
   kRootOtherDraw,
   kBackdropCachedComposite,
+  kBackdropSurfaceComposite,
   kBackdropRestore,
   kMsaaBackdropRestore,
   kResolve,
