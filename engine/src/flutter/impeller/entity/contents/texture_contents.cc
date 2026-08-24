@@ -153,7 +153,10 @@ bool TextureContents::Render(const ContentContext& renderer,
   }
 #endif  // IMPELLER_DEBUG
 
-  if (label_ == "Denial backdrop layer restore") {
+  if (label_ == "Denial backdrop cached composite") {
+    pass.SetCommandAuditCategory(
+        CommandAuditCategory::kBackdropCachedComposite);
+  } else if (label_ == "Denial backdrop layer restore") {
     pass.SetCommandAuditCategory(CommandAuditCategory::kBackdropRestore);
   } else if (label_ == "MSAA backdrop") {
     pass.SetCommandAuditCategory(CommandAuditCategory::kMsaaBackdropRestore);
