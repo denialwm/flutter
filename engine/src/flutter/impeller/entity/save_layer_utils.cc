@@ -42,8 +42,7 @@ uint32_t GetBackdropLayerDirectRejections(
          BackdropLayerDirectRejection::kRestoreNotOpaque);
   reject(inputs.restore_has_effects,
          BackdropLayerDirectRejection::kRestoreHasEffects);
-  reject(inputs.shares_backdrop_input,
-         BackdropLayerDirectRejection::kSharedBackdropInput);
+  reject(inputs.has_backdrop_id, BackdropLayerDirectRejection::kBackdropId);
   reject(!ScalarNearlyEqual(inputs.inherited_opacity, 1.0f),
          BackdropLayerDirectRejection::kInheritedOpacity);
   return result;
