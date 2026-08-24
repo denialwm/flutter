@@ -20,10 +20,15 @@ constexpr size_t kMaximumPendingSamples = 8192u;
 constexpr std::array<std::string_view,
                      static_cast<size_t>(DenialGpuAuditStage::kCount)>
     kStageNames = {
-        "root_pass",          "backdrop_layer_color",  "blur_downsample",
-        "blur_vertical",      "blur_horizontal",       "other_pass",
-        "root_scene_texture", "root_external_texture", "root_other_draw",
-        "backdrop_restore",   "msaa_backdrop_restore", "layer_resolve",
+        "root_pass",          "backdrop_layer_color",
+        "blur_downsample",    "blur_vertical",
+        "blur_horizontal",    "other_pass",
+        "root_scene_texture", "root_external_texture",
+        "root_tiled_texture", "root_clip",
+        "root_solid",         "root_text",
+        "root_atlas",         "root_other_draw",
+        "backdrop_restore",   "msaa_backdrop_restore",
+        "layer_resolve",
 };
 
 bool IsAuditRequested() {

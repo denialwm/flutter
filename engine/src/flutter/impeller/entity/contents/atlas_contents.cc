@@ -163,6 +163,8 @@ bool AtlasContents::Render(const ContentContext& renderer,
     return true;
   }
 
+  pass.SetCommandAuditCategory(CommandAuditCategory::kAtlas);
+
   const SamplerDescriptor& dst_sampler_descriptor =
       geometry_->GetSamplerDescriptor();
   raw_ptr<const Sampler> dst_sampler =

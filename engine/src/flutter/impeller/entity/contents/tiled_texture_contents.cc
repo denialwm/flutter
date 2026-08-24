@@ -129,6 +129,8 @@ bool TiledTextureContents::Render(const ContentContext& renderer,
     return true;
   }
 
+  pass.SetCommandAuditCategory(CommandAuditCategory::kTiledTexture);
+
   VS::FrameInfo frame_info;
   frame_info.uv_transform =
       Rect::MakeSize(texture_size).GetNormalizingTransform() *
