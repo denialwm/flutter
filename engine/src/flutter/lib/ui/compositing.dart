@@ -147,6 +147,16 @@ class TransformEngineLayer extends _EngineLayerWrapper {
   TransformEngineLayer._(super.nativeLayer) : super._();
 }
 
+/// An opaque handle to an output-relative transform engine layer.
+///
+/// Instances of this class are created by
+/// [SceneBuilder.pushOutputRelativeTransform].
+///
+/// {@macro dart.ui.sceneBuilder.oldLayerCompatibility}
+class OutputRelativeTransformEngineLayer extends _EngineLayerWrapper {
+  OutputRelativeTransformEngineLayer._(super.nativeLayer) : super._();
+}
+
 /// An opaque handle to an offset engine layer.
 ///
 /// Instances of this class are created by [SceneBuilder.pushOffset].
@@ -290,6 +300,23 @@ abstract class SceneBuilder {
   ///
   /// See [pop] for details about the operation stack.
   TransformEngineLayer pushTransform(Float64List matrix4, {TransformEngineLayer? oldLayer});
+
+  /// Pushes a translation resolved as a fraction of the active render output.
+  ///
+  /// The fallback width and height are used when the scene is not being
+  /// rasterized through a per-output embedder traversal, including snapshots
+  /// and ordinary Flutter views.
+  ///
+  /// {@macro dart.ui.sceneBuilder.oldLayer}
+  ///
+  /// {@macro dart.ui.sceneBuilder.oldLayerVsRetained}
+  OutputRelativeTransformEngineLayer pushOutputRelativeTransform(
+    double offsetFactorX,
+    double offsetFactorY,
+    double fallbackWidth,
+    double fallbackHeight, {
+    OutputRelativeTransformEngineLayer? oldLayer,
+  });
 
   /// Pushes an offset operation onto the operation stack.
   ///
@@ -668,6 +695,45 @@ base class _NativeSceneBuilder extends NativeFieldWrapperClass1 implements Scene
     symbol: 'SceneBuilder::pushTransformHandle',
   )
   external void _pushTransform(EngineLayer layer, Float64List matrix4, EngineLayer? oldLayer);
+
+  @override
+  OutputRelativeTransformEngineLayer pushOutputRelativeTransform(
+    double offsetFactorX,
+    double offsetFactorY,
+    double fallbackWidth,
+    double fallbackHeight, {
+    OutputRelativeTransformEngineLayer? oldLayer,
+  }) {
+    assert(offsetFactorX.isFinite);
+    assert(offsetFactorY.isFinite);
+    assert(fallbackWidth.isFinite && fallbackWidth > 0.0);
+    assert(fallbackHeight.isFinite && fallbackHeight > 0.0);
+    assert(_debugCheckCanBeUsedAsOldLayer(oldLayer, 'pushOutputRelativeTransform'));
+    final EngineLayer engineLayer = _NativeEngineLayer._();
+    _pushOutputRelativeTransform(
+      engineLayer,
+      offsetFactorX,
+      offsetFactorY,
+      fallbackWidth,
+      fallbackHeight,
+      oldLayer?._nativeLayer,
+    );
+    final layer = OutputRelativeTransformEngineLayer._(engineLayer);
+    assert(_debugPushLayer(layer));
+    return layer;
+  }
+
+  @Native<Void Function(Pointer<Void>, Handle, Double, Double, Double, Double, Handle)>(
+    symbol: 'SceneBuilder::pushOutputRelativeTransform',
+  )
+  external void _pushOutputRelativeTransform(
+    EngineLayer layer,
+    double offsetFactorX,
+    double offsetFactorY,
+    double fallbackWidth,
+    double fallbackHeight,
+    EngineLayer? oldLayer,
+  );
 
   @override
   OffsetEngineLayer pushOffset(double dx, double dy, {OffsetEngineLayer? oldLayer}) {

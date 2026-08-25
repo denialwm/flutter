@@ -306,6 +306,7 @@ typedef CanvasPath Path;
   V(SceneBuilder, pushColorFilter)               \
   V(SceneBuilder, pushImageFilter)               \
   V(SceneBuilder, pushOffset)                    \
+  V(SceneBuilder, pushOutputRelativeTransform)   \
   V(SceneBuilder, pushOpacity)                   \
   V(SceneBuilder, pushShaderMask)                \
   V(SceneBuilder, pushTransformHandle)           \

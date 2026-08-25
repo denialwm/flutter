@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <unordered_set>
 #include <vector>
 
@@ -73,6 +74,11 @@ struct PrerollContext {
   int renderable_state_flags = 0;
 
   std::vector<RasterCacheItem*>* raster_cached_entries;
+
+  // Denial renders the implicit Flutter view directly into one retained
+  // target per physical output. Layers with output-relative geometry resolve
+  // against this logical size while traversing that output's source crop.
+  std::optional<DlSize> denial_render_output_logical_size;
 };
 
 struct PaintContext {
@@ -106,6 +112,9 @@ struct PaintContext {
 
   bool impeller_enabled = false;
   impeller::AiksContext* aiks_context;
+
+  // See PrerollContext::denial_render_output_logical_size.
+  std::optional<DlSize> denial_render_output_logical_size;
 };
 
 // Represents a single composited layer. Created on the UI thread but then

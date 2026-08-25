@@ -158,6 +158,15 @@ class DiffContext {
   // Returns current transform as DlMatrix.
   const DlMatrix& GetMatrix() const;
 
+  const std::optional<DlSize>& denial_render_output_logical_size() const {
+    return denial_render_output_logical_size_;
+  }
+
+  void set_denial_render_output_logical_size(
+      std::optional<DlSize> logical_size) {
+    denial_render_output_logical_size_ = logical_size;
+  }
+
   // Return cull rect for current subtree (in local coordinates).
   DlRect GetCullRect() const;
 
@@ -373,6 +382,11 @@ class DiffContext {
   bool has_raster_cache_;
   bool impeller_enabled_;
   const std::unordered_set<int64_t>* dirty_texture_ids_;
+
+  // Constant for a Denial physical-output traversal. This lives outside the
+  // ordinary subtree state because synthesized source crops set and restore it
+  // around the shared Flutter root.
+  std::optional<DlSize> denial_render_output_logical_size_;
   TexturePaintRegionList* texture_region_cache_ = nullptr;
   ReadbackRegionList* readback_region_cache_ = nullptr;
   BackdropFilterCacheMetadataList* backdrop_filter_cache_ = nullptr;

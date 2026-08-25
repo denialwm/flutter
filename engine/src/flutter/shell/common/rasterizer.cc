@@ -58,29 +58,52 @@ namespace {
 // transform behavior of the synthesized ancestors.
 class DenialRenderOutputSourceLayer final : public ClipRectLayer {
  public:
-  explicit DenialRenderOutputSourceLayer(const DlRect& source)
-      : ClipRectLayer(source, Clip::kHardEdge) {}
+  DenialRenderOutputSourceLayer(const DlRect& source,
+                                const DlSize& logical_size)
+      : ClipRectLayer(source, Clip::kHardEdge), logical_size_(logical_size) {}
 
   void DiffChildren(DiffContext* context,
                     const ContainerLayer* old_layer) override {
-    if (old_layer == nullptr) {
-      if (!context->IsSubtreeDirty()) {
-        context->MarkSubtreeDirty();
+    const auto previous_size = context->denial_render_output_logical_size();
+    context->set_denial_render_output_logical_size(logical_size_);
+    [&] {
+      if (old_layer == nullptr) {
+        if (!context->IsSubtreeDirty()) {
+          context->MarkSubtreeDirty();
+        }
+        ContainerLayer::DiffChildren(context, nullptr);
+        return;
       }
-      ContainerLayer::DiffChildren(context, nullptr);
-      return;
-    }
 
-    const auto& current_children = layers();
-    const auto& previous_children = old_layer->layers();
-    if (context->IsSubtreeDirty() || current_children.size() != 1u ||
-        previous_children.size() != 1u) {
-      ContainerLayer::DiffChildren(context, old_layer);
-      return;
-    }
+      const auto& current_children = layers();
+      const auto& previous_children = old_layer->layers();
+      if (context->IsSubtreeDirty() || current_children.size() != 1u ||
+          previous_children.size() != 1u) {
+        ContainerLayer::DiffChildren(context, old_layer);
+        return;
+      }
 
-    current_children.front()->Diff(context, previous_children.front().get());
+      current_children.front()->Diff(context, previous_children.front().get());
+    }();
+    context->set_denial_render_output_logical_size(previous_size);
   }
+
+  void Preroll(PrerollContext* context) override {
+    const auto previous_size = context->denial_render_output_logical_size;
+    context->denial_render_output_logical_size = logical_size_;
+    ClipRectLayer::Preroll(context);
+    context->denial_render_output_logical_size = previous_size;
+  }
+
+  void Paint(PaintContext& context) const override {
+    const auto previous_size = context.denial_render_output_logical_size;
+    context.denial_render_output_logical_size = logical_size_;
+    ClipRectLayer::Paint(context);
+    context.denial_render_output_logical_size = previous_size;
+  }
+
+ private:
+  const DlSize logical_size_;
 };
 
 }  // namespace
@@ -429,10 +452,15 @@ Rasterizer::ExpandDenialRenderOutputTasks(
 
     expanded_implicit_view = true;
     const auto source_root = task->layer_tree->root_layer_shared();
+    const float source_device_pixel_ratio = task->device_pixel_ratio;
+    FML_DCHECK(source_device_pixel_ratio > 0.0f);
     for (const auto& output : denial_render_outputs_) {
       const auto& source = output.source_physical_bounds;
-      auto source_clip =
-          std::make_shared<DenialRenderOutputSourceLayer>(source);
+      const DlSize source_logical_size(
+          source.GetWidth() / source_device_pixel_ratio,
+          source.GetHeight() / source_device_pixel_ratio);
+      auto source_clip = std::make_shared<DenialRenderOutputSourceLayer>(
+          source, source_logical_size);
       source_clip->Add(source_root);
       auto transform =
           std::make_shared<TransformLayer>(output.source_to_target_transform);

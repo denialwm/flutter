@@ -116,6 +116,57 @@ TEST_F(TransformLayerTest, Simple) {
   EXPECT_TRUE(DisplayListsEQ_Verbose(display_list(), expected_builder.Build()));
 }
 
+TEST_F(TransformLayerTest, OutputRelativeTransformUsesFallbackSize) {
+  const DlPath child_path = DlPath::MakeRectLTRB(0, 400, 20, 430);
+  auto mock_layer = std::make_shared<MockLayer>(child_path, DlPaint());
+  auto layer = std::make_shared<OutputRelativeTransformLayer>(
+      DlPoint(0.25f, -0.5f), DlSize(400, 200));
+  layer->Add(mock_layer);
+
+  const DlMatrix expected_transform = DlMatrix::MakeTranslation({100, -100});
+  layer->Preroll(preroll_context());
+
+  EXPECT_EQ(mock_layer->parent_matrix(), expected_transform);
+  EXPECT_EQ(layer->paint_bounds(),
+            child_path.GetBounds().TransformAndClipBounds(expected_transform));
+
+  layer->Paint(display_list_paint_context());
+  DisplayListBuilder expected_builder;
+  expected_builder.Save();
+  expected_builder.Transform(expected_transform);
+  expected_builder.DrawPath(child_path, DlPaint());
+  expected_builder.Restore();
+  EXPECT_TRUE(DisplayListsEQ_Verbose(display_list(), expected_builder.Build()));
+}
+
+TEST_F(TransformLayerTest, OutputRelativeTransformUsesActiveOutputSize) {
+  const DlPath child_path = DlPath::MakeRectLTRB(0, 400, 20, 430);
+  auto mock_layer = std::make_shared<MockLayer>(child_path, DlPaint());
+  auto layer = std::make_shared<OutputRelativeTransformLayer>(
+      DlPoint(0.25f, -0.5f), DlSize(400, 200));
+  layer->Add(mock_layer);
+
+  const DlSize output_size(200, 600);
+  preroll_context()->denial_render_output_logical_size = output_size;
+  paint_context().denial_render_output_logical_size = output_size;
+  const DlMatrix expected_transform = DlMatrix::MakeTranslation({50, -300});
+  layer->Preroll(preroll_context());
+
+  EXPECT_EQ(mock_layer->parent_matrix(), expected_transform);
+  EXPECT_EQ(layer->paint_bounds(),
+            child_path.GetBounds().TransformAndClipBounds(expected_transform));
+
+  layer->Paint(display_list_paint_context());
+  DisplayListBuilder expected_builder;
+  expected_builder.Save();
+  expected_builder.Transform(expected_transform);
+  expected_builder.DrawPath(child_path, DlPaint());
+  expected_builder.Restore();
+  // A retained transform is the only additional render operation. In
+  // particular, this contains no saveLayer or offscreen image pass.
+  EXPECT_TRUE(DisplayListsEQ_Verbose(display_list(), expected_builder.Build()));
+}
+
 TEST_F(TransformLayerTest, ComplexMatrix) {
   const DlPath child_path = DlPath::MakeRectLTRB(5.0f, 6.0f, 20.5f, 21.5f);
   DlMatrix initial_transform = DlMatrix::MakeTranslation({-2.0f, -2.0f});
@@ -461,6 +512,41 @@ TEST_F(TransformLayerLayerDiffTest, Transform) {
 
   damage = DiffLayerTree(t3, t2);
   EXPECT_EQ(damage.frame_damage.bounds(), DlIRect());
+}
+
+TEST_F(TransformLayerLayerDiffTest,
+       OutputRelativeTransformDiffUsesActiveOutputSize) {
+  auto child = std::make_shared<MockLayer>(DlPath::MakeRectLTRB(0, 0, 50, 50));
+
+  auto transform1 = std::make_shared<OutputRelativeTransformLayer>(
+      DlPoint(0.25f, 0), DlSize(400, 400));
+  transform1->Add(child);
+  MockLayerTree tree1(DlISize(500, 500));
+  tree1.root()->Add(transform1);
+
+  MockLayerTree empty(DlISize(500, 500));
+  DiffContext first_context(tree1.size(), tree1.paint_region_map(),
+                            empty.paint_region_map(), true, false);
+  first_context.set_denial_render_output_logical_size(DlSize(200, 300));
+  first_context.PushCullRect(DlRect::MakeSize(tree1.size()));
+  tree1.root()->Diff(&first_context, empty.root());
+  EXPECT_EQ(first_context.ComputeDamage(DlRegion()).frame_damage.bounds(),
+            DlIRect::MakeLTRB(50, 0, 100, 50));
+
+  auto transform2 = std::make_shared<OutputRelativeTransformLayer>(
+      DlPoint(0.5f, 0), DlSize(400, 400));
+  transform2->Add(child);
+  transform2->AssignOldLayer(transform1.get());
+  MockLayerTree tree2(DlISize(500, 500));
+  tree2.root()->Add(transform2);
+
+  DiffContext second_context(tree2.size(), tree2.paint_region_map(),
+                             tree1.paint_region_map(), true, false);
+  second_context.set_denial_render_output_logical_size(DlSize(200, 300));
+  second_context.PushCullRect(DlRect::MakeSize(tree2.size()));
+  tree2.root()->Diff(&second_context, tree1.root());
+  EXPECT_EQ(second_context.ComputeDamage(DlRegion()).frame_damage.bounds(),
+            DlIRect::MakeLTRB(50, 0, 150, 50));
 }
 
 TEST_F(TransformLayerLayerDiffTest, TransformNested) {

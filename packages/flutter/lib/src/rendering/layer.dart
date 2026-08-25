@@ -2127,6 +2127,83 @@ class TransformLayer extends OffsetLayer {
   }
 }
 
+/// A composited translation expressed as a fraction of the active render
+/// output's logical size.
+///
+/// Denial's per-output raster traversal resolves this independently for every
+/// physical output. Other embedders and scene snapshots use [fallbackSize].
+class OutputRelativeTransformLayer extends ContainerLayer {
+  /// Creates an output-relative transform layer.
+  OutputRelativeTransformLayer({required Offset offsetFactor, required Size fallbackSize})
+    : _offsetFactor = offsetFactor,
+      _fallbackSize = fallbackSize,
+      assert(offsetFactor.dx.isFinite && offsetFactor.dy.isFinite),
+      assert(fallbackSize.isFinite && !fallbackSize.isEmpty);
+
+  /// The translation multiplier applied to the active output size.
+  Offset get offsetFactor => _offsetFactor;
+  Offset _offsetFactor;
+  set offsetFactor(Offset value) {
+    assert(value.dx.isFinite && value.dy.isFinite);
+    if (value == _offsetFactor) {
+      return;
+    }
+    _offsetFactor = value;
+    markNeedsAddToScene();
+  }
+
+  /// The size used outside a per-output raster traversal.
+  Size get fallbackSize => _fallbackSize;
+  Size _fallbackSize;
+  set fallbackSize(Size value) {
+    assert(value.isFinite && !value.isEmpty);
+    if (value == _fallbackSize) {
+      return;
+    }
+    _fallbackSize = value;
+    markNeedsAddToScene();
+  }
+
+  Offset get _fallbackOffset =>
+      Offset(offsetFactor.dx * fallbackSize.width, offsetFactor.dy * fallbackSize.height);
+
+  @override
+  bool findAnnotations<S extends Object>(
+    AnnotationResult<S> result,
+    Offset localPosition, {
+    required bool onlyFirst,
+  }) {
+    return super.findAnnotations<S>(result, localPosition - _fallbackOffset, onlyFirst: onlyFirst);
+  }
+
+  @override
+  void applyTransform(Layer? child, Matrix4 transform) {
+    assert(child != null);
+    final offset = _fallbackOffset;
+    transform.translateByDouble(offset.dx, offset.dy, 0, 1);
+  }
+
+  @override
+  void addToScene(ui.SceneBuilder builder) {
+    engineLayer = builder.pushOutputRelativeTransform(
+      offsetFactor.dx,
+      offsetFactor.dy,
+      fallbackSize.width,
+      fallbackSize.height,
+      oldLayer: _engineLayer as ui.OutputRelativeTransformEngineLayer?,
+    );
+    addChildrenToScene(builder);
+    builder.pop();
+  }
+
+  @override
+  void debugFillProperties(DiagnosticPropertiesBuilder properties) {
+    super.debugFillProperties(properties);
+    properties.add(DiagnosticsProperty<Offset>('offsetFactor', offsetFactor));
+    properties.add(DiagnosticsProperty<Size>('fallbackSize', fallbackSize));
+  }
+}
+
 /// A composited layer that makes its children partially transparent.
 ///
 /// When debugging, setting [debugDisableOpacityLayers] to true will cause this

@@ -187,6 +187,24 @@ class LayerSceneBuilder implements ui.SceneBuilder {
   }
 
   @override
+  OutputRelativeTransformEngineLayer pushOutputRelativeTransform(
+    double offsetFactorX,
+    double offsetFactorY,
+    double fallbackWidth,
+    double fallbackHeight, {
+    ui.OutputRelativeTransformEngineLayer? oldLayer,
+  }) {
+    return pushLayer<OutputRelativeTransformEngineLayer>(
+      OutputRelativeTransformEngineLayer(
+        offsetFactorX,
+        offsetFactorY,
+        fallbackWidth,
+        fallbackHeight,
+      ),
+    );
+  }
+
+  @override
   OpacityEngineLayer pushOpacity(
     int alpha, {
     ui.EngineLayer? oldLayer,
