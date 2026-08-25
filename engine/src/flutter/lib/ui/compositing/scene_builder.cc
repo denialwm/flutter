@@ -69,6 +69,24 @@ void SceneBuilder::pushOffset(Dart_Handle layer_handle,
   }
 }
 
+void SceneBuilder::pushOutputRelativeTransform(
+    Dart_Handle layer_handle,
+    double offset_factor_x,
+    double offset_factor_y,
+    double fallback_width,
+    double fallback_height,
+    const fml::RefPtr<EngineLayer>& old_layer) {
+  auto layer = std::make_shared<flutter::OutputRelativeTransformLayer>(
+      DlPoint(SafeNarrow(offset_factor_x), SafeNarrow(offset_factor_y)),
+      DlSize(SafeNarrow(fallback_width), SafeNarrow(fallback_height)));
+  PushLayer(layer);
+  EngineLayer::MakeRetained(layer_handle, layer);
+
+  if (old_layer && old_layer->Layer()) {
+    layer->AssignOldLayer(old_layer->Layer().get());
+  }
+}
+
 void SceneBuilder::pushClipRect(Dart_Handle layer_handle,
                                 double left,
                                 double right,

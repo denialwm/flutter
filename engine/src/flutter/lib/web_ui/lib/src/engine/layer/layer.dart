@@ -178,6 +178,24 @@ class OffsetEngineLayer extends TransformEngineLayer implements ui.OffsetEngineL
   }
 }
 
+/// Uses the fallback view size because Web has no Denial physical-output
+/// raster traversal.
+class OutputRelativeTransformEngineLayer extends TransformEngineLayer
+    implements ui.OutputRelativeTransformEngineLayer {
+  OutputRelativeTransformEngineLayer(
+    double offsetFactorX,
+    double offsetFactorY,
+    double fallbackWidth,
+    double fallbackHeight,
+  ) : super(
+        Matrix4.translationValues(
+          offsetFactorX * fallbackWidth,
+          offsetFactorY * fallbackHeight,
+          0.0,
+        ),
+      );
+}
+
 /// A layer that applies an [ui.ImageFilter] to its children.
 class ImageFilterEngineLayer extends ContainerLayer implements ui.ImageFilterEngineLayer {
   ImageFilterEngineLayer(this.filter, this.offset);
