@@ -46,18 +46,26 @@ class DlBlurImageFilter final : public DlImageFilter {
                     DlScalar sigma_y,
                     DlTileMode tile_mode,
                     std::optional<DlRect> bounds = std::nullopt,
-                    DlScalar downsample_scale = 1.0f)
+                    DlScalar downsample_scale = 1.0f,
+                    DlScalar backdrop_alpha_threshold = -1.0f,
+                    bool backdrop_alpha_threshold_is_single_surface = false)
       : sigma_x_(sigma_x),
         sigma_y_(sigma_y),
         tile_mode_(tile_mode),
         bounds_(bounds),
-        downsample_scale_(downsample_scale) {}
+        downsample_scale_(downsample_scale),
+        backdrop_alpha_threshold_(backdrop_alpha_threshold),
+        backdrop_alpha_threshold_is_single_surface_(
+            backdrop_alpha_threshold_is_single_surface) {}
   explicit DlBlurImageFilter(const DlBlurImageFilter* filter)
       : DlBlurImageFilter(filter->sigma_x_,
                           filter->sigma_y_,
                           filter->tile_mode_,
                           filter->bounds_,
-                          filter->downsample_scale_) {}
+                          filter->downsample_scale_,
+                          filter->backdrop_alpha_threshold_,
+                          filter->backdrop_alpha_threshold_is_single_surface_) {
+  }
   DlBlurImageFilter(const DlBlurImageFilter& filter)
       : DlBlurImageFilter(&filter) {}
 
@@ -66,7 +74,9 @@ class DlBlurImageFilter final : public DlImageFilter {
       DlScalar sigma_y,
       DlTileMode tile_mode,
       std::optional<DlRect> bounds = std::nullopt,
-      DlScalar downsample_scale = 1.0f);
+      DlScalar downsample_scale = 1.0f,
+      DlScalar backdrop_alpha_threshold = -1.0f,
+      bool backdrop_alpha_threshold_is_single_surface = false);
 
   std::shared_ptr<DlImageFilter> shared() const override {
     return std::make_shared<DlBlurImageFilter>(this);
@@ -95,6 +105,12 @@ class DlBlurImageFilter final : public DlImageFilter {
   DlTileMode tile_mode() const { return tile_mode_; }
   std::optional<DlRect> bounds() const { return bounds_; }
   DlScalar downsample_scale() const { return downsample_scale_; }
+  DlScalar backdrop_alpha_threshold() const {
+    return backdrop_alpha_threshold_;
+  }
+  bool backdrop_alpha_threshold_is_single_surface() const {
+    return backdrop_alpha_threshold_is_single_surface_;
+  }
 
  protected:
   bool equals_(const DlImageFilter& other) const override;
@@ -105,6 +121,8 @@ class DlBlurImageFilter final : public DlImageFilter {
   DlTileMode tile_mode_;
   std::optional<DlRect> bounds_;
   DlScalar downsample_scale_;
+  DlScalar backdrop_alpha_threshold_;
+  bool backdrop_alpha_threshold_is_single_surface_;
 };
 
 }  // namespace flutter

@@ -90,6 +90,12 @@ abstract class ImageFilterConfig {
   /// lower GPU cost while preserving the requested blur radius. It defaults to
   /// 1.0 and must be between 0.0625 and 1.0, inclusive.
   ///
+  /// When `backdropAlphaThreshold` is non-null, Denial's native compositor
+  /// applies a backdrop blur only where the final sampled child alpha is
+  /// strictly greater than this value. It must be between 0.0 and 1.0.
+  /// `backdropAlphaThresholdIsSingleSurface` is an optimization promise for a
+  /// child containing exactly one external surface.
+  ///
   /// The `bounded` argument (defaults to false) controls the sampling strategy:
   ///
   ///  * If false, the filter is applied to the entire canvas using standard
@@ -117,6 +123,8 @@ abstract class ImageFilterConfig {
     ui.TileMode tileMode,
     bool bounded,
     double downsampleScale,
+    double? backdropAlphaThreshold,
+    bool backdropAlphaThresholdIsSingleSurface,
   }) = _BlurImageFilterConfig;
 
   /// Composes the `inner` filter configuration with `outer`, to combine their
@@ -193,7 +201,13 @@ class _BlurImageFilterConfig extends ImageFilterConfig {
     this.tileMode = ui.TileMode.clamp,
     this.bounded = false,
     this.downsampleScale = 1.0,
+    this.backdropAlphaThreshold,
+    this.backdropAlphaThresholdIsSingleSurface = false,
   }) : assert(downsampleScale >= 0.0625 && downsampleScale <= 1.0),
+       assert(
+         backdropAlphaThreshold == null ||
+             (backdropAlphaThreshold >= 0.0 && backdropAlphaThreshold <= 1.0),
+       ),
        super._();
 
   final double sigmaX;
@@ -201,6 +215,8 @@ class _BlurImageFilterConfig extends ImageFilterConfig {
   final ui.TileMode tileMode;
   final bool bounded;
   final double downsampleScale;
+  final double? backdropAlphaThreshold;
+  final bool backdropAlphaThresholdIsSingleSurface;
 
   @override
   ui.ImageFilter resolve(ImageFilterContext context) {
@@ -210,6 +226,8 @@ class _BlurImageFilterConfig extends ImageFilterConfig {
       tileMode: tileMode,
       bounds: bounded ? context.bounds : null,
       downsampleScale: downsampleScale,
+      backdropAlphaThreshold: backdropAlphaThreshold,
+      backdropAlphaThresholdIsSingleSurface: backdropAlphaThresholdIsSingleSurface,
     );
   }
 
@@ -226,11 +244,21 @@ class _BlurImageFilterConfig extends ImageFilterConfig {
         other.sigmaY == sigmaY &&
         other.tileMode == tileMode &&
         other.bounded == bounded &&
-        other.downsampleScale == downsampleScale;
+        other.downsampleScale == downsampleScale &&
+        other.backdropAlphaThreshold == backdropAlphaThreshold &&
+        other.backdropAlphaThresholdIsSingleSurface == backdropAlphaThresholdIsSingleSurface;
   }
 
   @override
-  int get hashCode => Object.hash(sigmaX, sigmaY, tileMode, bounded, downsampleScale);
+  int get hashCode => Object.hash(
+    sigmaX,
+    sigmaY,
+    tileMode,
+    bounded,
+    downsampleScale,
+    backdropAlphaThreshold,
+    backdropAlphaThresholdIsSingleSurface,
+  );
 
   String get _modeString {
     switch (tileMode) {
@@ -249,9 +277,12 @@ class _BlurImageFilterConfig extends ImageFilterConfig {
 
   String get _downsampleString => downsampleScale == 1.0 ? '' : ', downsample: $downsampleScale';
 
+  String get _backdropAlphaThresholdString =>
+      backdropAlphaThreshold == null ? '' : ', backdrop alpha threshold: $backdropAlphaThreshold';
+
   @override
   String get debugShortDescription =>
-      'blur($sigmaX, $sigmaY, $_modeString, $_boundedString$_downsampleString)';
+      'blur($sigmaX, $sigmaY, $_modeString, $_boundedString$_downsampleString$_backdropAlphaThresholdString)';
 }
 
 class _ComposeImageFilterConfig extends ImageFilterConfig {

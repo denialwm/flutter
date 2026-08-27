@@ -4363,12 +4363,22 @@ abstract class ImageFilter {
   /// intermediate blur textures. Values below 1.0 trade fine detail for lower
   /// GPU cost while preserving the requested blur radius. It must be between
   /// 0.0625 and 1.0, inclusive. Other rendering backends may ignore it.
+  ///
+  /// When `backdropAlphaThreshold` is non-null and this filter is used by a
+  /// [BackdropFilter], Denial's native compositor applies the filtered
+  /// backdrop only where the final sampled child alpha is strictly greater
+  /// than the threshold. It must be between 0.0 and 1.0, inclusive.
+  /// `backdropAlphaThresholdIsSingleSurface` is an optimization promise for a
+  /// backdrop child containing exactly one external surface; when false, the
+  /// compositor first resolves the complete child alpha in a native layer.
   factory ImageFilter.blur({
     double sigmaX = 0.0,
     double sigmaY = 0.0,
     TileMode? tileMode,
     Rect? bounds,
     double downsampleScale = 1.0,
+    double? backdropAlphaThreshold,
+    bool backdropAlphaThresholdIsSingleSurface = false,
   }) {
     return _GaussianBlurImageFilter(
       sigmaX: sigmaX,
@@ -4376,6 +4386,8 @@ abstract class ImageFilter {
       tileMode: tileMode,
       bounds: bounds,
       downsampleScale: downsampleScale,
+      backdropAlphaThreshold: backdropAlphaThreshold,
+      backdropAlphaThresholdIsSingleSurface: backdropAlphaThresholdIsSingleSurface,
     );
   }
 
@@ -4541,6 +4553,8 @@ class _GaussianBlurImageFilter implements ImageFilter {
     required this.tileMode,
     this.bounds,
     this.downsampleScale = 1.0,
+    this.backdropAlphaThreshold,
+    this.backdropAlphaThresholdIsSingleSurface = false,
   });
 
   final double sigmaX;
@@ -4548,6 +4562,8 @@ class _GaussianBlurImageFilter implements ImageFilter {
   final TileMode? tileMode;
   final Rect? bounds;
   final double downsampleScale;
+  final double? backdropAlphaThreshold;
+  final bool backdropAlphaThresholdIsSingleSurface;
 
   // MakeBlurFilter
   late final _ImageFilter nativeFilter = _ImageFilter.blur(this);
@@ -4571,14 +4587,16 @@ class _GaussianBlurImageFilter implements ImageFilter {
 
   @override
   String get debugShortDescription =>
-      'blur($sigmaX, $sigmaY, $_modeString${_boundsString()}${_downsampleString()})';
+      'blur($sigmaX, $sigmaY, $_modeString${_boundsString()}${_downsampleString()}${_backdropAlphaThresholdString()})';
 
   String _boundsString() => bounds == null ? '' : ', bounds: $bounds';
   String _downsampleString() => downsampleScale == 1.0 ? '' : ', downsampleScale: $downsampleScale';
+  String _backdropAlphaThresholdString() =>
+      backdropAlphaThreshold == null ? '' : ', backdropAlphaThreshold: $backdropAlphaThreshold';
 
   @override
   String toString() =>
-      'ImageFilter.blur($sigmaX, $sigmaY, $_modeString${_boundsString()}${_downsampleString()})';
+      'ImageFilter.blur($sigmaX, $sigmaY, $_modeString${_boundsString()}${_downsampleString()}${_backdropAlphaThresholdString()})';
 
   @override
   bool operator ==(Object other) {
@@ -4590,11 +4608,21 @@ class _GaussianBlurImageFilter implements ImageFilter {
         other.sigmaY == sigmaY &&
         other.bounds == bounds &&
         other.downsampleScale == downsampleScale &&
+        other.backdropAlphaThreshold == backdropAlphaThreshold &&
+        other.backdropAlphaThresholdIsSingleSurface == backdropAlphaThresholdIsSingleSurface &&
         other.tileMode == tileMode;
   }
 
   @override
-  int get hashCode => Object.hash(sigmaX, sigmaY, bounds, downsampleScale, tileMode);
+  int get hashCode => Object.hash(
+    sigmaX,
+    sigmaY,
+    bounds,
+    downsampleScale,
+    backdropAlphaThreshold,
+    backdropAlphaThresholdIsSingleSurface,
+    tileMode,
+  );
 }
 
 class _DilateImageFilter implements ImageFilter {
@@ -4738,6 +4766,8 @@ base class _ImageFilter extends NativeFieldWrapperClass1 {
       bounds.right,
       bounds.bottom,
       filter.downsampleScale,
+      filter.backdropAlphaThreshold ?? -1.0,
+      filter.backdropAlphaThresholdIsSingleSurface,
     );
   }
 
@@ -4802,6 +4832,8 @@ base class _ImageFilter extends NativeFieldWrapperClass1 {
       Double,
       Double,
       Double,
+      Double,
+      Bool,
     )
   >(symbol: 'ImageFilter::initBlur', isLeaf: true)
   external void _initBlur(
@@ -4814,6 +4846,8 @@ base class _ImageFilter extends NativeFieldWrapperClass1 {
     double boundsRight,
     double boundsBottom,
     double downsampleScale,
+    double backdropAlphaThreshold,
+    bool backdropAlphaThresholdIsSingleSurface,
   );
 
   @Native<Void Function(Pointer<Void>, Double, Double)>(

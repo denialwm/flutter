@@ -39,6 +39,7 @@ void BindCompositeFragmentState(
     HostBuffer& data,
     Scalar surface_opacity,
     Scalar backdrop_opacity,
+    Scalar alpha_threshold,
     const std::optional<BackdropSurfaceContents::AnalyticRRect>& analytic_clip,
     const std::shared_ptr<Texture>& backdrop_texture,
     raw_ptr<const Sampler> backdrop_sampler,
@@ -47,6 +48,7 @@ void BindCompositeFragmentState(
   typename FragmentShader::FragInfo frag_info;
   frag_info.surface_opacity = surface_opacity;
   frag_info.backdrop_opacity = backdrop_opacity;
+  frag_info.alpha_threshold = alpha_threshold;
   frag_info.has_analytic_clip = analytic_clip.has_value() ? 1.0f : 0.0f;
   if (analytic_clip.has_value()) {
     frag_info.clip_bounds = Vector4(analytic_clip->bounds.GetLTRB());
@@ -86,10 +88,20 @@ std::shared_ptr<BackdropSurfaceContents> BackdropSurfaceContents::Make(
     const std::shared_ptr<TextureContents>& surface_contents,
     const Matrix& surface_transform,
     const Rect& composite_coverage,
-    std::optional<AnalyticRRect> analytic_clip) {
-  if (!SupportsSurfaceTexture(surface_contents) ||
+    std::optional<Scalar> alpha_threshold,
+    std::optional<AnalyticRRect> analytic_clip,
+    bool require_external_surface) {
+  const std::shared_ptr<Texture> surface_texture =
+      surface_contents ? surface_contents->GetTexture() : nullptr;
+  const TextureType surface_type =
+      surface_texture ? surface_texture->GetTextureDescriptor().type
+                      : TextureType::kTexture2D;
+  if (!surface_texture ||
+      (require_external_surface && !SupportsSurfaceTexture(surface_contents)) ||
+      (surface_type != TextureType::kTexture2D &&
+       surface_type != TextureType::kTextureExternalOES) ||
       surface_contents->GetStrictSourceRect() ||
-      !Rect::MakeSize(surface_contents->GetTexture()->GetSize())
+      !Rect::MakeSize(surface_texture->GetSize())
            .Contains(surface_contents->GetSourceRect()) ||
       surface_contents->GetSamplerDescriptor().width_address_mode !=
           SamplerAddressMode::kClampToEdge ||
@@ -106,7 +118,8 @@ std::shared_ptr<BackdropSurfaceContents> BackdropSurfaceContents::Make(
        !scene_snapshot->GetUVTransform().has_value())) {
     return nullptr;
   }
-  if (analytic_clip.has_value() && !scene_snapshot.has_value()) {
+  if (analytic_clip.has_value() && !scene_snapshot.has_value() &&
+      !alpha_threshold.has_value()) {
     return nullptr;
   }
   if (!backdrop_contents || !backdrop_contents->GetTexture() ||
@@ -136,7 +149,7 @@ std::shared_ptr<BackdropSurfaceContents> BackdropSurfaceContents::Make(
   }
   return std::shared_ptr<BackdropSurfaceContents>(new BackdropSurfaceContents(
       std::move(backdrop), scene_snapshot, surface_contents,
-      destination.value(), std::move(analytic_clip)));
+      destination.value(), alpha_threshold, std::move(analytic_clip)));
 }
 
 BackdropSurfaceContents::BackdropSurfaceContents(
@@ -144,11 +157,13 @@ BackdropSurfaceContents::BackdropSurfaceContents(
     std::optional<Snapshot> scene,
     std::shared_ptr<TextureContents> surface,
     Rect destination,
+    std::optional<Scalar> alpha_threshold,
     std::optional<AnalyticRRect> analytic_clip)
     : backdrop_(std::move(backdrop)),
       scene_(std::move(scene)),
       surface_(std::move(surface)),
       destination_(destination),
+      alpha_threshold_(alpha_threshold),
       analytic_clip_(std::move(analytic_clip)) {}
 
 BackdropSurfaceContents::~BackdropSurfaceContents() = default;
@@ -195,7 +210,8 @@ bool BackdropSurfaceContents::Render(const ContentContext& renderer,
   }
 
   auto options = OptionsFromPassAndEntity(pass, entity);
-  options.blend_mode = BlendMode::kSrc;
+  options.blend_mode =
+      alpha_threshold_.has_value() ? BlendMode::kSrcOver : BlendMode::kSrc;
   options.primitive_type = PrimitiveType::kTriangleStrip;
   options.depth_write_enabled = false;
   const bool uses_external_oes = surface_texture->GetTextureDescriptor().type ==
@@ -240,16 +256,16 @@ bool BackdropSurfaceContents::Render(const ContentContext& renderer,
       renderer.GetContext()->GetSamplerLibrary()->GetSampler(scene_sampler);
   if (uses_external_oes) {
     BindCompositeFragmentState<FSExternal>(
-        pass, data, surface_->GetOpacity(), backdrop_.opacity, analytic_clip_,
-        backdrop_.texture, resolved_backdrop_sampler, scene_texture,
-        resolved_scene_sampler);
+        pass, data, surface_->GetOpacity(), backdrop_.opacity,
+        alpha_threshold_.value_or(-1.0f), analytic_clip_, backdrop_.texture,
+        resolved_backdrop_sampler, scene_texture, resolved_scene_sampler);
     FSExternal::BindSAMPLEREXTERNALOESSurfaceTextureSampler(
         pass, surface_texture, resolved_surface_sampler);
   } else {
     BindCompositeFragmentState<FSTexture>(
-        pass, data, surface_->GetOpacity(), backdrop_.opacity, analytic_clip_,
-        backdrop_.texture, resolved_backdrop_sampler, scene_texture,
-        resolved_scene_sampler);
+        pass, data, surface_->GetOpacity(), backdrop_.opacity,
+        alpha_threshold_.value_or(-1.0f), analytic_clip_, backdrop_.texture,
+        resolved_backdrop_sampler, scene_texture, resolved_scene_sampler);
     FSTexture::BindSurfaceTextureSampler(pass, surface_texture,
                                          resolved_surface_sampler);
   }

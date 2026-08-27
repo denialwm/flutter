@@ -42,7 +42,9 @@ class BackdropSurfaceContents final : public Contents {
       const std::shared_ptr<TextureContents>& surface_contents,
       const Matrix& surface_transform,
       const Rect& composite_coverage,
-      std::optional<AnalyticRRect> analytic_clip = std::nullopt);
+      std::optional<Scalar> alpha_threshold = std::nullopt,
+      std::optional<AnalyticRRect> analytic_clip = std::nullopt,
+      bool require_external_surface = true);
 
   ~BackdropSurfaceContents() override;
 
@@ -66,12 +68,14 @@ class BackdropSurfaceContents final : public Contents {
                           std::optional<Snapshot> scene,
                           std::shared_ptr<TextureContents> surface,
                           Rect destination,
+                          std::optional<Scalar> alpha_threshold,
                           std::optional<AnalyticRRect> analytic_clip);
 
   TextureInput backdrop_;
   std::optional<Snapshot> scene_;
   std::shared_ptr<TextureContents> surface_;
   Rect destination_;
+  std::optional<Scalar> alpha_threshold_;
   std::optional<AnalyticRRect> analytic_clip_;
 };
 
