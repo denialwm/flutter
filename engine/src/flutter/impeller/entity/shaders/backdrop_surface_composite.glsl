@@ -10,6 +10,7 @@ uniform FragInfo {
   vec2 clip_radii;
   float surface_opacity;
   float backdrop_opacity;
+  float alpha_threshold;
   float has_analytic_clip;
 }
 frag_info;
@@ -53,12 +54,26 @@ void main() {
 
   surface *= frag_info.surface_opacity;
   vec4 composite = surface;
-  if (surface.a < 1.0 - 1.0 / 1024.0) {
+  bool threshold_enabled = frag_info.alpha_threshold >= 0.0;
+  float final_surface_alpha = surface.a * coverage;
+  bool use_filtered_backdrop = !threshold_enabled ||
+                               final_surface_alpha > frag_info.alpha_threshold;
+  if (use_filtered_backdrop && surface.a < 1.0 - 1.0 / 1024.0) {
     vec4 backdrop = vec4(texture(backdrop_texture_sampler,
                                  v_backdrop_texture_coords,
                                  float16_t(kDefaultMipBias)));
     backdrop *= frag_info.backdrop_opacity;
     composite += backdrop * (1.0 - surface.a);
+  }
+
+  // Thresholded composites use source-over blending. Below the threshold,
+  // writing only the client surface preserves the untouched destination.
+  // Above it, this writes the complete surface-over-filtered-backdrop result.
+  // Coverage can be applied directly because source-over supplies the scene at
+  // antialiased clip edges without a second scene sample.
+  if (threshold_enabled) {
+    frag_color = composite * coverage;
+    return;
   }
 
   // Source blending writes the complete logical result. Only antialiased clip

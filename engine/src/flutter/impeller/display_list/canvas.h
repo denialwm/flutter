@@ -54,6 +54,7 @@ struct PendingBackdropComposite {
   Entity fallback_entity;
   std::shared_ptr<TextureContents> backdrop_contents;
   std::optional<Snapshot> scene_snapshot;
+  std::optional<Scalar> alpha_threshold;
   Rect coverage;
   IRect32 scissor;
 };
@@ -291,9 +292,16 @@ class Canvas {
   uint64_t GetMaxOpDepth() const { return transform_stack_.back().clip_depth; }
 
   struct SaveLayerState {
+    struct AlphaThresholdBackdrop {
+      Entity entity;
+      std::shared_ptr<TextureContents> contents;
+      Scalar threshold = 0.0f;
+    };
+
     Paint paint;
     Rect coverage;
     bool has_backdrop_filter = false;
+    std::optional<AlphaThresholdBackdrop> alpha_threshold_backdrop;
   };
 
   // Visible for testing.

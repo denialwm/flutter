@@ -4,6 +4,7 @@
 
 #include "impeller/display_list/canvas.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
@@ -1912,6 +1913,19 @@ void Canvas::SaveLayer(const Paint& paint,
   }
   auto coverage_limit = maybe_coverage_limit.value();
 
+  std::optional<Scalar> backdrop_alpha_threshold;
+  bool backdrop_alpha_threshold_is_single_surface = false;
+  if (backdrop_filter &&
+      backdrop_filter->type() == flutter::DlImageFilterType::kBlur) {
+    const flutter::DlBlurImageFilter* blur = backdrop_filter->asBlur();
+    const Scalar threshold = blur->backdrop_alpha_threshold();
+    if (threshold >= 0.0f) {
+      backdrop_alpha_threshold = std::clamp(threshold, 0.0f, 1.0f);
+      backdrop_alpha_threshold_is_single_surface =
+          blur->backdrop_alpha_threshold_is_single_surface();
+    }
+  }
+
   if (can_distribute_opacity && !backdrop_filter &&
       Paint::CanApplyOpacityPeephole(paint) &&
       bounds_promise != ContentBoundsPromise::kMayClipContents) {
@@ -2027,7 +2041,10 @@ void Canvas::SaveLayer(const Paint& paint,
   };
   const uint32_t direct_plan_rejections =
       GetBackdropLayerDirectRejections(direct_plan_inputs);
-  const bool can_render_backdrop_directly = direct_plan_rejections == 0u;
+  const bool can_render_backdrop_directly =
+      direct_plan_rejections == 0u &&
+      (!backdrop_alpha_threshold.has_value() ||
+       backdrop_alpha_threshold_is_single_surface);
   if (backdrop_filter) {
     RecordBackdropDirectPredicate(direct_plan_rejections);
   }
@@ -2314,6 +2331,7 @@ void Canvas::SaveLayer(const Paint& paint,
               .fallback_entity = std::move(*resolved_backdrop_entity),
               .backdrop_contents = std::move(resolved_backdrop_contents),
               .scene_snapshot = std::move(direct_scene_snapshot),
+              .alpha_threshold = backdrop_alpha_threshold,
               .coverage = subpass_coverage,
               .scissor = SetClipScissor(
                   clip_coverage_stack_.CurrentClipCoverage(),
@@ -2332,6 +2350,42 @@ void Canvas::SaveLayer(const Paint& paint,
     RecordBackdropLayerPlan(subpass_size, use_msaa);
   }
 
+  std::optional<SaveLayerState::AlphaThresholdBackdrop>
+      alpha_threshold_backdrop;
+  if (backdrop_alpha_threshold.has_value() && !restore_has_effects &&
+      paint.blend_mode == BlendMode::kSrc &&
+      renderer_.GetContext()->GetBackendType() ==
+          Context::BackendType::kOpenGLES) {
+    std::optional<Entity> resolved_entity;
+    std::shared_ptr<TextureContents> resolved_contents;
+    if (isolated_backdrop_snapshot.has_value()) {
+      resolved_entity =
+          make_backdrop_snapshot_entity(isolated_backdrop_snapshot.value());
+      resolved_contents = std::static_pointer_cast<TextureContents>(
+          resolved_entity->GetContents());
+    } else if (backdrop_filter_contents) {
+      backdrop_filter_contents->SetCoverageHint(subpass_coverage);
+      Entity backdrop_entity;
+      backdrop_entity.SetContents(backdrop_filter_contents);
+      backdrop_entity.SetBlendMode(BlendMode::kSrc);
+      backdrop_entity.SetTransform(
+          Matrix::MakeTranslation(Vector3(-GetGlobalPassPosition())));
+      resolved_entity = backdrop_filter_contents->GetEntity(
+          renderer_, backdrop_entity, subpass_coverage);
+      if (resolved_entity.has_value()) {
+        resolved_contents = std::static_pointer_cast<TextureContents>(
+            resolved_entity->GetContents());
+      }
+    }
+    if (resolved_entity.has_value() && resolved_contents) {
+      alpha_threshold_backdrop = SaveLayerState::AlphaThresholdBackdrop{
+          .entity = std::move(resolved_entity.value()),
+          .contents = std::move(resolved_contents),
+          .threshold = backdrop_alpha_threshold.value(),
+      };
+    }
+  }
+
   render_passes_.push_back(
       LazyRenderingConfig(renderer_,                                     //
                           CreateRenderTarget(renderer_,                  //
@@ -2341,7 +2395,7 @@ void Canvas::SaveLayer(const Paint& paint,
                                              )));
   save_layer_state_.push_back(SaveLayerState{
       paint_copy, subpass_coverage.Shift(-coverage_origin_adjustment),
-      backdrop_filter != nullptr});
+      backdrop_filter != nullptr, std::move(alpha_threshold_backdrop)});
 
   render_passes_.back().GetInlinePassContext()->GetRenderPass()->SetLabel(
       backdrop_filter ? "Denial Backdrop Layer Color"
@@ -2364,6 +2418,10 @@ void Canvas::SaveLayer(const Paint& paint,
   // causing parent clip coverage to get misaligned with the actual area that
   // the subpass will affect in the parent pass.
   clip_coverage_stack_.PushSubpass(subpass_coverage, GetClipHeight());
+
+  if (save_layer_state_.back().alpha_threshold_backdrop.has_value()) {
+    return;
+  }
 
   if (!backdrop_filter_contents && !isolated_backdrop_snapshot.has_value()) {
     return;
@@ -2431,7 +2489,7 @@ bool Canvas::Restore() {
     // Force the render pass to be constructed if it never was.
     lazy_render_pass.GetInlinePassContext()->GetRenderPass();
 
-    SaveLayerState save_layer_state = save_layer_state_.back();
+    SaveLayerState save_layer_state = std::move(save_layer_state_.back());
     save_layer_state_.pop_back();
     auto global_pass_position = GetGlobalPassPosition();
 
@@ -2463,6 +2521,35 @@ bool Canvas::Restore() {
       subpass_texture_position =
           (save_layer_state.coverage.GetOrigin() - global_pass_position)
               .Round();
+    }
+
+    if (save_layer_state.alpha_threshold_backdrop.has_value()) {
+      auto alpha_threshold_backdrop =
+          std::move(save_layer_state.alpha_threshold_backdrop.value());
+      auto surface_contents =
+          std::static_pointer_cast<TextureContents>(contents);
+      const Matrix surface_transform =
+          Matrix::MakeTranslation(Vector3(subpass_texture_position));
+      auto composite = BackdropSurfaceContents::Make(
+          alpha_threshold_backdrop.entity, alpha_threshold_backdrop.contents,
+          /*scene_snapshot=*/std::nullopt, surface_contents, surface_transform,
+          save_layer_state.coverage.Shift(-global_pass_position),
+          alpha_threshold_backdrop.threshold,
+          /*analytic_clip=*/std::nullopt,
+          /*require_external_surface=*/false);
+      if (composite) {
+        Entity element_entity;
+        element_entity.SetClipDepth(++current_depth_);
+        element_entity.SetContents(std::move(composite));
+        element_entity.SetBlendMode(BlendMode::kSrcOver);
+        element_entity.SetTransform(surface_transform);
+        element_entity.Render(
+            renderer_,
+            *render_passes_.back().GetInlinePassContext()->GetRenderPass());
+        clip_coverage_stack_.PopSubpass();
+        transform_stack_.pop_back();
+        return true;
+      }
     }
 
     Entity element_entity;
@@ -2858,22 +2945,26 @@ bool Canvas::TryBackdropSurfaceComposite(
 
   std::optional<BackdropSurfaceContents::AnalyticRRect> analytic_clip;
   std::shared_ptr<DeferredRRectClip>* deferred_slot = FindDeferredRRectClip();
-  const bool use_analytic_clip =
-      deferred_slot != nullptr && (*pending_slot)->scene_snapshot.has_value();
+  const bool use_analytic_clip = deferred_slot != nullptr &&
+                                 ((*pending_slot)->scene_snapshot.has_value() ||
+                                  (*pending_slot)->alpha_threshold.has_value());
   if (use_analytic_clip) {
     analytic_clip = (*deferred_slot)->analytic_clip;
   }
   auto fused = BackdropSurfaceContents::Make(
       (*pending_slot)->fallback_entity, backdrop,
       (*pending_slot)->scene_snapshot, surface, surface_entity.GetTransform(),
-      required_coverage, analytic_clip);
+      required_coverage, (*pending_slot)->alpha_threshold, analytic_clip);
   if (!fused) {
     return false;
   }
 
+  const bool uses_alpha_threshold =
+      (*pending_slot)->alpha_threshold.has_value();
   pending_slot->reset();
   surface_entity.SetContents(std::move(fused));
-  surface_entity.SetBlendMode(BlendMode::kSrc);
+  surface_entity.SetBlendMode(uses_alpha_threshold ? BlendMode::kSrcOver
+                                                   : BlendMode::kSrc);
   if (use_analytic_clip) {
     RecordBackdropFusionEvent(BackdropFusionAuditEvent::kAnalyticRRect);
   } else if (deferred_slot != nullptr) {
