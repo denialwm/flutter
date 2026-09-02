@@ -9,6 +9,30 @@
 
 namespace flutter {
 
+namespace {
+
+DlScalar MaximumGlassDisplacement(DlScalar thickness,
+                                  DlScalar refraction,
+                                  DlScalar dispersion) {
+  const DlScalar refractive_index = 1.0f + refraction * 0.2f;
+  const DlScalar refraction_distance =
+      thickness * 8.0f *
+      std::sqrt(std::max(refractive_index * refractive_index - 1.0f, 0.0f));
+  return refraction_distance * (1.0f + dispersion * 0.5f);
+}
+
+DlScalar GlassBoundsPadding(DlScalar sigma_x,
+                            DlScalar sigma_y,
+                            DlScalar thickness,
+                            DlScalar refraction,
+                            DlScalar dispersion) {
+  return std::max(
+      {sigma_x * 3.0f, sigma_y * 3.0f,
+       MaximumGlassDisplacement(thickness, refraction, dispersion)});
+}
+
+}  // namespace
+
 std::shared_ptr<DlImageFilter> DlGlassImageFilter::Make(
     DlScalar sigma_x,
     DlScalar sigma_y,
@@ -57,9 +81,8 @@ std::shared_ptr<DlImageFilter> DlGlassImageFilter::Make(
 
 DlRect* DlGlassImageFilter::map_local_bounds(const DlRect& input_bounds,
                                              DlRect& output_bounds) const {
-  const DlScalar padding =
-      std::max({sigma_x_ * 3.0f, sigma_y_ * 3.0f,
-                thickness_ * refraction_ * (1.0f + dispersion_)});
+  const DlScalar padding = GlassBoundsPadding(sigma_x_, sigma_y_, thickness_,
+                                              refraction_, dispersion_);
   output_bounds = input_bounds.Expand(padding);
   return &output_bounds;
 }
@@ -67,9 +90,8 @@ DlRect* DlGlassImageFilter::map_local_bounds(const DlRect& input_bounds,
 DlIRect* DlGlassImageFilter::map_device_bounds(const DlIRect& input_bounds,
                                                const DlMatrix& ctm,
                                                DlIRect& output_bounds) const {
-  const DlScalar padding =
-      std::max({sigma_x_ * 3.0f, sigma_y_ * 3.0f,
-                thickness_ * refraction_ * (1.0f + dispersion_)});
+  const DlScalar padding = GlassBoundsPadding(sigma_x_, sigma_y_, thickness_,
+                                              refraction_, dispersion_);
   return outset_device_bounds(input_bounds, padding, padding, ctm,
                               output_bounds);
 }

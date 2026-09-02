@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <utility>
 
 #include "impeller/entity/contents/content_context.h"
@@ -57,6 +58,26 @@ Scalar PhysicalCornerRadius(const Size& radius,
                             Scalar scale_x,
                             Scalar scale_y) {
   return std::min(radius.width * scale_x, radius.height * scale_y);
+}
+
+Scalar GlassRefractiveIndex(Scalar refraction) {
+  // Match liquid_glass_renderer's Figma-compatible refraction control:
+  // 0...1 maps from air (1.0) to its established liquid-glass IOR (1.2).
+  return 1.0f + std::clamp(refraction, 0.0f, 1.0f) * 0.2f;
+}
+
+Scalar MaximumGlassDisplacement(Scalar thickness,
+                                Scalar refraction,
+                                Scalar dispersion) {
+  const Scalar refractive_index = GlassRefractiveIndex(refraction);
+  // At the outside edge the surface normal lies in the XY plane and the
+  // reference model's optical path is 8 * thickness. This is the maximum ray
+  // displacement over the complete rounded surface.
+  const Scalar refraction_distance =
+      std::max(thickness, 0.0f) * 8.0f *
+      std::sqrt(std::max(refractive_index * refractive_index - 1.0f, 0.0f));
+  return refraction_distance *
+         (1.0f + std::clamp(dispersion, 0.0f, 1.0f) * 0.5f);
 }
 
 }  // namespace
@@ -155,7 +176,8 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
 
   ContentContext::SubpassCallback callback =
       [blurred_snapshot, blurred_coordinates, material_size, corner_radii,
-       blurred_uv_basis, physical_thickness, refraction = refraction_,
+       blurred_uv_basis, physical_thickness,
+       refractive_index = GlassRefractiveIndex(refraction_),
        dispersion = dispersion_, saturation = saturation_, tint = tint_,
        tint_strength = tint_strength_, brightness = brightness_,
        light_angle = light_angle_, light_intensity = light_intensity_,
@@ -183,7 +205,7 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         frag_info.blurred_uv_basis = blurred_uv_basis;
         frag_info.tint = Vector4(tint.red, tint.green, tint.blue, tint.alpha);
         frag_info.thickness = physical_thickness;
-        frag_info.refraction = refraction;
+        frag_info.refractive_index = refractive_index;
         frag_info.dispersion = dispersion;
         frag_info.saturation = saturation;
         frag_info.tint_strength = tint_strength;
@@ -268,7 +290,8 @@ std::optional<Rect> GlassFilterContents::GetFilterCoverage(
 std::optional<Rect> GlassFilterContents::GetFilterSourceCoverage(
     const Matrix& effect_transform,
     const Rect& output_limit) const {
-  const Scalar padding = thickness_ * refraction_ * (1.0f + dispersion_);
+  const Scalar padding =
+      MaximumGlassDisplacement(thickness_, refraction_, dispersion_);
   const Vector2 transformed =
       effect_transform.TransformDirection(Vector2(padding, padding)).Abs();
   return output_limit.Expand(transformed);

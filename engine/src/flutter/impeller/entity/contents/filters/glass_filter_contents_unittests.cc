@@ -46,5 +46,26 @@ TEST(GlassFilterContentsTest, BackdropCoverageUsesSaveLayerCoordinates) {
   EXPECT_TRUE(RectNear(coverage.value(), save_layer_coverage));
 }
 
+TEST(GlassFilterContentsTest, SourceCoverageIncludesSnellRefractionDistance) {
+  GlassFilterContents contents(
+      RoundRect::MakeRectXY(Rect::MakeXYWH(0, 0, 400, 300), 20, 20),
+      /*thickness=*/20, /*refraction=*/0.55, /*dispersion=*/0.12,
+      /*saturation=*/1.2, Color::White(), /*tint_strength=*/0.08,
+      /*brightness=*/0.06, /*light_angle=*/0, /*light_intensity=*/0.7,
+      /*edge_strength=*/0.4);
+  contents.SetInputs({FilterInput::Make(Rect::MakeXYWH(0, 0, 1920, 1080))});
+
+  const Rect output_limit = Rect::MakeXYWH(200, 100, 400, 300);
+  const std::optional<Rect> source =
+      contents.GetSourceCoverage(Matrix(), output_limit);
+
+  ASSERT_TRUE(source.has_value());
+  // refraction 0.55 maps to IOR 1.11. At the rim, the 8 * thickness
+  // optical path displaces 77.0828 px; dispersion expands that by 6%.
+  constexpr Scalar kExpectedPadding = 81.7078f;
+  EXPECT_TRUE(
+      RectNear(source.value(), output_limit.Expand(Vector2(kExpectedPadding))));
+}
+
 }  // namespace testing
 }  // namespace impeller
