@@ -44,7 +44,8 @@ float selectedCornerRadius(vec2 centered) {
 
 void roundedBoxField(vec2 position,
                      out float signed_distance,
-                     out vec2 outward_normal) {
+                     out vec2 outward_normal,
+                     out float normal_confidence) {
   vec2 half_size = max(frag_info.material_size * 0.5, vec2(0.0001));
   vec2 centered = position - half_size;
   float radius =
@@ -55,13 +56,35 @@ void roundedBoxField(vec2 position,
 
   vec2 sign_position =
       vec2(centered.x < 0.0 ? -1.0 : 1.0, centered.y < 0.0 ? -1.0 : 1.0);
+  // The exact rounded-box distance is non-differentiable on the medial axis
+  // where two edges are equally near.  That axis is normally hidden below the
+  // flat part of a shallow bevel, but becomes visible when the optical
+  // thickness exceeds the corner radius.  Continue the two edge normals with
+  // the gradient of a harmonic smooth-min in the inner corner core.  It is
+  // exactly axis-aligned where the core meets either straight edge and rotates
+  // continuously through the diagonal, avoiding two disagreeing refracted
+  // images without reducing the configured optical depth.
   if (outside.x > 0.0 && outside.y > 0.0) {
     outward_normal = normalize(outside) * sign_position;
-  } else if (q.x > q.y) {
+  } else if (outside.x > 0.0) {
     outward_normal = vec2(sign_position.x, 0.0);
-  } else {
+  } else if (outside.y > 0.0) {
     outward_normal = vec2(0.0, sign_position.y);
+  } else {
+    vec2 inward = max(-q, 0.0);
+    vec2 smooth_weights =
+        vec2(inward.y * inward.y, inward.x * inward.x);
+    float weight_length = length(smooth_weights);
+    outward_normal =
+        (weight_length > 0.0001
+             ? smooth_weights / weight_length
+             : normalize(vec2(1.0))) *
+        sign_position;
   }
+  // Every outward direction converges at the circular corner's centre.  Let
+  // the surface become flat over one physical pixel there so the direction's
+  // unavoidable point singularity cannot become a hot pixel.
+  normal_confidence = smoothstep(0.0, 1.0, length(q));
 }
 
 vec2 blurredUvOffset(vec2 pixel_offset) {
@@ -151,7 +174,9 @@ vec3 applyGlassTint(vec3 color) {
 void main() {
   float signed_distance;
   vec2 outward_normal;
-  roundedBoxField(v_material_position, signed_distance, outward_normal);
+  float normal_confidence;
+  roundedBoxField(v_material_position, signed_distance, outward_normal,
+                  normal_confidence);
 
   float thickness = max(frag_info.thickness, 0.0001);
   float foreground_alpha = 1.0 - smoothstep(-2.0, 0.0, signed_distance);
@@ -162,10 +187,11 @@ void main() {
 
   // This rounded surface and Snell refraction model follows the established
   // liquid_glass_renderer implementation by Tim Lehmann (MIT). The analytical
-  // rounded-box gradient is equivalent to the reference shader's SDF
-  // derivatives, without requiring a separate geometry texture.
+  // boundary gradient is equivalent to the reference shader's SDF derivatives;
+  // roundedBoxField only smooths their undefined inner medial-axis join.
   float normal_xy_length =
-      clamp((thickness + signed_distance) / thickness, 0.0, 1.0);
+      clamp((thickness + signed_distance) / thickness, 0.0, 1.0) *
+      normal_confidence;
   float normal_z =
       sqrt(max(0.0, 1.0 - normal_xy_length * normal_xy_length));
   vec3 surface_normal =
