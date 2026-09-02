@@ -1,6 +1,9 @@
 // Copyright 2013 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+// The rounded surface, Snell refraction, and adaptive rim-lighting model is
+// adapted from liquid_glass_renderer, Copyright 2025 Tim Lehmann for
+// whynotmake.it, used under the MIT License.
 
 precision highp float;
 
@@ -14,7 +17,7 @@ uniform FragInfo {
   vec4 blurred_uv_basis;
   vec4 tint;
   float thickness;
-  float refraction;
+  float refractive_index;
   float dispersion;
   float saturation;
   float tint_strength;
@@ -77,56 +80,127 @@ vec3 straightRgb(vec4 color) {
   return color.rgb / max(color.a, 0.00001);
 }
 
+float glassHeight(float signed_distance, float thickness) {
+  if (signed_distance < -thickness) {
+    return thickness;
+  }
+  float x = thickness + signed_distance;
+  return sqrt(max(0.0, thickness * thickness - x * x));
+}
+
+vec3 adaptiveHighlightColor(vec3 background_color) {
+  const vec3 luma_weights = vec3(0.299, 0.587, 0.114);
+  float luminance = dot(background_color, luma_weights);
+  float maximum = max(max(background_color.r, background_color.g),
+                      background_color.b);
+  float minimum = min(min(background_color.r, background_color.g),
+                      background_color.b);
+  float color_saturation =
+      maximum > 0.0 ? (maximum - minimum) / maximum : 0.0;
+  vec3 colored_highlight = vec3(1.0);
+  if (luminance > 0.001) {
+    colored_highlight = background_color / luminance;
+    float gray = dot(colored_highlight, luma_weights);
+    colored_highlight =
+        min(mix(vec3(gray), colored_highlight, 1.3), vec3(1.0));
+  }
+  float color_influence = smoothstep(0.0, 0.6, luminance) *
+                          smoothstep(0.0, 0.4, color_saturation);
+  return mix(vec3(1.0), colored_highlight, color_influence);
+}
+
+vec3 glassLighting(vec3 surface_normal,
+                   float signed_distance,
+                   float thickness,
+                   float height,
+                   vec2 light_direction,
+                   vec3 background_color) {
+  float normalized_height = height / thickness;
+  float surface_shape = clamp((1.0 - normalized_height) * 1.111, 0.0, 1.0);
+  float thickness_factor = clamp((thickness - 5.0) * 0.5, 0.0, 1.0);
+  float rim_position = signed_distance / 1.5;
+  float rim = 1.0 / (1.0 + 0.89 * rim_position * rim_position);
+  if (surface_shape < 0.01 || thickness_factor < 0.01 || rim < 0.01 ||
+      frag_info.light_intensity < 0.01 || frag_info.edge_strength < 0.01) {
+    return vec3(0.0);
+  }
+
+  float main_light = max(0.0, dot(surface_normal.xy, light_direction));
+  float opposite_light =
+      max(0.0, dot(surface_normal.xy, -light_direction));
+  float influence = main_light + opposite_light * 0.8;
+  vec3 highlight_color = adaptiveHighlightColor(background_color);
+  vec3 directional = highlight_color * 0.7 * influence * influence *
+                     frag_info.light_intensity * 2.0;
+  return directional * rim * thickness_factor * surface_shape *
+         frag_info.edge_strength;
+}
+
+vec3 applyGlassTint(vec3 color) {
+  float strength = clamp(frag_info.tint_strength * frag_info.tint.a, 0.0, 1.0);
+  float tint_luminance =
+      dot(frag_info.tint.rgb, vec3(0.299, 0.587, 0.114));
+  if (tint_luminance < 0.5) {
+    return mix(color, color * frag_info.tint.rgb * 2.0, strength);
+  }
+  vec3 screened =
+      vec3(1.0) - (vec3(1.0) - color) * (vec3(1.0) - frag_info.tint.rgb);
+  return mix(color, screened, strength);
+}
+
 void main() {
   float signed_distance;
   vec2 outward_normal;
   roundedBoxField(v_material_position, signed_distance, outward_normal);
 
   float thickness = max(frag_info.thickness, 0.0001);
-  float edge = 1.0 - smoothstep(0.0, thickness, max(-signed_distance, 0.0));
-  float curved_edge = edge * edge * (3.0 - 2.0 * edge);
-  vec2 displacement =
-      -outward_normal * thickness * frag_info.refraction * curved_edge;
+  float foreground_alpha = 1.0 - smoothstep(-2.0, 0.0, signed_distance);
+  if (foreground_alpha < 0.01) {
+    frag_color = f16vec4(0.0hf);
+    return;
+  }
 
-  // Refraction displaces one coherent optical medium. Switching from frost to
-  // an unfiltered scene at the edge reads as a transparent cutout rather than
-  // curved glass, so all wavelength samples come from the frosted backdrop.
+  // This rounded surface and Snell refraction model follows the established
+  // liquid_glass_renderer implementation by Tim Lehmann (MIT). The analytical
+  // rounded-box gradient is equivalent to the reference shader's SDF
+  // derivatives, without requiring a separate geometry texture.
+  float normal_xy_length =
+      clamp((thickness + signed_distance) / thickness, 0.0, 1.0);
+  float normal_z =
+      sqrt(max(0.0, 1.0 - normal_xy_length * normal_xy_length));
+  vec3 surface_normal =
+      normalize(vec3(outward_normal * normal_xy_length, normal_z));
+  float height = glassHeight(signed_distance, thickness);
+  vec3 incident = vec3(0.0, 0.0, -1.0);
+  vec3 refracted_ray =
+      refract(incident, surface_normal,
+              1.0 / max(frag_info.refractive_index, 1.0));
+  float ray_length = (height + thickness * 8.0) /
+                     max(0.001, abs(refracted_ray.z));
+  vec2 displacement = refracted_ray.xy * ray_length;
+
   vec4 refracted_green = sampleFrost(displacement, 1.0);
   vec3 refracted_rgb = straightRgb(refracted_green);
   if (frag_info.dispersion > 0.0001) {
-    float chroma = frag_info.dispersion * 0.16;
+    float chroma = frag_info.dispersion * 0.5;
     vec4 refracted_red = sampleFrost(displacement, 1.0 + chroma);
     vec4 refracted_blue = sampleFrost(displacement, 1.0 - chroma);
     refracted_rgb = vec3(straightRgb(refracted_red).r, refracted_rgb.g,
                          straightRgb(refracted_blue).b);
   }
 
-  float material_alpha = refracted_green.a;
-  vec3 material_rgb = refracted_rgb;
+  float material_alpha = refracted_green.a * foreground_alpha;
+  vec3 material_rgb = applyGlassTint(refracted_rgb);
+  vec2 light_direction =
+      vec2(cos(frag_info.light_angle), sin(frag_info.light_angle));
+  material_rgb += glassLighting(surface_normal, signed_distance, thickness,
+                                height, light_direction, refracted_rgb);
   float luminance = dot(material_rgb, vec3(0.2126, 0.7152, 0.0722));
   material_rgb = mix(vec3(luminance), material_rgb, frag_info.saturation);
-  material_rgb = mix(material_rgb, frag_info.tint.rgb,
-                     frag_info.tint_strength * frag_info.tint.a);
   material_rgb += frag_info.brightness >= 0.0
                       ? frag_info.brightness * (1.0 - material_rgb)
                       : frag_info.brightness * material_rgb;
-
-  vec2 light_direction =
-      vec2(cos(frag_info.light_angle), sin(frag_info.light_angle));
-  float facing_light = max(dot(outward_normal, light_direction), 0.0);
-  float facing_shadow = max(dot(outward_normal, -light_direction), 0.0);
-  vec3 optical_normal =
-      normalize(vec3(outward_normal * curved_edge * 0.85, 1.0));
-  float fresnel = pow(1.0 - optical_normal.z, 2.0);
-  float caustic_position = (edge - 0.46) / 0.17;
-  float caustic_band = exp(-caustic_position * caustic_position);
-  float highlight =
-      curved_edge * facing_light * frag_info.light_intensity * 0.18 +
-      fresnel * frag_info.edge_strength * 0.28 +
-      caustic_band * facing_light * frag_info.edge_strength * 0.1;
-  float shadow =
-      curved_edge * facing_shadow * frag_info.light_intensity * 0.075;
-  material_rgb = clamp(material_rgb + vec3(highlight - shadow), 0.0, 1.0);
+  material_rgb = clamp(material_rgb, 0.0, 1.0);
 
   frag_color = f16vec4(material_rgb * material_alpha, material_alpha);
 }

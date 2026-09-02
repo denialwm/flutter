@@ -4411,9 +4411,11 @@ abstract class ImageFilter {
 
   /// Creates Denial's native rounded glass material.
   ///
-  /// The filter combines a frosted Gaussian input with sharp, refracted scene
-  /// samples. [shape] supplies the optical boundary used for refraction and
-  /// directional edge lighting. [lightAngle] is expressed in radians.
+  /// The filter refracts a frosted Gaussian backdrop through a rounded optical
+  /// surface. [shape] supplies the boundary used for refraction and directional
+  /// edge lighting. [refraction] is a normalized strength from 0.0 to 1.0 and
+  /// maps to a refractive index from 1.0 to 1.2. [lightAngle] is expressed in
+  /// radians.
   factory ImageFilter.glass({
     double sigmaX = 14,
     double sigmaY = 14,
