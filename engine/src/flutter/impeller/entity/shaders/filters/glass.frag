@@ -6,13 +6,11 @@ precision highp float;
 
 #include <impeller/types.glsl>
 
-uniform f16sampler2D sharp_texture_sampler;
 uniform f16sampler2D blurred_texture_sampler;
 
 uniform FragInfo {
   vec2 material_size;
   vec4 corner_radii;
-  vec4 sharp_uv_basis;
   vec4 blurred_uv_basis;
   vec4 tint;
   float thickness;
@@ -24,12 +22,10 @@ uniform FragInfo {
   float light_angle;
   float light_intensity;
   float edge_strength;
-  float sharp_opacity;
   float blurred_opacity;
 }
 frag_info;
 
-in highp vec2 v_sharp_texture_coords;
 in highp vec2 v_blurred_texture_coords;
 in highp vec2 v_material_position;
 
@@ -65,21 +61,16 @@ void roundedBoxField(vec2 position,
   }
 }
 
-vec2 sharpUvOffset(vec2 pixel_offset) {
-  return frag_info.sharp_uv_basis.xy * pixel_offset.x +
-         frag_info.sharp_uv_basis.zw * pixel_offset.y;
-}
-
 vec2 blurredUvOffset(vec2 pixel_offset) {
   return frag_info.blurred_uv_basis.xy * pixel_offset.x +
          frag_info.blurred_uv_basis.zw * pixel_offset.y;
 }
 
-vec4 sampleSharp(vec2 pixel_offset, float spread) {
-  return vec4(texture(
-             sharp_texture_sampler,
-             v_sharp_texture_coords + sharpUvOffset(pixel_offset * spread))) *
-         frag_info.sharp_opacity;
+vec4 sampleFrost(vec2 pixel_offset, float spread) {
+  return vec4(texture(blurred_texture_sampler,
+                      v_blurred_texture_coords +
+                          blurredUvOffset(pixel_offset * spread))) *
+         frag_info.blurred_opacity;
 }
 
 vec3 straightRgb(vec4 color) {
@@ -97,23 +88,21 @@ void main() {
   vec2 displacement =
       -outward_normal * thickness * frag_info.refraction * curved_edge;
 
-  vec4 blurred = vec4(texture(blurred_texture_sampler,
-                              v_blurred_texture_coords +
-                                  blurredUvOffset(displacement * 0.22))) *
-                 frag_info.blurred_opacity;
-  vec4 sharp_green = sampleSharp(displacement, 1.0);
-  vec3 sharp_rgb = straightRgb(sharp_green);
+  // Refraction displaces one coherent optical medium. Switching from frost to
+  // an unfiltered scene at the edge reads as a transparent cutout rather than
+  // curved glass, so all wavelength samples come from the frosted backdrop.
+  vec4 refracted_green = sampleFrost(displacement, 1.0);
+  vec3 refracted_rgb = straightRgb(refracted_green);
   if (frag_info.dispersion > 0.0001) {
     float chroma = frag_info.dispersion * 0.16;
-    vec4 sharp_red = sampleSharp(displacement, 1.0 + chroma);
-    vec4 sharp_blue = sampleSharp(displacement, 1.0 - chroma);
-    sharp_rgb =
-        vec3(straightRgb(sharp_red).r, sharp_rgb.g, straightRgb(sharp_blue).b);
+    vec4 refracted_red = sampleFrost(displacement, 1.0 + chroma);
+    vec4 refracted_blue = sampleFrost(displacement, 1.0 - chroma);
+    refracted_rgb = vec3(straightRgb(refracted_red).r, refracted_rgb.g,
+                         straightRgb(refracted_blue).b);
   }
 
-  float refraction_mix = curved_edge * frag_info.refraction;
-  float material_alpha = mix(blurred.a, sharp_green.a, refraction_mix);
-  vec3 material_rgb = mix(straightRgb(blurred), sharp_rgb, refraction_mix);
+  float material_alpha = refracted_green.a;
+  vec3 material_rgb = refracted_rgb;
   float luminance = dot(material_rgb, vec3(0.2126, 0.7152, 0.0722));
   material_rgb = mix(vec3(luminance), material_rgb, frag_info.saturation);
   material_rgb = mix(material_rgb, frag_info.tint.rgb,
