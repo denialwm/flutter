@@ -264,6 +264,17 @@ std::optional<Rect> GlassFilterContents::GetFilterCoverage(
   if (inputs.empty()) {
     return std::nullopt;
   }
+  // A backdrop material's shape is supplied in the save layer's local
+  // coordinate space, while its coverage hint and scene input are already in
+  // render-target coordinates. Transforming the local shape here and then
+  // intersecting it with the hint mixes those spaces, shrinking the result by
+  // the save layer's screen-space origin. Let the scene input establish broad
+  // coverage instead; FilterContents will intersect it with the authoritative
+  // save-layer hint. The shape still defines the material's rounded boundary
+  // in RenderFilter.
+  if (IsBackdropFilter()) {
+    return inputs[0]->GetCoverage(entity);
+  }
   return shape_.GetBounds().TransformBounds(
       entity.GetTransform() * GetMaterialGeometryTransform(effect_transform));
 }
