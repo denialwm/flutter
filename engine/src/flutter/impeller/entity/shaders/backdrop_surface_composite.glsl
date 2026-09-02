@@ -52,12 +52,19 @@ void main() {
     discard;
   }
 
-  surface *= frag_info.surface_opacity;
-  vec4 composite = surface;
   bool threshold_enabled = frag_info.alpha_threshold >= 0.0;
-  float final_surface_alpha = surface.a * coverage;
+  // The surface opacity belongs to the saveLayer restore. In particular, an
+  // OpacityLayer uses it to fade the complete window during transitions. Do
+  // not let that group opacity decide whether the client owns this backdrop
+  // pixel: doing so switches the filter off while a window fades in and makes
+  // the glass appear only when the animation settles.
+  float client_surface_alpha = surface.a * coverage;
   bool use_filtered_backdrop = !threshold_enabled ||
-                               final_surface_alpha > frag_info.alpha_threshold;
+                               client_surface_alpha > frag_info.alpha_threshold;
+  if (!threshold_enabled) {
+    surface *= frag_info.surface_opacity;
+  }
+  vec4 composite = surface;
   if (use_filtered_backdrop && surface.a < 1.0 - 1.0 / 1024.0) {
     vec4 backdrop = vec4(texture(backdrop_texture_sampler,
                                  v_backdrop_texture_coords,
@@ -66,13 +73,14 @@ void main() {
     composite += backdrop * (1.0 - surface.a);
   }
 
-  // Thresholded composites use source-over blending. Below the threshold,
-  // writing only the client surface preserves the untouched destination.
-  // Above it, this writes the complete surface-over-filtered-backdrop result.
-  // Coverage can be applied directly because source-over supplies the scene at
-  // antialiased clip edges without a second scene sample.
+  // Thresholded composites use source-over blending. Fade the completed
+  // surface-over-filtered-backdrop result as one group so backdrop and client
+  // remain visually attached throughout an opacity animation. Below the
+  // threshold, writing only the faded client surface preserves the untouched
+  // destination. Coverage can be applied directly because source-over supplies
+  // the scene at antialiased clip edges without a second scene sample.
   if (threshold_enabled) {
-    frag_color = composite * coverage;
+    frag_color = composite * frag_info.surface_opacity * coverage;
     return;
   }
 
