@@ -268,6 +268,7 @@ struct ContentContext::Pipelines {
   Variants<FramebufferBlendScreenPipeline> framebuffer_blend_screen;
   Variants<FramebufferBlendSoftLightPipeline> framebuffer_blend_softlight;
   Variants<GaussianBlurPipeline> gaussian_blur;
+  Variants<GlassPipeline> glass;
   Variants<GlyphAtlasPipeline> glyph_atlas;
   Variants<LinePipeline> line;
   Variants<LinearGradientFillPipeline> linear_gradient_fill;
@@ -1289,6 +1290,10 @@ PipelineRef ContentContext::GetTiledTexturePipeline(
 PipelineRef ContentContext::GetGaussianBlurPipeline(
     ContentContextOptions opts) const {
   return GetPipeline(this, pipelines_->gaussian_blur, opts);
+}
+
+PipelineRef ContentContext::GetGlassPipeline(ContentContextOptions opts) const {
+  return GetPipeline(this, pipelines_->glass, opts);
 }
 
 PipelineRef ContentContext::GetBorderMaskBlurPipeline(

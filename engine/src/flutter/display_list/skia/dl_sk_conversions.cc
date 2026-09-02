@@ -197,6 +197,13 @@ sk_sp<SkImageFilter> ToSk(const DlImageFilter* filter) {
                                   blur_filter->sigma_y(),
                                   ToSk(blur_filter->tile_mode()), nullptr);
     }
+    case DlImageFilterType::kGlass: {
+      const DlGlassImageFilter* glass_filter = filter->asGlass();
+      FML_DCHECK(glass_filter != nullptr);
+      return SkImageFilters::Blur(glass_filter->sigma_x(),
+                                  glass_filter->sigma_y(), SkTileMode::kClamp,
+                                  nullptr);
+    }
     case DlImageFilterType::kDilate: {
       const DlDilateImageFilter* dilate_filter = filter->asDilate();
       FML_DCHECK(dilate_filter != nullptr);

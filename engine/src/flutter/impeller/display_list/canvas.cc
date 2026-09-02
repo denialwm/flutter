@@ -20,6 +20,7 @@
 #include "display_list/effects/dl_color_source.h"
 #include "display_list/effects/dl_image_filter.h"
 #include "display_list/effects/image_filters/dl_blur_image_filter.h"
+#include "display_list/effects/image_filters/dl_glass_image_filter.h"
 #include "display_list/image/dl_image.h"
 #include "flutter/fml/closure.h"
 #include "flutter/fml/logging.h"
@@ -1916,13 +1917,20 @@ void Canvas::SaveLayer(const Paint& paint,
   std::optional<Scalar> backdrop_alpha_threshold;
   bool backdrop_alpha_threshold_is_single_surface = false;
   if (backdrop_filter &&
-      backdrop_filter->type() == flutter::DlImageFilterType::kBlur) {
-    const flutter::DlBlurImageFilter* blur = backdrop_filter->asBlur();
-    const Scalar threshold = blur->backdrop_alpha_threshold();
+      (backdrop_filter->type() == flutter::DlImageFilterType::kBlur ||
+       backdrop_filter->type() == flutter::DlImageFilterType::kGlass)) {
+    const Scalar threshold =
+        backdrop_filter->type() == flutter::DlImageFilterType::kBlur
+            ? backdrop_filter->asBlur()->backdrop_alpha_threshold()
+            : backdrop_filter->asGlass()->backdrop_alpha_threshold();
     if (threshold >= 0.0f) {
       backdrop_alpha_threshold = std::clamp(threshold, 0.0f, 1.0f);
       backdrop_alpha_threshold_is_single_surface =
-          blur->backdrop_alpha_threshold_is_single_surface();
+          backdrop_filter->type() == flutter::DlImageFilterType::kBlur
+              ? backdrop_filter->asBlur()
+                    ->backdrop_alpha_threshold_is_single_surface()
+              : backdrop_filter->asGlass()
+                    ->backdrop_alpha_threshold_is_single_surface();
     }
   }
 
@@ -2298,7 +2306,8 @@ void Canvas::SaveLayer(const Paint& paint,
       resolved_backdrop_entity = backdrop_filter_contents->GetEntity(
           renderer_, backdrop_entity, subpass_coverage);
       if (resolved_backdrop_entity.has_value() &&
-          backdrop_filter->type() == flutter::DlImageFilterType::kBlur) {
+          (backdrop_filter->type() == flutter::DlImageFilterType::kBlur ||
+           backdrop_filter->type() == flutter::DlImageFilterType::kGlass)) {
         // GaussianBlurFilterContents resolves its final pass through
         // Entity::FromSnapshot. The filter discriminator is the explicit type
         // proof; Flutter's engine deliberately builds without C++ RTTI.

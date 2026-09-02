@@ -18,6 +18,8 @@ class DartLibraryNatives;
 
 namespace flutter {
 
+class RRect;
+
 class ImageFilter : public RefCountedDartWrappable<ImageFilter> {
   DEFINE_WRAPPERTYPEINFO();
   FML_FRIEND_MAKE_REF_COUNTED(ImageFilter);
@@ -40,6 +42,22 @@ class ImageFilter : public RefCountedDartWrappable<ImageFilter> {
                 double downsample_scale,
                 double backdrop_alpha_threshold,
                 bool backdrop_alpha_threshold_is_single_surface);
+  void initGlass(double sigma_x,
+                 double sigma_y,
+                 const RRect& shape,
+                 double downsample_scale,
+                 double thickness,
+                 double refraction,
+                 double dispersion,
+                 double saturation,
+                 uint32_t tint,
+                 double tint_strength,
+                 double brightness,
+                 double light_angle,
+                 double light_intensity,
+                 double edge_strength,
+                 double backdrop_alpha_threshold,
+                 bool backdrop_alpha_threshold_is_single_surface);
   void initDilate(double radius_x, double radius_y);
   void initErode(double radius_x, double radius_y);
   void initMatrix(const tonic::Float64List& matrix4, int filter_quality_index);

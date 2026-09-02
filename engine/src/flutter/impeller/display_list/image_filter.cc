@@ -11,6 +11,7 @@
 #include "impeller/display_list/skia_conversions.h"
 #include "impeller/entity/contents/filters/color_filter_contents.h"
 #include "impeller/entity/contents/filters/filter_contents.h"
+#include "impeller/entity/contents/filters/glass_filter_contents.h"
 #include "impeller/entity/contents/filters/inputs/filter_input.h"
 
 namespace impeller {
@@ -34,6 +35,27 @@ std::shared_ptr<FilterContents> WrapInput(const flutter::DlImageFilter* filter,
           nullptr,                                                  //
           blur_filter->downsample_scale()                           //
       );
+    }
+    case flutter::DlImageFilterType::kGlass: {
+      const flutter::DlGlassImageFilter* glass_filter = filter->asGlass();
+      FML_DCHECK(glass_filter);
+      std::shared_ptr<FilterContents> frost = FilterContents::MakeGaussianBlur(
+          input, Sigma(glass_filter->sigma_x()), Sigma(glass_filter->sigma_y()),
+          Entity::TileMode::kClamp, glass_filter->shape().GetBounds(),
+          FilterContents::BlurStyle::kNormal, nullptr,
+          glass_filter->downsample_scale());
+      const flutter::DlColor tint = glass_filter->tint();
+      auto glass = std::make_shared<GlassFilterContents>(
+          glass_filter->shape(), glass_filter->thickness(),
+          glass_filter->refraction(), glass_filter->dispersion(),
+          glass_filter->saturation(),
+          Color(tint.getRedF(), tint.getGreenF(), tint.getBlueF(),
+                tint.getAlphaF()),
+          glass_filter->tint_strength(), glass_filter->brightness(),
+          glass_filter->light_angle(), glass_filter->light_intensity(),
+          glass_filter->edge_strength());
+      glass->SetInputs({input, FilterInput::Make(std::move(frost))});
+      return glass;
     }
     case flutter::DlImageFilterType::kDilate: {
       auto dilate_filter = filter->asDilate();

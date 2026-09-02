@@ -4409,6 +4409,49 @@ abstract class ImageFilter {
     );
   }
 
+  /// Creates Denial's native rounded glass material.
+  ///
+  /// The filter combines a frosted Gaussian input with sharp, refracted scene
+  /// samples. [shape] supplies the optical boundary used for refraction and
+  /// directional edge lighting. [lightAngle] is expressed in radians.
+  factory ImageFilter.glass({
+    double sigmaX = 14,
+    double sigmaY = 14,
+    required RRect shape,
+    double downsampleScale = 0.75,
+    double thickness = 20,
+    double refraction = 0.55,
+    double dispersion = 0.12,
+    double saturation = 1.2,
+    Color tint = const Color(0xffffffff),
+    double tintStrength = 0.08,
+    double brightness = 0.06,
+    double lightAngle = 3.9269908169872414,
+    double lightIntensity = 0.7,
+    double edgeStrength = 0.65,
+    double? backdropAlphaThreshold,
+    bool backdropAlphaThresholdIsSingleSurface = false,
+  }) {
+    return _GlassImageFilter(
+      sigmaX: sigmaX,
+      sigmaY: sigmaY,
+      shape: shape,
+      downsampleScale: downsampleScale,
+      thickness: thickness,
+      refraction: refraction,
+      dispersion: dispersion,
+      saturation: saturation,
+      tint: tint,
+      tintStrength: tintStrength,
+      brightness: brightness,
+      lightAngle: lightAngle,
+      lightIntensity: lightIntensity,
+      edgeStrength: edgeStrength,
+      backdropAlphaThreshold: backdropAlphaThreshold,
+      backdropAlphaThresholdIsSingleSurface: backdropAlphaThresholdIsSingleSurface,
+    );
+  }
+
   /// Creates an image filter that dilates each input pixel's channel values
   /// to the max value within the given radii along the x and y axes.
   factory ImageFilter.dilate({double radiusX = 0.0, double radiusY = 0.0}) {
@@ -4643,6 +4686,97 @@ class _GaussianBlurImageFilter implements ImageFilter {
   );
 }
 
+class _GlassImageFilter implements ImageFilter {
+  _GlassImageFilter({
+    required this.sigmaX,
+    required this.sigmaY,
+    required this.shape,
+    required this.downsampleScale,
+    required this.thickness,
+    required this.refraction,
+    required this.dispersion,
+    required this.saturation,
+    required this.tint,
+    required this.tintStrength,
+    required this.brightness,
+    required this.lightAngle,
+    required this.lightIntensity,
+    required this.edgeStrength,
+    required this.backdropAlphaThreshold,
+    required this.backdropAlphaThresholdIsSingleSurface,
+  });
+
+  final double sigmaX;
+  final double sigmaY;
+  final RRect shape;
+  final double downsampleScale;
+  final double thickness;
+  final double refraction;
+  final double dispersion;
+  final double saturation;
+  final Color tint;
+  final double tintStrength;
+  final double brightness;
+  final double lightAngle;
+  final double lightIntensity;
+  final double edgeStrength;
+  final double? backdropAlphaThreshold;
+  final bool backdropAlphaThresholdIsSingleSurface;
+
+  late final _ImageFilter nativeFilter = _ImageFilter.glass(this);
+
+  @override
+  _ImageFilter _toNativeImageFilter() => nativeFilter;
+
+  @override
+  String get debugShortDescription =>
+      'glass($sigmaX, $sigmaY, $shape, thickness: $thickness, refraction: $refraction)';
+
+  @override
+  String toString() => 'ImageFilter.$debugShortDescription';
+
+  @override
+  bool operator ==(Object other) {
+    return other is _GlassImageFilter &&
+        other.sigmaX == sigmaX &&
+        other.sigmaY == sigmaY &&
+        other.shape == shape &&
+        other.downsampleScale == downsampleScale &&
+        other.thickness == thickness &&
+        other.refraction == refraction &&
+        other.dispersion == dispersion &&
+        other.saturation == saturation &&
+        other.tint == tint &&
+        other.tintStrength == tintStrength &&
+        other.brightness == brightness &&
+        other.lightAngle == lightAngle &&
+        other.lightIntensity == lightIntensity &&
+        other.edgeStrength == edgeStrength &&
+        other.backdropAlphaThreshold == backdropAlphaThreshold &&
+        other.backdropAlphaThresholdIsSingleSurface == backdropAlphaThresholdIsSingleSurface;
+  }
+
+  @override
+  int get hashCode => Object.hashAll(<Object?>[
+    sigmaX,
+    sigmaY,
+    shape,
+    downsampleScale,
+    thickness,
+    refraction,
+    dispersion,
+    saturation,
+    tint,
+    tintStrength,
+    brightness,
+    lightAngle,
+    lightIntensity,
+    edgeStrength,
+    backdropAlphaThreshold,
+    backdropAlphaThresholdIsSingleSurface,
+  ]);
+}
+
 class _DilateImageFilter implements ImageFilter {
   _DilateImageFilter({required this.radiusX, required this.radiusY});
 
@@ -4789,6 +4923,28 @@ base class _ImageFilter extends NativeFieldWrapperClass1 {
     );
   }
 
+  _ImageFilter.glass(_GlassImageFilter filter) : creator = filter {
+    _constructor();
+    _initGlass(
+      filter.sigmaX,
+      filter.sigmaY,
+      filter.shape._getValue32(),
+      filter.downsampleScale,
+      filter.thickness,
+      filter.refraction,
+      filter.dispersion,
+      filter.saturation,
+      filter.tint.toARGB32(),
+      filter.tintStrength,
+      filter.brightness,
+      filter.lightAngle,
+      filter.lightIntensity,
+      filter.edgeStrength,
+      filter.backdropAlphaThreshold ?? -1,
+      filter.backdropAlphaThresholdIsSingleSurface,
+    );
+  }
+
   /// Creates an image filter that dilates each input pixel's channel values
   /// to the max value within the given radii along the x and y axes.
   _ImageFilter.dilate(_DilateImageFilter filter) : creator = filter {
@@ -4864,6 +5020,46 @@ base class _ImageFilter extends NativeFieldWrapperClass1 {
     double boundsRight,
     double boundsBottom,
     double downsampleScale,
+    double backdropAlphaThreshold,
+    bool backdropAlphaThresholdIsSingleSurface,
+  );
+
+  @Native<
+    Void Function(
+      Pointer<Void>,
+      Double,
+      Double,
+      Handle,
+      Double,
+      Double,
+      Double,
+      Double,
+      Double,
+      Uint32,
+      Double,
+      Double,
+      Double,
+      Double,
+      Double,
+      Double,
+      Bool,
+    )
+  >(symbol: 'ImageFilter::initGlass')
+  external void _initGlass(
+    double sigmaX,
+    double sigmaY,
+    Float32List shape,
+    double downsampleScale,
+    double thickness,
+    double refraction,
+    double dispersion,
+    double saturation,
+    int tint,
+    double tintStrength,
+    double brightness,
+    double lightAngle,
+    double lightIntensity,
+    double edgeStrength,
     double backdropAlphaThreshold,
     bool backdropAlphaThresholdIsSingleSurface,
   );

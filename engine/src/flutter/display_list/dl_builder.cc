@@ -284,6 +284,7 @@ void DisplayListBuilder::onSetImageFilter(const DlImageFilter* filter) {
         break;
       }
       case DlImageFilterType::kCompose:
+      case DlImageFilterType::kGlass:
       case DlImageFilterType::kLocalMatrix:
       case DlImageFilterType::kColorFilter:
       case DlImageFilterType::kRuntimeEffect: {

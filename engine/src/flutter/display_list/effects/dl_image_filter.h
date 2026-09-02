@@ -25,6 +25,7 @@ namespace flutter {
 // An enumerated type for the supported ImageFilter operations.
 enum class DlImageFilterType {
   kBlur,
+  kGlass,
   kDilate,
   kErode,
   kMatrix,
@@ -35,6 +36,7 @@ enum class DlImageFilterType {
 };
 
 class DlBlurImageFilter;
+class DlGlassImageFilter;
 class DlDilateImageFilter;
 class DlErodeImageFilter;
 class DlMatrixImageFilter;
@@ -79,6 +81,8 @@ class DlImageFilter : public DlAttribute<DlImageFilter, DlImageFilterType> {
   // Return a DlBlurImageFilter pointer to this object iff it is a Blur
   // type of ImageFilter, otherwise return nullptr.
   virtual const DlBlurImageFilter* asBlur() const { return nullptr; }
+
+  virtual const DlGlassImageFilter* asGlass() const { return nullptr; }
 
   // Return a DlDilateImageFilter pointer to this object iff it is a Dilate
   // type of ImageFilter, otherwise return nullptr.
