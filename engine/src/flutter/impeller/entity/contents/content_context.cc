@@ -720,6 +720,8 @@ ContentContext::ContentContext(
                                             {supports_decal});
     pipelines_->gaussian_blur.CreateDefault(
         *context_, options_no_msaa_no_depth_stencil, {supports_decal});
+    pipelines_->glass.CreateDefault(*context_,
+                                    options_no_msaa_no_depth_stencil);
     pipelines_->border_mask_blur.CreateDefault(*context_,
                                                options_trianglestrip);
     pipelines_->color_matrix_color_filter.CreateDefault(*context_,
