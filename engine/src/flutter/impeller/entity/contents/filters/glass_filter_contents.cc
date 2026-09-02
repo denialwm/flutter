@@ -19,6 +19,20 @@ namespace impeller {
 
 namespace {
 
+Matrix GetMaterialGeometryTransform(const Matrix& effect_transform) {
+  Matrix geometry_transform = effect_transform.Basis();
+  // Backdrop inputs and their coverage live in render-target coordinates.
+  // GLES expresses the root surface orientation as a reflected effect basis;
+  // applying that reflection to layout-provided material bounds sends the
+  // shape to the opposite side of the texture. Remove only that render-target
+  // reflection while retaining user rotation and scale.
+  if (geometry_transform.GetDeterminant() < 0.0f) {
+    geometry_transform =
+        Matrix::MakeScale(Vector3(1.0f, -1.0f, 1.0f)) * geometry_transform;
+  }
+  return geometry_transform;
+}
+
 Point RemapTextureCoordinate(Point coordinate, Scalar y_coord_scale) {
   if (y_coord_scale < 0.0f) {
     coordinate.y = 1.0f - coordinate.y;
@@ -250,8 +264,8 @@ std::optional<Rect> GlassFilterContents::GetFilterCoverage(
   if (inputs.empty()) {
     return std::nullopt;
   }
-  return shape_.GetBounds().TransformBounds(entity.GetTransform() *
-                                            effect_transform);
+  return shape_.GetBounds().TransformBounds(
+      entity.GetTransform() * GetMaterialGeometryTransform(effect_transform));
 }
 
 std::optional<Rect> GlassFilterContents::GetFilterSourceCoverage(
