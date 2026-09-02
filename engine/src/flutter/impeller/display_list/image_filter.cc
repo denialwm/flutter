@@ -4,6 +4,8 @@
 
 #include "impeller/display_list/image_filter.h"
 
+#include <optional>
+
 #include "flutter/display_list/effects/dl_color_sources.h"
 #include "flutter/display_list/effects/dl_image_filters.h"
 #include "fml/logging.h"
@@ -39,9 +41,13 @@ std::shared_ptr<FilterContents> WrapInput(const flutter::DlImageFilter* filter,
     case flutter::DlImageFilterType::kGlass: {
       const flutter::DlGlassImageFilter* glass_filter = filter->asGlass();
       FML_DCHECK(glass_filter);
+      // Restrict work with the outer material's coverage hint, but keep the
+      // frost convolution unbounded. This is the same proven clamp path used
+      // by Denial's ordinary backdrop blur and preserves a valid blur halo for
+      // refraction at the shape edge.
       std::shared_ptr<FilterContents> frost = FilterContents::MakeGaussianBlur(
           input, Sigma(glass_filter->sigma_x()), Sigma(glass_filter->sigma_y()),
-          Entity::TileMode::kClamp, glass_filter->shape().GetBounds(),
+          Entity::TileMode::kClamp, std::nullopt,
           FilterContents::BlurStyle::kNormal, nullptr,
           glass_filter->downsample_scale());
       const flutter::DlColor tint = glass_filter->tint();

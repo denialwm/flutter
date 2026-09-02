@@ -4,7 +4,6 @@
 
 precision highp float;
 
-#include <impeller/color.glsl>
 #include <impeller/types.glsl>
 
 uniform f16sampler2D sharp_texture_sampler;
@@ -41,8 +40,7 @@ float selectedCornerRadius(vec2 centered) {
     return centered.x < 0.0 ? frag_info.corner_radii.x
                             : frag_info.corner_radii.y;
   }
-  return centered.x < 0.0 ? frag_info.corner_radii.w
-                          : frag_info.corner_radii.z;
+  return centered.x < 0.0 ? frag_info.corner_radii.w : frag_info.corner_radii.z;
 }
 
 void roundedBoxField(vec2 position,
@@ -50,14 +48,14 @@ void roundedBoxField(vec2 position,
                      out vec2 outward_normal) {
   vec2 half_size = max(frag_info.material_size * 0.5, vec2(0.0001));
   vec2 centered = position - half_size;
-  float radius = clamp(selectedCornerRadius(centered), 0.0,
-                       min(half_size.x, half_size.y));
+  float radius =
+      clamp(selectedCornerRadius(centered), 0.0, min(half_size.x, half_size.y));
   vec2 q = abs(centered) - (half_size - vec2(radius));
   vec2 outside = max(q, 0.0);
   signed_distance = length(outside) + min(max(q.x, q.y), 0.0) - radius;
 
-  vec2 sign_position = vec2(centered.x < 0.0 ? -1.0 : 1.0,
-                            centered.y < 0.0 ? -1.0 : 1.0);
+  vec2 sign_position =
+      vec2(centered.x < 0.0 ? -1.0 : 1.0, centered.y < 0.0 ? -1.0 : 1.0);
   if (outside.x > 0.0 && outside.y > 0.0) {
     outward_normal = normalize(outside) * sign_position;
   } else if (q.x > q.y) {
@@ -78,10 +76,14 @@ vec2 blurredUvOffset(vec2 pixel_offset) {
 }
 
 vec4 sampleSharp(vec2 pixel_offset, float spread) {
-  return vec4(texture(sharp_texture_sampler,
-                      v_sharp_texture_coords +
-                          sharpUvOffset(pixel_offset * spread))) *
+  return vec4(texture(
+             sharp_texture_sampler,
+             v_sharp_texture_coords + sharpUvOffset(pixel_offset * spread))) *
          frag_info.sharp_opacity;
+}
+
+vec3 straightRgb(vec4 color) {
+  return color.rgb / max(color.a, 0.00001);
 }
 
 void main() {
@@ -95,29 +97,30 @@ void main() {
   vec2 displacement =
       -outward_normal * thickness * frag_info.refraction * curved_edge;
 
-  vec4 blurred = vec4(texture(
-                     blurred_texture_sampler,
-                     v_blurred_texture_coords +
-                         blurredUvOffset(displacement * 0.22))) *
+  vec4 blurred = vec4(texture(blurred_texture_sampler,
+                              v_blurred_texture_coords +
+                                  blurredUvOffset(displacement * 0.22))) *
                  frag_info.blurred_opacity;
   vec4 sharp_green = sampleSharp(displacement, 1.0);
-  vec4 sharp = sharp_green;
+  vec3 sharp_rgb = straightRgb(sharp_green);
   if (frag_info.dispersion > 0.0001) {
     float chroma = frag_info.dispersion * 0.16;
     vec4 sharp_red = sampleSharp(displacement, 1.0 + chroma);
     vec4 sharp_blue = sampleSharp(displacement, 1.0 - chroma);
-    sharp = vec4(sharp_red.r, sharp_green.g, sharp_blue.b, sharp_green.a);
+    sharp_rgb =
+        vec3(straightRgb(sharp_red).r, sharp_rgb.g, straightRgb(sharp_blue).b);
   }
 
-  vec4 material = mix(blurred, sharp, curved_edge * frag_info.refraction);
-  vec4 straight = IPUnpremultiply(material);
-  float luminance = dot(straight.rgb, vec3(0.2126, 0.7152, 0.0722));
-  straight.rgb = mix(vec3(luminance), straight.rgb, frag_info.saturation);
-  straight.rgb = mix(straight.rgb, frag_info.tint.rgb,
+  float refraction_mix = curved_edge * frag_info.refraction;
+  float material_alpha = mix(blurred.a, sharp_green.a, refraction_mix);
+  vec3 material_rgb = mix(straightRgb(blurred), sharp_rgb, refraction_mix);
+  float luminance = dot(material_rgb, vec3(0.2126, 0.7152, 0.0722));
+  material_rgb = mix(vec3(luminance), material_rgb, frag_info.saturation);
+  material_rgb = mix(material_rgb, frag_info.tint.rgb,
                      frag_info.tint_strength * frag_info.tint.a);
-  straight.rgb += frag_info.brightness >= 0.0
-                      ? frag_info.brightness * (1.0 - straight.rgb)
-                      : frag_info.brightness * straight.rgb;
+  material_rgb += frag_info.brightness >= 0.0
+                      ? frag_info.brightness * (1.0 - material_rgb)
+                      : frag_info.brightness * material_rgb;
 
   vec2 light_direction =
       vec2(cos(frag_info.light_angle), sin(frag_info.light_angle));
@@ -134,7 +137,7 @@ void main() {
       caustic_band * facing_light * frag_info.edge_strength * 0.1;
   float shadow =
       curved_edge * facing_shadow * frag_info.light_intensity * 0.075;
-  straight.rgb = clamp(straight.rgb + vec3(highlight - shadow), 0.0, 1.0);
+  material_rgb = clamp(material_rgb + vec3(highlight - shadow), 0.0, 1.0);
 
-  frag_color = f16vec4(IPPremultiply(straight));
+  frag_color = f16vec4(material_rgb * material_alpha, material_alpha);
 }

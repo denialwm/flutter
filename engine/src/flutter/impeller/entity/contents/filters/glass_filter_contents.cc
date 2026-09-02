@@ -86,17 +86,19 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
     return std::nullopt;
   }
 
-  // Evaluate the blur first. Its source request includes the convolution
-  // gutter and primes the shared sharp input with a sufficiently large crop.
-  const std::optional<Snapshot> blurred_snapshot =
-      inputs[1]->GetSnapshot("Denial Glass Frost", renderer, entity, coverage);
-  if (!blurred_snapshot.has_value()) {
-    return std::nullopt;
-  }
   const std::optional<Snapshot> sharp_snapshot =
       inputs[0]->GetSnapshot("Denial Glass Scene", renderer, entity, coverage);
   if (!sharp_snapshot.has_value()) {
     return std::nullopt;
+  }
+  // The frost path normally resolves through Impeller's established
+  // crop-aware Gaussian filter. Resource pressure must not make an entire
+  // backdrop scope disappear, so retain a sharp material as a graceful
+  // fallback if that intermediate cannot be allocated.
+  std::optional<Snapshot> blurred_snapshot =
+      inputs[1]->GetSnapshot("Denial Glass Frost", renderer, entity, coverage);
+  if (!blurred_snapshot.has_value()) {
+    blurred_snapshot = sharp_snapshot;
   }
 
   const std::optional<Quad> sharp_uvs =
