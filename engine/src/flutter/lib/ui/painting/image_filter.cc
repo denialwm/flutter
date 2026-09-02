@@ -8,6 +8,7 @@
 #include "display_list/effects/dl_image_filters.h"
 #include "flutter/lib/ui/floating_point.h"
 #include "flutter/lib/ui/painting/matrix.h"
+#include "flutter/lib/ui/painting/rrect.h"
 #include "flutter/lib/ui/ui_dart_state.h"
 #include "lib/ui/painting/fragment_program.h"
 #include "lib/ui/painting/fragment_shader.h"
@@ -105,6 +106,33 @@ void ImageFilter::initBlur(double sigma_x,
   // If it was a NOP filter, don't bother processing dynamic substitutions
   // (They'd fail the FML_DCHECK anyway)
   is_dynamic_tile_mode_ = is_dynamic && filter_;
+}
+
+void ImageFilter::initGlass(double sigma_x,
+                            double sigma_y,
+                            const RRect& shape,
+                            double downsample_scale,
+                            double thickness,
+                            double refraction,
+                            double dispersion,
+                            double saturation,
+                            uint32_t tint,
+                            double tint_strength,
+                            double brightness,
+                            double light_angle,
+                            double light_intensity,
+                            double edge_strength,
+                            double backdrop_alpha_threshold,
+                            bool backdrop_alpha_threshold_is_single_surface) {
+  is_dynamic_tile_mode_ = false;
+  filter_ = DlGlassImageFilter::Make(
+      SafeNarrow(sigma_x), SafeNarrow(sigma_y), shape.rrect,
+      SafeNarrow(downsample_scale), SafeNarrow(thickness),
+      SafeNarrow(refraction), SafeNarrow(dispersion), SafeNarrow(saturation),
+      DlColor(tint), SafeNarrow(tint_strength), SafeNarrow(brightness),
+      SafeNarrow(light_angle), SafeNarrow(light_intensity),
+      SafeNarrow(edge_strength), SafeNarrow(backdrop_alpha_threshold),
+      backdrop_alpha_threshold_is_single_surface);
 }
 
 void ImageFilter::initDilate(double radius_x, double radius_y) {

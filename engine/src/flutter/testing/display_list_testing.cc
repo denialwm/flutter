@@ -561,6 +561,13 @@ void DisplayListStreamDispatcher::out(const DlImageFilter& filter) {
                                   << blur->tile_mode() << ")";
       break;
     }
+    case DlImageFilterType::kGlass: {
+      const DlGlassImageFilter* glass = filter.asGlass();
+      FML_DCHECK(glass);
+      os_ << "DlGlassImageFilter(" << glass->sigma_x() << ", "
+          << glass->sigma_y() << ", " << glass->shape() << ")";
+      break;
+    }
     case DlImageFilterType::kDilate: {
       const DlDilateImageFilter* dilate = filter.asDilate();
       FML_DCHECK(dilate);

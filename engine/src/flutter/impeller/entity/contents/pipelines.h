@@ -31,6 +31,8 @@
 #include "impeller/entity/framebuffer_blend.frag.h"
 #include "impeller/entity/framebuffer_blend.vert.h"
 #include "impeller/entity/gaussian.frag.h"
+#include "impeller/entity/glass.frag.h"
+#include "impeller/entity/glass.vert.h"
 #include "impeller/entity/glyph_atlas.frag.h"
 #include "impeller/entity/glyph_atlas.vert.h"
 #include "impeller/entity/gradient_fill.vert.h"
@@ -139,6 +141,7 @@ using FramebufferBlendSaturationPipeline = FramebufferBlendPipelineHandle;
 using FramebufferBlendScreenPipeline = FramebufferBlendPipelineHandle;
 using FramebufferBlendSoftLightPipeline = FramebufferBlendPipelineHandle;
 using GaussianBlurPipeline = RenderPipelineHandle<FilterPositionUvVertexShader, GaussianFragmentShader>;
+using GlassPipeline = RenderPipelineHandle<GlassVertexShader, GlassFragmentShader>;
 using GlyphAtlasPipeline = RenderPipelineHandle<GlyphAtlasVertexShader, GlyphAtlasFragmentShader>;
 using LinePipeline = RenderPipelineHandle<LineVertexShader, LineFragmentShader>;
 using LinearGradientFillPipeline = GradientPipelineHandle<LinearGradientFillFragmentShader>;
