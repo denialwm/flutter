@@ -100,30 +100,37 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
     return std::nullopt;
   }
 
-  const std::optional<Snapshot> sharp_snapshot =
-      inputs[0]->GetSnapshot("Denial Glass Scene", renderer, entity, coverage);
-  if (!sharp_snapshot.has_value()) {
-    return std::nullopt;
+  Rect material_coverage = coverage;
+  if (coverage_hint.has_value()) {
+    const std::optional<Rect> intersection =
+        material_coverage.Intersection(coverage_hint.value());
+    if (!intersection.has_value()) {
+      return std::nullopt;
+    }
+    material_coverage = intersection.value();
   }
+
   // The frost path normally resolves through Impeller's established
   // crop-aware Gaussian filter. Resource pressure must not make an entire
-  // backdrop scope disappear, so retain a sharp material as a graceful
+  // backdrop scope disappear, so retain the undiffused scene as a graceful
   // fallback if that intermediate cannot be allocated.
-  std::optional<Snapshot> blurred_snapshot =
-      inputs[1]->GetSnapshot("Denial Glass Frost", renderer, entity, coverage);
+  std::optional<Snapshot> blurred_snapshot = inputs[1]->GetSnapshot(
+      "Denial Glass Frost", renderer, entity, material_coverage);
   if (!blurred_snapshot.has_value()) {
-    blurred_snapshot = sharp_snapshot;
+    blurred_snapshot = inputs[0]->GetSnapshot(
+        "Denial Glass Scene Fallback", renderer, entity, material_coverage);
   }
-
-  const std::optional<Quad> sharp_uvs =
-      sharp_snapshot->GetCoverageUVs(coverage);
-  const std::optional<Quad> blurred_uvs =
-      blurred_snapshot->GetCoverageUVs(coverage);
-  if (!sharp_uvs.has_value() || !blurred_uvs.has_value()) {
+  if (!blurred_snapshot.has_value()) {
     return std::nullopt;
   }
 
-  const Size material_size = coverage.GetSize();
+  const std::optional<Quad> blurred_uvs =
+      blurred_snapshot->GetCoverageUVs(material_coverage);
+  if (!blurred_uvs.has_value()) {
+    return std::nullopt;
+  }
+
+  const Size material_size = material_coverage.GetSize();
   const Matrix material_transform = entity.GetTransform() * effect_transform;
   const Scalar scale_x =
       std::max(material_transform.TransformDirection(Vector2(1, 0)).GetLength(),
@@ -141,49 +148,38 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
       PhysicalCornerRadius(radii.bottom_right, scale_x, scale_y),
       PhysicalCornerRadius(radii.bottom_left, scale_x, scale_y));
 
-  const Quad sharp_coordinates = sharp_uvs.value();
   const Quad blurred_coordinates = blurred_uvs.value();
-  const Vector4 sharp_uv_basis =
-      TextureUvBasis(sharp_coordinates, material_size,
-                     sharp_snapshot->texture->GetYCoordScale());
   const Vector4 blurred_uv_basis =
       TextureUvBasis(blurred_coordinates, material_size,
                      blurred_snapshot->texture->GetYCoordScale());
 
   ContentContext::SubpassCallback callback =
-      [sharp_snapshot, blurred_snapshot, sharp_coordinates, blurred_coordinates,
-       material_size, corner_radii, sharp_uv_basis, blurred_uv_basis,
-       physical_thickness, refraction = refraction_, dispersion = dispersion_,
-       saturation = saturation_, tint = tint_, tint_strength = tint_strength_,
-       brightness = brightness_, light_angle = light_angle_,
-       light_intensity = light_intensity_, edge_strength = edge_strength_](
-          const ContentContext& renderer, RenderPass& pass) {
+      [blurred_snapshot, blurred_coordinates, material_size, corner_radii,
+       blurred_uv_basis, physical_thickness, refraction = refraction_,
+       dispersion = dispersion_, saturation = saturation_, tint = tint_,
+       tint_strength = tint_strength_, brightness = brightness_,
+       light_angle = light_angle_, light_intensity = light_intensity_,
+       edge_strength = edge_strength_](const ContentContext& renderer,
+                                       RenderPass& pass) {
         auto& data = renderer.GetTransientsDataBuffer();
         const std::array<VS::PerVertexData, 4> vertices = {
-            VS::PerVertexData{Point(0, 0), sharp_coordinates[0],
-                              blurred_coordinates[0], Point(0, 0)},
-            VS::PerVertexData{Point(1, 0), sharp_coordinates[1],
-                              blurred_coordinates[1],
+            VS::PerVertexData{Point(0, 0), blurred_coordinates[0], Point(0, 0)},
+            VS::PerVertexData{Point(1, 0), blurred_coordinates[1],
                               Point(material_size.width, 0)},
-            VS::PerVertexData{Point(0, 1), sharp_coordinates[2],
-                              blurred_coordinates[2],
+            VS::PerVertexData{Point(0, 1), blurred_coordinates[2],
                               Point(0, material_size.height)},
-            VS::PerVertexData{Point(1, 1), sharp_coordinates[3],
-                              blurred_coordinates[3],
+            VS::PerVertexData{Point(1, 1), blurred_coordinates[3],
                               Point(material_size.width, material_size.height)},
         };
 
         VS::FrameInfo frame_info;
         frame_info.mvp = Matrix::MakeOrthographic(ISize(1, 1));
-        frame_info.sharp_sampler_y_coord_scale =
-            sharp_snapshot->texture->GetYCoordScale();
         frame_info.blurred_sampler_y_coord_scale =
             blurred_snapshot->texture->GetYCoordScale();
 
         FS::FragInfo frag_info;
         frag_info.material_size = Vector2(material_size);
         frag_info.corner_radii = corner_radii;
-        frag_info.sharp_uv_basis = sharp_uv_basis;
         frag_info.blurred_uv_basis = blurred_uv_basis;
         frag_info.tint = Vector4(tint.red, tint.green, tint.blue, tint.alpha);
         frag_info.thickness = physical_thickness;
@@ -195,15 +191,8 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         frag_info.light_angle = light_angle;
         frag_info.light_intensity = light_intensity;
         frag_info.edge_strength = edge_strength;
-        frag_info.sharp_opacity = sharp_snapshot->opacity;
         frag_info.blurred_opacity = blurred_snapshot->opacity;
 
-        SamplerDescriptor sharp_sampler = sharp_snapshot->sampler_descriptor;
-        sharp_sampler.min_filter = MinMagFilter::kLinear;
-        sharp_sampler.mag_filter = MinMagFilter::kLinear;
-        sharp_sampler.mip_filter = MipFilter::kBase;
-        sharp_sampler.width_address_mode = SamplerAddressMode::kClampToEdge;
-        sharp_sampler.height_address_mode = SamplerAddressMode::kClampToEdge;
         SamplerDescriptor blurred_sampler =
             blurred_snapshot->sampler_descriptor;
         blurred_sampler.min_filter = MinMagFilter::kLinear;
@@ -220,10 +209,6 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         pass.SetVertexBuffer(CreateVertexBuffer(vertices, data));
         VS::BindFrameInfo(pass, data.EmplaceUniform(frame_info));
         FS::BindFragInfo(pass, data.EmplaceUniform(frag_info));
-        FS::BindSharpTextureSampler(
-            pass, sharp_snapshot->texture,
-            renderer.GetContext()->GetSamplerLibrary()->GetSampler(
-                sharp_sampler));
         FS::BindBlurredTextureSampler(
             pass, blurred_snapshot->texture,
             renderer.GetContext()->GetSamplerLibrary()->GetSampler(
@@ -250,10 +235,11 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
   output_sampler.width_address_mode = SamplerAddressMode::kClampToEdge;
   output_sampler.height_address_mode = SamplerAddressMode::kClampToEdge;
   return Entity::FromSnapshot(
-      Snapshot{.texture = render_target.value().GetRenderTargetTexture(),
-               .transform = Matrix::MakeTranslation(coverage.GetOrigin()),
-               .sampler_descriptor = output_sampler,
-               .opacity = 1.0f},
+      Snapshot{
+          .texture = render_target.value().GetRenderTargetTexture(),
+          .transform = Matrix::MakeTranslation(material_coverage.GetOrigin()),
+          .sampler_descriptor = output_sampler,
+          .opacity = 1.0f},
       entity.GetBlendMode());
 }
 
