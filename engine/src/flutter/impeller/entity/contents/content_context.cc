@@ -1031,12 +1031,39 @@ void ContentContext::ResetTransientsBuffers() {
 }
 
 std::optional<Snapshot> ContentContext::GetCachedBackdropSnapshot(int64_t key) {
+  for (auto* pins = backdrop_snapshot_pins_; pins; pins = pins->previous_) {
+    auto pinned = pins->snapshots_.find(key);
+    if (pinned != pins->snapshots_.end()) {
+      return pinned->second;
+    }
+  }
   auto found = backdrop_snapshot_cache_.find(key);
   if (found == backdrop_snapshot_cache_.end()) {
     return std::nullopt;
   }
   found->second.last_access = ++backdrop_snapshot_cache_access_;
   return found->second.snapshot;
+}
+
+BackdropSnapshotPins::BackdropSnapshotPins(ContentContext& context)
+    : context_(context), previous_(context.backdrop_snapshot_pins_) {
+  context_.backdrop_snapshot_pins_ = this;
+}
+
+BackdropSnapshotPins::~BackdropSnapshotPins() {
+  FML_DCHECK(context_.backdrop_snapshot_pins_ == this);
+  context_.backdrop_snapshot_pins_ = previous_;
+}
+
+bool BackdropSnapshotPins::Pin(int64_t key, const Rect& coverage) {
+  auto snapshot = context_.GetCachedBackdropSnapshot(key);
+  const auto cached_coverage =
+      snapshot.has_value() ? snapshot->GetCoverage() : std::nullopt;
+  if (!cached_coverage || !cached_coverage->Contains(coverage)) {
+    return false;
+  }
+  snapshots_.insert_or_assign(key, std::move(*snapshot));
+  return true;
 }
 
 void ContentContext::RetireOlderBackdropSnapshotGenerations(int64_t key) {

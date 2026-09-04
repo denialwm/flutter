@@ -63,8 +63,9 @@ TEST(GlassFilterContentsTest, SourceCoverageIncludesSnellRefractionDistance) {
   // refraction 0.55 maps to IOR 1.11. At the rim, the 8 * thickness
   // optical path displaces 77.0828 px; dispersion expands that by 6%.
   constexpr Scalar kExpectedPadding = 81.7078f;
-  EXPECT_TRUE(
-      RectNear(source.value(), output_limit.Expand(Vector2(kExpectedPadding))));
+  EXPECT_TRUE(RectNear(
+      source.value(),
+      output_limit.Expand(Vector2(kExpectedPadding, kExpectedPadding))));
 }
 
 }  // namespace testing

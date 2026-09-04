@@ -11,6 +11,10 @@
 #include "flutter/display_list/geometry/dl_path_builder.h"
 #include "flutter/flow/layers/layer_tree.h"
 
+#ifdef IMPELLER_SUPPORTS_RENDERING
+#include "impeller/display_list/aiks_context.h"
+#endif
+
 namespace flutter {
 namespace {
 
@@ -105,7 +109,8 @@ RasterDamagePlan RasterDamagePlan::Make(const std::optional<DlRegion>& damage,
 std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
     flutter::LayerTree& layer_tree,
     bool has_raster_cache,
-    bool impeller_enabled) {
+    bool impeller_enabled,
+    const BackdropSnapshotPin& pin_backdrop) {
   if (layer_tree.root_layer()) {
     PaintRegionMap empty_paint_region_map;
     const bool reuse_diff_metadata = prev_layer_tree_ == &layer_tree &&
@@ -170,7 +175,8 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
     }
 
     damage_ = context.ComputeDamage(
-        existing_damage_, horizontal_clip_alignment_, vertical_clip_alignment_);
+        existing_damage_, horizontal_clip_alignment_, vertical_clip_alignment_,
+        impeller_enabled ? pin_backdrop : BackdropSnapshotPin{});
     return damage_->buffer_damage;
   }
   return std::nullopt;
@@ -259,8 +265,23 @@ RasterStatus CompositorContext::ScopedFrame::Raster(
 
   std::optional<DlRegion> clip_region;
   if (frame_damage) {
+    BackdropSnapshotPin pin_backdrop;
+#ifdef IMPELLER_SUPPORTS_RENDERING
+    // Diff coordinates must match the scene coordinates in the snapshot.
+    // The scope survives Paint's DisplayList recording and the later surface
+    // Submit, so intervening cache eviction cannot invalidate the damage plan.
+    if (aiks_context_ && root_surface_transformation_.IsIdentity()) {
+      backdrop_snapshot_pins_.reset();
+      backdrop_snapshot_pins_ =
+          std::make_unique<impeller::BackdropSnapshotPins>(
+              aiks_context_->GetContentContext());
+      pin_backdrop = [this](int64_t key, const DlIRect& coverage) {
+        return backdrop_snapshot_pins_->Pin(key, DlRect::Make(coverage));
+      };
+    }
+#endif
     clip_region = frame_damage->ComputeDamageRegion(
-        layer_tree, !ignore_raster_cache, !gr_context_);
+        layer_tree, !ignore_raster_cache, !gr_context_, pin_backdrop);
 
     const RasterBackend backend =
         aiks_context_ ? RasterBackend::kImpeller

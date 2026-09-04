@@ -99,6 +99,37 @@ TEST_P(AiksTest, BackdropSnapshotCacheReplacesOlderFamilyGeneration) {
   EXPECT_TRUE(context.GetCachedBackdropSnapshot(second).has_value());
 }
 
+TEST_P(AiksTest, BackdropSnapshotPinsSurviveCacheRetirementUntilSubmission) {
+  ContentContext context(GetContext(), nullptr);
+  TextureDescriptor descriptor;
+  descriptor.size = {4, 4};
+  descriptor.format = context.GetDeviceCapabilities().GetDefaultColorFormat();
+  descriptor.usage = TextureUsage::kRenderTarget;
+  descriptor.storage_mode = StorageMode::kDevicePrivate;
+  auto texture =
+      context.GetContext()->GetResourceAllocator()->CreateTexture(descriptor);
+  ASSERT_TRUE(texture);
+  const int64_t first = flutter::MakeBackdropFilterCacheKey(7u, 1u);
+  const int64_t second = flutter::MakeBackdropFilterCacheKey(7u, 2u);
+  context.CacheBackdropSnapshot(first, Snapshot{.texture = texture});
+  {
+    BackdropSnapshotPins pins(context);
+    EXPECT_FALSE(pins.Pin(second, Rect::MakeWH(4, 4)));
+    EXPECT_FALSE(pins.Pin(first, Rect::MakeWH(5, 4)));
+    EXPECT_TRUE(pins.Pin(first, Rect::MakeWH(4, 4)));
+    // Retirement can happen while other layers are rendered before this one.
+    EXPECT_FALSE(context.ShouldMaterializeBackdropSnapshot(second));
+    ASSERT_TRUE(context.GetCachedBackdropSnapshot(first));
+    EXPECT_EQ(context.GetCachedBackdropSnapshot(first)->texture, texture);
+    {
+      BackdropSnapshotPins nested(context);
+      EXPECT_TRUE(nested.Pin(first, Rect::MakeWH(4, 4)));
+    }
+    EXPECT_TRUE(context.GetCachedBackdropSnapshot(first));
+  }
+  EXPECT_FALSE(context.GetCachedBackdropSnapshot(first));
+}
+
 TEST_P(AiksTest, BackdropSnapshotMaterializesOnlyAfterGenerationIsStable) {
   ContentContext context(GetContext(), nullptr);
   const int64_t first = flutter::MakeBackdropFilterCacheKey(11u, 1u);

@@ -28,6 +28,8 @@
 #include "impeller/typographer/typographer_context.h"
 
 namespace impeller {
+class BackdropSnapshotPins;
+
 /// Pipeline state configuration.
 ///
 /// Each unique combination of these options requires a different pipeline state
@@ -385,6 +387,8 @@ class ContentContext {
   };
   std::unordered_map<int64_t, BackdropSnapshotCacheEntry>
       backdrop_snapshot_cache_;
+  friend class BackdropSnapshotPins;
+  BackdropSnapshotPins* backdrop_snapshot_pins_ = nullptr;
   size_t backdrop_snapshot_cache_bytes_ = 0u;
   uint64_t backdrop_snapshot_cache_access_ = 0u;
 
@@ -402,6 +406,26 @@ class ContentContext {
   ContentContext(const ContentContext&) = delete;
 
   ContentContext& operator=(const ContentContext&) = delete;
+};
+
+// Reserves existing snapshots used to omit readback repair from a frame's
+// damage. Pins outlive DisplayList recording through submission, independently
+// of normal cache eviction. Nested recording scopes preserve outer pins.
+class BackdropSnapshotPins {
+ public:
+  explicit BackdropSnapshotPins(ContentContext& context);
+  ~BackdropSnapshotPins();
+
+  bool Pin(int64_t key, const Rect& coverage);
+
+  BackdropSnapshotPins(const BackdropSnapshotPins&) = delete;
+  BackdropSnapshotPins& operator=(const BackdropSnapshotPins&) = delete;
+
+ private:
+  friend class ContentContext;
+  ContentContext& context_;
+  BackdropSnapshotPins* previous_;
+  std::unordered_map<int64_t, Snapshot> snapshots_;
 };
 
 }  // namespace impeller

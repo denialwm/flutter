@@ -197,5 +197,40 @@ TEST_F(DiffContextTest, ReadbackExpandsHistoricalBufferDamageOnly) {
   ExpectRegion(damage.buffer_damage, {first_paint, shared, historical});
 }
 
+TEST_F(DiffContextTest, SnapshotPinsRequireUnambiguousUnfilteredCoverage) {
+  PaintRegionMap current_regions, previous_regions;
+  const auto state = std::make_shared<BackdropFilterCacheState>();
+  const DlIRect paint = DlIRect::MakeLTRB(20, 20, 80, 80);
+  const DlIRect input = DlIRect::MakeLTRB(2, 2, 98, 98);
+  const DlRegion repair(DlIRect::MakeLTRB(30, 30, 34, 34));
+  int calls = 0;
+  const BackdropSnapshotPin pin = [&](int64_t, const DlIRect&) {
+    calls++;
+    return true;
+  };
+  DiffContext duplicate(DlISize(100, 100), current_regions, previous_regions,
+                        false, true);
+  duplicate.AddReadbackRegion(paint, input, state);
+  duplicate.AddReadbackRegion(paint, input, state);
+  ExpectRegion(duplicate.ComputeDamage(repair, 0, 0, pin).buffer_damage,
+               {input});
+  EXPECT_EQ(calls, 0);
+
+  DiffContext filtered(DlISize(100, 100), current_regions, previous_regions,
+                       false, true);
+  filtered.PushFilterBoundsAdjustment([](DlRect rect) { return rect; });
+  filtered.AddReadbackRegion(paint, input, state);
+  ExpectRegion(filtered.ComputeDamage(repair, 0, 0, pin).buffer_damage,
+               {input});
+  EXPECT_EQ(calls, 0);
+
+  DiffContext unknown(DlISize(100, 100), current_regions, previous_regions,
+                      false, true);
+  unknown.AddReadbackRegion(paint, input, state);
+  ExpectRegion(unknown.ComputeDamage(std::nullopt, 0, 0, pin).buffer_damage,
+               {DlIRect::MakeWH(100, 100)});
+  EXPECT_EQ(calls, 1);
+}
+
 }  // namespace testing
 }  // namespace flutter
