@@ -314,10 +314,14 @@ class ContentContext {
   // are versioned by Flutter's ordered layer diff, so a hit means the pixels
   // sampled below the filter are unchanged even if its child repaints.
   std::optional<Snapshot> GetCachedBackdropSnapshot(int64_t key);
-  // Returns false on the first observation of a generated backdrop version
-  // and true once that exact version survives into a later frame. Calling this
-  // also retires a cached older generation from the same family.
+  // New families wait for a repeated version before materializing. A family
+  // whose previous snapshot was actually reused refreshes on the first changed
+  // frame, avoiding a second filter evaluation just to populate the cache.
+  // Calling this also retires older cached generations of the same family.
   bool ShouldMaterializeBackdropSnapshot(int64_t key);
+  // Called only after rendering accepts the snapshot's coverage. Merely finding
+  // or pinning a snapshot does not establish that caching saved any work.
+  void RecordBackdropSnapshotReuse(int64_t key);
   void CacheBackdropSnapshot(int64_t key, const Snapshot& snapshot);
 
  protected:
@@ -396,6 +400,7 @@ class ContentContext {
     int64_t key;
     uint32_t observations;
     uint64_t last_access;
+    bool reused = false;
   };
   std::unordered_map<uint32_t, BackdropSnapshotObservation>
       backdrop_snapshot_observations_;

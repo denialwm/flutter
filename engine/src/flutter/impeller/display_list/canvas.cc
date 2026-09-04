@@ -2145,6 +2145,7 @@ void Canvas::SaveLayer(const Paint& paint,
           cached.has_value() ? cached->GetCoverage() : std::nullopt;
       if (cached_coverage.has_value() &&
           cached_coverage->Contains(subpass_coverage)) {
+        renderer_.RecordBackdropSnapshotReuse(backdrop_id.value());
         consume_backdrop_count();
         if (will_cache_backdrop_texture) {
           backdrop_data->shared_filter_snapshot = cached;

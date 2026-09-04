@@ -205,6 +205,48 @@ TEST_P(AiksTest, BackdropSnapshotMaterializesOnlyAfterGenerationIsStable) {
   EXPECT_TRUE(context.ShouldMaterializeBackdropSnapshot(17));
 }
 
+TEST_P(AiksTest, BackdropSnapshotRefreshesImmediatelyAfterSuccessfulReuse) {
+  ContentContext context(GetContext(), nullptr);
+  const auto key = [](uint32_t generation) {
+    return flutter::MakeBackdropFilterCacheKey(27u, generation);
+  };
+  EXPECT_FALSE(context.ShouldMaterializeBackdropSnapshot(key(1)));
+  EXPECT_TRUE(context.ShouldMaterializeBackdropSnapshot(key(1)));
+
+  TextureDescriptor descriptor;
+  descriptor.size = {100, 100};
+  descriptor.format = context.GetDeviceCapabilities().GetDefaultColorFormat();
+  descriptor.usage = TextureUsage::kRenderTarget | TextureUsage::kShaderRead;
+  descriptor.storage_mode = StorageMode::kDevicePrivate;
+  auto texture =
+      context.GetContext()->GetResourceAllocator()->CreateTexture(descriptor);
+  ASSERT_TRUE(texture);
+  context.CacheBackdropSnapshot(key(1), Snapshot{.texture = texture});
+
+  // Exercise the renderer's successful coverage check, not just the admission
+  // policy API. A reused ordinary blur teaches this family that caching helps.
+  auto canvas = CreateTestCanvas(context, Rect::MakeWH(100, 100),
+                                 /*requires_readback=*/true);
+  canvas->SetBackdropData({{key(1), BackdropData{.backdrop_count = 1}}}, 1);
+  auto blur =
+      flutter::DlImageFilter::MakeBlur(4, 4, flutter::DlTileMode::kClamp);
+  canvas->SaveLayer({}, Rect::MakeWH(50, 50), blur.get(),
+                    ContentBoundsPromise::kContainsContents,
+                    /*total_content_depth=*/1, /*can_distribute_opacity=*/false,
+                    key(1));
+  canvas->Restore();
+  EXPECT_TRUE(context.ShouldMaterializeBackdropSnapshot(key(2)));
+
+  // If motion starts, a refresh that is never reused must not keep promoting
+  // every subsequent version. Old pinned generations cannot teach the new one.
+  EXPECT_FALSE(context.ShouldMaterializeBackdropSnapshot(key(3)));
+  context.RecordBackdropSnapshotReuse(key(1));
+  EXPECT_FALSE(context.ShouldMaterializeBackdropSnapshot(key(4)));
+  EXPECT_FALSE(context.ShouldMaterializeBackdropSnapshot(key(5)));
+  EXPECT_TRUE(context.ShouldMaterializeBackdropSnapshot(key(5)));
+  EXPECT_FALSE(context.ShouldMaterializeBackdropSnapshot(key(6)));
+}
+
 TEST_P(AiksTest, TransformMultipliesCorrectly) {
   ContentContext context(GetContext(), nullptr);
   auto canvas = CreateTestCanvas(context);

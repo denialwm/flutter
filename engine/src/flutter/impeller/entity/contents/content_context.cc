@@ -1111,7 +1111,8 @@ bool ContentContext::ShouldMaterializeBackdropSnapshot(int64_t key) {
     observation.last_access = access;
     if (observation.key != key) {
       observation.key = key;
-      observation.observations = 1u;
+      observation.observations = observation.reused ? 2u : 1u;
+      observation.reused = false;
     } else if (observation.observations < 2u) {
       observation.observations++;
     }
@@ -1137,6 +1138,15 @@ bool ContentContext::ShouldMaterializeBackdropSnapshot(int64_t key) {
   }
 
   return found->second.observations >= 2u;
+}
+
+void ContentContext::RecordBackdropSnapshotReuse(int64_t key) {
+  const auto family = flutter::GetBackdropFilterCacheFamily(key);
+  auto found = backdrop_snapshot_observations_.find(family);
+  if (found != backdrop_snapshot_observations_.end() &&
+      found->second.key == key) {
+    found->second.reused = true;
+  }
 }
 
 void ContentContext::CacheBackdropSnapshot(int64_t key,
