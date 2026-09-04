@@ -1045,8 +1045,11 @@ std::optional<Snapshot> ContentContext::GetCachedBackdropSnapshot(int64_t key) {
   return found->second.snapshot;
 }
 
-BackdropSnapshotPins::BackdropSnapshotPins(ContentContext& context)
-    : context_(context), previous_(context.backdrop_snapshot_pins_) {
+BackdropSnapshotPins::BackdropSnapshotPins(ContentContext& context,
+                                           const Matrix& damage_to_snapshot)
+    : context_(context),
+      damage_to_snapshot_(damage_to_snapshot),
+      previous_(context.backdrop_snapshot_pins_) {
   context_.backdrop_snapshot_pins_ = this;
 }
 
@@ -1056,10 +1059,17 @@ BackdropSnapshotPins::~BackdropSnapshotPins() {
 }
 
 bool BackdropSnapshotPins::Pin(int64_t key, const Rect& coverage) {
+  // Perspective and rotated intermediate extents need a more general mapping
+  // contract. Keep their readback repair path rather than guessing coverage.
+  if (!damage_to_snapshot_.IsFinite() ||
+      !damage_to_snapshot_.IsTranslationScaleOnly()) {
+    return false;
+  }
   auto snapshot = context_.GetCachedBackdropSnapshot(key);
   const auto cached_coverage =
       snapshot.has_value() ? snapshot->GetCoverage() : std::nullopt;
-  if (!cached_coverage || !cached_coverage->Contains(coverage)) {
+  if (!cached_coverage || !cached_coverage->Contains(
+                              coverage.TransformBounds(damage_to_snapshot_))) {
     return false;
   }
   snapshots_.insert_or_assign(key, std::move(*snapshot));

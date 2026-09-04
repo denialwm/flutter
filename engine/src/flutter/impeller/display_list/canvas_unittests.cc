@@ -16,6 +16,7 @@
 #include "impeller/display_list/canvas.h"
 #include "impeller/display_list/dl_runtime_effect_impeller.h"
 #include "impeller/display_list/dl_vertices_geometry.h"
+#include "impeller/entity/contents/filters/glass_filter_contents.h"
 #include "impeller/geometry/geometry_asserts.h"
 #include "impeller/playground/playground.h"
 #include "impeller/playground/widgets.h"
@@ -128,6 +129,63 @@ TEST_P(AiksTest, BackdropSnapshotPinsSurviveCacheRetirementUntilSubmission) {
     EXPECT_TRUE(context.GetCachedBackdropSnapshot(first));
   }
   EXPECT_FALSE(context.GetCachedBackdropSnapshot(first));
+}
+
+TEST_P(AiksTest, GlassBackdropSnapshotCoversFractionalExtentAfterRootFlip) {
+  ContentContext context(GetContext(), nullptr);
+  TextureDescriptor descriptor;
+  descriptor.size = {1920, 1080};
+  descriptor.format = context.GetDeviceCapabilities().GetDefaultColorFormat();
+  descriptor.usage = TextureUsage::kRenderTarget | TextureUsage::kShaderRead;
+  descriptor.storage_mode = StorageMode::kDevicePrivate;
+  auto texture =
+      context.GetContext()->GetResourceAllocator()->CreateTexture(descriptor);
+  ASSERT_TRUE(texture);
+
+  const Matrix root_flip =
+      Matrix::MakeTranslation({0, 1080, 0}) * Matrix::MakeScale({1, -1, 1});
+  // A panel pill and a maximized window at fractional output scale. The
+  // latter is just over an integral width, which previously lost a column.
+  const std::array<Rect, 2> bounds = {
+      Rect::MakeXYWH(1465.8098f, 5.5f, 97.9f, 24.2f),
+      Rect::MakeLTRB(17, 36, 1904.0001f, 1064.0001f)};
+  uint32_t family = 1;
+  for (const Rect& damage_coverage : bounds) {
+    const Rect target_coverage = damage_coverage.TransformBounds(root_flip);
+    GlassFilterContents glass(
+        RoundRect::MakeRectXY(Rect::MakeSize(damage_coverage.GetSize()), 10,
+                              10),
+        /*thickness=*/20, /*refraction=*/0.55, /*dispersion=*/0.12,
+        /*saturation=*/1.2, Color::White(), /*tint_strength=*/0.08,
+        /*brightness=*/0.06, /*light_angle=*/0, /*light_intensity=*/0.7,
+        /*edge_strength=*/0.4);
+    auto input = FilterInput::Make(texture);
+    glass.SetInputs({input, input});
+    glass.SetEffectTransform(Matrix::MakeScale({1.1f, -1.1f, 1}));
+    glass.SetIsBackdropFilter(true);
+    const auto snapshot = glass.RenderToSnapshot(
+        context, Entity{}, {.coverage_limit = target_coverage});
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->texture->GetSize(),
+              ISize::Ceil(target_coverage.GetSize()));
+    // Padded allocation must not scale the image or its optical coordinates.
+    EXPECT_EQ(snapshot->transform,
+              Matrix::MakeTranslation(target_coverage.GetOrigin()));
+    ASSERT_TRUE(snapshot->GetCoverage());
+    EXPECT_TRUE(snapshot->GetCoverage()->Contains(target_coverage));
+
+    const int64_t key = flutter::MakeBackdropFilterCacheKey(family++, 1u);
+    context.CacheBackdropSnapshot(key, snapshot.value());
+    {
+      BackdropSnapshotPins unmapped(context);
+      EXPECT_FALSE(unmapped.Pin(key, damage_coverage));
+    }
+    BackdropSnapshotPins pins(context, root_flip);
+    EXPECT_TRUE(pins.Pin(key, damage_coverage));
+    EXPECT_FALSE(pins.Pin(key, damage_coverage.Expand(Vector2(2, 2))));
+    EXPECT_EQ(context.GetCachedBackdropSnapshot(key)->texture,
+              snapshot->texture);
+  }
 }
 
 TEST_P(AiksTest, BackdropSnapshotMaterializesOnlyAfterGenerationIsStable) {

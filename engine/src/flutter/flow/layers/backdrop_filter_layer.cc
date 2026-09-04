@@ -50,7 +50,8 @@ void BackdropFilterLayer::Diff(DiffContext* context, const Layer* old_layer) {
     }
     context->AddLayerBounds(paint_bounds);
     context->AddReadbackRegion(filter_target_bounds, filter_input_bounds,
-                               backdrop_id_ ? nullptr : backdrop_cache_state_);
+                               backdrop_id_ ? nullptr : backdrop_cache_state_,
+                               mapped_paint_bounds);
   } else {
     context->AddLayerBounds(paint_bounds);
   }

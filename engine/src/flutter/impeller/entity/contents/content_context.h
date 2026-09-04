@@ -413,7 +413,8 @@ class ContentContext {
 // of normal cache eviction. Nested recording scopes preserve outer pins.
 class BackdropSnapshotPins {
  public:
-  explicit BackdropSnapshotPins(ContentContext& context);
+  explicit BackdropSnapshotPins(ContentContext& context,
+                                const Matrix& damage_to_snapshot = Matrix());
   ~BackdropSnapshotPins();
 
   bool Pin(int64_t key, const Rect& coverage);
@@ -424,6 +425,7 @@ class BackdropSnapshotPins {
  private:
   friend class ContentContext;
   ContentContext& context_;
+  const Matrix damage_to_snapshot_;
   BackdropSnapshotPins* previous_;
   std::unordered_map<int64_t, Snapshot> snapshots_;
 };

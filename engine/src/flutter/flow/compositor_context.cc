@@ -267,16 +267,22 @@ RasterStatus CompositorContext::ScopedFrame::Raster(
   if (frame_damage) {
     BackdropSnapshotPin pin_backdrop;
 #ifdef IMPELLER_SUPPORTS_RENDERING
-    // Diff coordinates must match the scene coordinates in the snapshot.
+    // Embedder root canvases can defer their surface transform until Submit.
+    // Compare snapshot coverage in those eventual render-target coordinates.
     // The scope survives Paint's DisplayList recording and the later surface
     // Submit, so intervening cache eviction cannot invalidate the damage plan.
-    if (aiks_context_ && root_surface_transformation_.IsIdentity()) {
-      backdrop_snapshot_pins_.reset();
+    backdrop_snapshot_pins_.reset();
+    std::optional<DlMatrix> snapshot_transform = root_surface_transformation_;
+    if (view_embedder_ && view_embedder_->GetRootCanvas()) {
+      snapshot_transform =
+          view_embedder_->GetRootCanvasToRenderTargetTransform();
+    }
+    if (aiks_context_ && snapshot_transform.has_value()) {
       backdrop_snapshot_pins_ =
           std::make_unique<impeller::BackdropSnapshotPins>(
-              aiks_context_->GetContentContext());
-      pin_backdrop = [this](int64_t key, const DlIRect& coverage) {
-        return backdrop_snapshot_pins_->Pin(key, DlRect::Make(coverage));
+              aiks_context_->GetContentContext(), snapshot_transform.value());
+      pin_backdrop = [this](int64_t key, const DlRect& coverage) {
+        return backdrop_snapshot_pins_->Pin(key, coverage);
       };
     }
 #endif

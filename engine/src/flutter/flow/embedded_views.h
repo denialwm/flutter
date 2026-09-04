@@ -460,6 +460,13 @@ class ExternalViewEmbedder {
   // from the on-screen render target.
   virtual DlCanvas* GetRootCanvas() = 0;
 
+  // Maps the supplied root canvas to its eventual render target. Recording
+  // embedders may apply this transform only during submission. Unknown mappings
+  // cannot safely use render-target snapshots to narrow layer-tree damage.
+  virtual std::optional<DlMatrix> GetRootCanvasToRenderTargetTransform() const {
+    return std::nullopt;
+  }
+
   // Call this in-lieu of |SubmitFlutterView| to clear pre-roll state and
   // sets the stage for the next pre-roll.
   virtual void CancelFrame() = 0;

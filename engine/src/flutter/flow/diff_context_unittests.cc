@@ -204,7 +204,7 @@ TEST_F(DiffContextTest, SnapshotPinsRequireUnambiguousUnfilteredCoverage) {
   const DlIRect input = DlIRect::MakeLTRB(2, 2, 98, 98);
   const DlRegion repair(DlIRect::MakeLTRB(30, 30, 34, 34));
   int calls = 0;
-  const BackdropSnapshotPin pin = [&](int64_t, const DlIRect&) {
+  const BackdropSnapshotPin pin = [&](int64_t, const DlRect&) {
     calls++;
     return true;
   };

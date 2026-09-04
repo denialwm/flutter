@@ -76,11 +76,13 @@ class BackdropFilterCacheState;
 
 // A successful callback guarantees that this exact snapshot remains available
 // to the renderer until the frame has been submitted.
-using BackdropSnapshotPin = std::function<bool(int64_t, const DlIRect&)>;
+using BackdropSnapshotPin = std::function<bool(int64_t, const DlRect&)>;
 
 struct ReadbackRegion {
   DlIRect paint_rect;
   DlIRect readback_rect;
+  // The filter's actual coverage, before conservative integer damage rounding.
+  DlRect cache_coverage;
   std::shared_ptr<BackdropFilterCacheState> cache_state;
 };
 
@@ -213,7 +215,8 @@ class DiffContext {
   void AddReadbackRegion(
       const DlIRect& paint_rect,
       const DlIRect& readback_rect,
-      std::shared_ptr<BackdropFilterCacheState> cache_state = nullptr);
+      std::shared_ptr<BackdropFilterCacheState> cache_state = nullptr,
+      std::optional<DlRect> cache_coverage = std::nullopt);
 
   bool BackdropInputIsDirty(const DlIRect& readback_rect) const;
 

@@ -51,11 +51,6 @@ class EmbedderExternalViewEmbedderTestPeer {
                       DlISize frame_size) {
     embedder.PrepareFlutterView(view_id, frame_size, 1.0);
   }
-
-  static const DlMatrix& PendingSurfaceTransformation(
-      const EmbedderExternalViewEmbedder& embedder) {
-    return embedder.pending_surface_transformation_;
-  }
 };
 
 }  // namespace flutter
@@ -105,6 +100,7 @@ TEST(EmbedderExternalViewEmbedderTest,
       [](FlutterViewId, const std::vector<const FlutterLayer*>&) {
         return true;
       });
+  ExternalViewEmbedder& root_embedder = embedder;
   const DlMatrix implicit_transform =
       DlMatrix::MakeTranslation({12.0f, 34.0f, 0.0f});
   embedder.SetSurfaceTransformationCallback(
@@ -112,23 +108,18 @@ TEST(EmbedderExternalViewEmbedderTest,
 
   EmbedderExternalViewEmbedderTestPeer::Prepare(embedder, 0,
                                                 DlISize(1600, 900));
-  EXPECT_EQ(EmbedderExternalViewEmbedderTestPeer::PendingSurfaceTransformation(
-                embedder),
+  EXPECT_EQ(root_embedder.GetRootCanvasToRenderTargetTransform(),
             implicit_transform);
 
   EmbedderExternalViewEmbedderTestPeer::Prepare(embedder, -1,
                                                 DlISize(800, 600));
-  auto transform =
-      EmbedderExternalViewEmbedderTestPeer::PendingSurfaceTransformation(
-          embedder);
+  auto transform = root_embedder.GetRootCanvasToRenderTargetTransform().value();
   EXPECT_EQ(transform * DlPoint(0, 0), DlPoint(0, 600));
   EXPECT_EQ(transform * DlPoint(800, 600), DlPoint(800, 0));
 
   EmbedderExternalViewEmbedderTestPeer::Prepare(embedder, -2,
                                                 DlISize(1200, 900));
-  transform =
-      EmbedderExternalViewEmbedderTestPeer::PendingSurfaceTransformation(
-          embedder);
+  transform = root_embedder.GetRootCanvasToRenderTargetTransform().value();
   EXPECT_EQ(transform * DlPoint(0, 0), DlPoint(0, 900));
   EXPECT_EQ(transform * DlPoint(1200, 900), DlPoint(1200, 0));
 }

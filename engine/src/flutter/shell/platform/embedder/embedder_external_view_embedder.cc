@@ -159,6 +159,12 @@ DlCanvas* EmbedderExternalViewEmbedder::GetRootCanvas() {
 }
 
 // |ExternalViewEmbedder|
+std::optional<DlMatrix>
+EmbedderExternalViewEmbedder::GetRootCanvasToRenderTargetTransform() const {
+  return pending_surface_transformation_;
+}
+
+// |ExternalViewEmbedder|
 DlCanvas* EmbedderExternalViewEmbedder::CompositeEmbeddedView(int64_t view_id) {
   auto vid = EmbedderExternalView::ViewIdentifier(view_id);
   auto found = pending_views_.find(vid);
