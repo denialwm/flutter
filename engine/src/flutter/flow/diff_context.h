@@ -72,9 +72,16 @@ using RetainedSubtreeDiffMetadataMap =
     std::unordered_map<uint64_t,
                        std::shared_ptr<const RetainedSubtreeDiffMetadata>>;
 
+class BackdropFilterCacheState;
+
+// A successful callback guarantees that this exact snapshot remains available
+// to the renderer until the frame has been submitted.
+using BackdropSnapshotPin = std::function<bool(int64_t, const DlIRect&)>;
+
 struct ReadbackRegion {
   DlIRect paint_rect;
   DlIRect readback_rect;
+  std::shared_ptr<BackdropFilterCacheState> cache_state;
 };
 
 using ReadbackRegionList = std::vector<ReadbackRegion>;
@@ -203,8 +210,10 @@ class DiffContext {
   //              coordinates)
   // readback_rect - rectangle where the filter samples from (in screen
   //                 coordinates)
-  void AddReadbackRegion(const DlIRect& paint_rect,
-                         const DlIRect& readback_rect);
+  void AddReadbackRegion(
+      const DlIRect& paint_rect,
+      const DlIRect& readback_rect,
+      std::shared_ptr<BackdropFilterCacheState> cache_state = nullptr);
 
   bool BackdropInputIsDirty(const DlIRect& readback_rect) const;
 
@@ -230,7 +239,8 @@ class DiffContext {
   // frame and buffer damage.
   Damage ComputeDamage(const std::optional<DlRegion>& additional_damage,
                        int horizontal_clip_alignment = 0,
-                       int vertical_clip_alignment = 0) const;
+                       int vertical_clip_alignment = 0,
+                       const BackdropSnapshotPin& pin_backdrop = {}) const;
 
   // Adds the region to current damage. Used for removed layers, where instead
   // of diffing the layer its paint region is direcly added to damage.
@@ -406,16 +416,10 @@ class DiffContext {
                        int horizontal_alignment,
                        int vertical_clip_alignment) const;
 
-  struct Readback {
+  struct Readback : ReadbackRegion {
     // Index of rects_ entry that this readback belongs to. Used to
     // determine if subtree has any readback
     size_t position;
-
-    // Paint region of the filter performing readback, in screen coordinates.
-    DlIRect paint_rect;
-
-    // Readback area of the filter, in screen coordinates.
-    DlIRect readback_rect;
   };
 
   std::vector<Readback> readbacks_;

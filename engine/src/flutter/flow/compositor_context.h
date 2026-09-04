@@ -20,6 +20,10 @@
 #include "flutter/fml/raster_thread_merger.h"
 #include "third_party/skia/include/gpu/ganesh/GrDirectContext.h"
 
+namespace impeller {
+class BackdropSnapshotPins;
+}  // namespace impeller
+
 namespace flutter {
 
 class LayerTree;
@@ -110,9 +114,11 @@ class FrameDamage {
   // framebuffer. If the previous layer tree is not specified, the entire frame
   // is considered changed, but its paint regions are still recorded for
   // subsequent diffs.
-  std::optional<DlRegion> ComputeDamageRegion(flutter::LayerTree& layer_tree,
-                                              bool has_raster_cache,
-                                              bool impeller_enabled);
+  std::optional<DlRegion> ComputeDamageRegion(
+      flutter::LayerTree& layer_tree,
+      bool has_raster_cache,
+      bool impeller_enabled,
+      const BackdropSnapshotPin& pin_backdrop = {});
 
   // See Damage::frame_damage.
   std::optional<DlRegion> GetFrameDamage() const {
@@ -190,6 +196,9 @@ class CompositorContext {
     GrDirectContext* gr_context_;
     DlCanvas* canvas_;
     impeller::AiksContext* aiks_context_;
+#ifdef IMPELLER_SUPPORTS_RENDERING
+    std::unique_ptr<impeller::BackdropSnapshotPins> backdrop_snapshot_pins_;
+#endif
     ExternalViewEmbedder* view_embedder_;
     const DlMatrix root_surface_transformation_;
     const bool instrumentation_enabled_;

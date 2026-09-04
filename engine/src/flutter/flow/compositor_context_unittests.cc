@@ -533,6 +533,74 @@ TEST(FrameDamageTest,
             GetBackdropFilterCacheFamily(initial_token));
 }
 
+TEST(FrameDamageTest, MovingForegroundAboveCachedBackdropKeepsDamageSmall) {
+  auto background =
+      std::make_shared<CountingTextureLayer>(DlPoint(), DlSize(100, 100), 7);
+  auto clip = std::make_shared<ClipRectLayer>(DlRect::MakeLTRB(2, 2, 98, 98),
+                                              Clip::kHardEdge);
+  clip->Add(std::make_shared<BackdropFilterLayer>(
+      DlImageFilter::MakeBlur(6, 6, DlTileMode::kClamp), DlBlendMode::kSrc));
+  auto foreground =
+      std::make_shared<CountingTextureLayer>(DlPoint(), DlSize(4, 4), 8);
+  std::shared_ptr<TransformLayer> previous_transform;
+  auto make_tree = [&](float x) {
+    auto root = std::make_shared<ContainerLayer>();
+    root->Add(background);
+    root->Add(clip);
+    auto transform =
+        std::make_shared<TransformLayer>(DlMatrix::MakeTranslation({x, 32}));
+    if (previous_transform) {
+      transform->AssignOldLayer(previous_transform.get());
+    }
+    previous_transform = transform;
+    transform->Add(foreground);
+    root->Add(transform);
+    return std::make_unique<LayerTree>(root, kFrameSize);
+  };
+  auto first = make_tree(32);
+  FrameDamage initial;
+  initial.ComputeDamageRegion(*first, false, true);
+  const int64_t token = first->backdrop_filter_caches().front().state->token();
+
+  auto second = make_tree(36);
+  const std::unordered_set<int64_t> no_dirty_textures;
+  FrameDamage moved;
+  moved.SetPreviousLayerTree(first.get());
+  moved.SetDirtyTextureIds(&no_dirty_textures);
+  moved.SetExistingDamage(DlRegion());
+  moved.ComputeDamageRegion(*second, false, true);
+  EXPECT_EQ(second->backdrop_filter_caches().front().state->token(), token);
+  ExpectRegion(*moved.GetFrameDamage(), {kFullFrame});
+
+  // A real renderer must pin an existing snapshot with this exact version.
+  // A merely unchanged filter is insufficient: its snapshot might be absent.
+  BackdropSnapshotPin pin = [&](int64_t key, const DlIRect& coverage) {
+    EXPECT_EQ(coverage, DlIRect::MakeLTRB(2, 2, 98, 98));
+    return key == token;
+  };
+  moved.ComputeDamageRegion(*second, false, true, pin);
+  ExpectRegion(*moved.GetFrameDamage(), {DlIRect::MakeLTRB(32, 32, 40, 36)});
+  ExpectRegion(*moved.GetBufferDamage(), {DlIRect::MakeLTRB(32, 32, 40, 36)});
+
+  // An older swapchain buffer also repairs the cursor's historical position,
+  // without expanding that repair into the entire backdrop.
+  moved.SetExistingDamage(DlRegion(DlIRect::MakeLTRB(10, 10, 14, 14)));
+  moved.ComputeDamageRegion(*second, false, true, pin);
+  ExpectRegion(*moved.GetFrameDamage(), {DlIRect::MakeLTRB(32, 32, 40, 36)});
+  ExpectRegion(*moved.GetBufferDamage(), {DlIRect::MakeLTRB(10, 10, 14, 14),
+                                          DlIRect::MakeLTRB(32, 32, 40, 36)});
+
+  // The reused-tree path must read the current state, not a captured token.
+  const std::unordered_set<int64_t> dirty_background = {7};
+  FrameDamage changed_input;
+  changed_input.SetPreviousLayerTree(second.get());
+  changed_input.SetDirtyTextureIds(&dirty_background);
+  changed_input.SetExistingDamage(DlRegion());
+  changed_input.ComputeDamageRegion(*second, false, true, pin);
+  EXPECT_NE(second->backdrop_filter_caches().front().state->token(), token);
+  ExpectRegion(*changed_input.GetFrameDamage(), {kFullFrame});
+}
+
 TEST(FrameDamageTest, GroupedBackdropFiltersShareInvalidationState) {
   auto root = std::make_shared<ContainerLayer>();
   root->Add(

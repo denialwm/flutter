@@ -162,7 +162,8 @@ DlRegion DiffContext::AlignRegion(const DlRegion& region,
 Damage DiffContext::ComputeDamage(
     const std::optional<DlRegion>& accumulated_buffer_damage,
     int horizontal_clip_alignment,
-    int vertical_clip_alignment) const {
+    int vertical_clip_alignment,
+    const BackdropSnapshotPin& pin_backdrop) const {
   const DlRegion frame_clip(DlIRect::MakeSize(frame_size_));
   DlRegion frame_damage = DlRegion::MakeIntersection(damage_, frame_clip);
   DlRegion buffer_damage =
@@ -172,6 +173,33 @@ Damage DiffContext::ComputeDamage(
                                     accumulated_buffer_damage.value()),
                 frame_clip)
           : frame_clip;
+
+  std::vector<const ReadbackRegion*> dependencies;
+  if (cached_readback_regions_) {
+    FML_DCHECK(readbacks_.empty());
+    for (const auto& readback : *cached_readback_regions_) {
+      dependencies.push_back(&readback);
+    }
+  } else {
+    for (const auto& readback : readbacks_) {
+      dependencies.push_back(&readback);
+    }
+  }
+  if (pin_backdrop) {
+    // Only independent, single-use filters qualify. Shared filters require
+    // agreeing on their combined coverage and filter equality at dispatch.
+    std::unordered_map<int64_t, size_t> uses;
+    for (const auto* readback : dependencies) {
+      if (readback->cache_state) {
+        uses[readback->cache_state->token()]++;
+      }
+    }
+    std::erase_if(dependencies, [&](const ReadbackRegion* readback) {
+      return readback->cache_state &&
+             uses[readback->cache_state->token()] == 1u &&
+             pin_backdrop(readback->cache_state->token(), readback->paint_rect);
+    });
+  }
 
   // Readback dependencies can form a chain. Expanding one region may intersect
   // a dependency visited earlier, so iterate to a fixed point. Frame damage and
@@ -204,15 +232,8 @@ Damage DiffContext::ComputeDamage(
       }
     };
 
-    if (cached_readback_regions_) {
-      FML_DCHECK(readbacks_.empty());
-      for (const auto& r : *cached_readback_regions_) {
-        expand_readback(r.paint_rect, r.readback_rect);
-      }
-    } else {
-      for (const auto& r : readbacks_) {
-        expand_readback(r.paint_rect, r.readback_rect);
-      }
+    for (const auto* readback : dependencies) {
+      expand_readback(readback->paint_rect, readback->readback_rect);
     }
   } while (expanded);
 
@@ -296,17 +317,24 @@ void DiffContext::AddExistingPaintRegion(const PaintRegion& region) {
   }
 }
 
-void DiffContext::AddReadbackRegion(const DlIRect& paint_rect,
-                                    const DlIRect& readback_rect) {
+void DiffContext::AddReadbackRegion(
+    const DlIRect& paint_rect,
+    const DlIRect& readback_rect,
+    std::shared_ptr<BackdropFilterCacheState> cache_state) {
   Readback readback;
   readback.paint_rect = paint_rect;
   readback.readback_rect = readback_rect;
+  // Ancestor image filters can change the coordinate space and raster extent
+  // of an intermediate target. Keep their ordinary readback repair path.
+  if (filter_bounds_adjustment_stack_.empty()) {
+    readback.cache_state = std::move(cache_state);
+  }
   readback.position = rects_->size();
   // Push empty rect as a placeholder for position in current subtree
   rects_->push_back(DlRect());
   readbacks_.push_back(readback);
   if (readback_region_cache_) {
-    readback_region_cache_->push_back({paint_rect, readback_rect});
+    readback_region_cache_->push_back(readback);
   }
 }
 
