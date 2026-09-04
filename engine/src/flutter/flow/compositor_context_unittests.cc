@@ -536,8 +536,8 @@ TEST(FrameDamageTest,
 TEST(FrameDamageTest, MovingForegroundAboveCachedBackdropKeepsDamageSmall) {
   auto background =
       std::make_shared<CountingTextureLayer>(DlPoint(), DlSize(100, 100), 7);
-  auto clip = std::make_shared<ClipRectLayer>(DlRect::MakeLTRB(2, 2, 98, 98),
-                                              Clip::kHardEdge);
+  const DlRect filter_bounds = DlRect::MakeLTRB(2.25f, 2.5f, 97.75f, 97.5f);
+  auto clip = std::make_shared<ClipRectLayer>(filter_bounds, Clip::kHardEdge);
   clip->Add(std::make_shared<BackdropFilterLayer>(
       DlImageFilter::MakeBlur(6, 6, DlTileMode::kClamp), DlBlendMode::kSrc));
   auto foreground =
@@ -574,8 +574,10 @@ TEST(FrameDamageTest, MovingForegroundAboveCachedBackdropKeepsDamageSmall) {
 
   // A real renderer must pin an existing snapshot with this exact version.
   // A merely unchanged filter is insufficient: its snapshot might be absent.
-  BackdropSnapshotPin pin = [&](int64_t key, const DlIRect& coverage) {
-    EXPECT_EQ(coverage, DlIRect::MakeLTRB(2, 2, 98, 98));
+  BackdropSnapshotPin pin = [&](int64_t key, const DlRect& coverage) {
+    // A snapshot need only contain the real filter extent, including when
+    // readback metadata is reused on an autonomous frame.
+    EXPECT_EQ(coverage, filter_bounds);
     return key == token;
   };
   moved.ComputeDamageRegion(*second, false, true, pin);

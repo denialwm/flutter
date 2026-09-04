@@ -132,6 +132,9 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   // |ExternalViewEmbedder|
   DlCanvas* GetRootCanvas() override;
 
+  // |ExternalViewEmbedder|
+  std::optional<DlMatrix> GetRootCanvasToRenderTargetTransform() const override;
+
  private:
   const bool avoid_backing_store_cache_;
   const CreateRenderTargetCallback create_render_target_callback_;

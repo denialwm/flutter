@@ -186,16 +186,21 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         auto& data = renderer.GetTransientsDataBuffer();
         const std::array<VS::PerVertexData, 4> vertices = {
             VS::PerVertexData{Point(0, 0), blurred_coordinates[0], Point(0, 0)},
-            VS::PerVertexData{Point(1, 0), blurred_coordinates[1],
+            VS::PerVertexData{Point(material_size.width, 0),
+                              blurred_coordinates[1],
                               Point(material_size.width, 0)},
-            VS::PerVertexData{Point(0, 1), blurred_coordinates[2],
+            VS::PerVertexData{Point(0, material_size.height),
+                              blurred_coordinates[2],
                               Point(0, material_size.height)},
-            VS::PerVertexData{Point(1, 1), blurred_coordinates[3],
+            VS::PerVertexData{Point(material_size.width, material_size.height),
+                              blurred_coordinates[3],
                               Point(material_size.width, material_size.height)},
         };
 
         VS::FrameInfo frame_info;
-        frame_info.mvp = Matrix::MakeOrthographic(ISize(1, 1));
+        // The allocation rounds up; keep geometry and optical coordinates at
+        // their physical size instead of stretching them across that padding.
+        frame_info.mvp = Matrix::MakeOrthographic(pass.GetRenderTargetSize());
         frame_info.blurred_sampler_y_coord_scale =
             blurred_snapshot->texture->GetYCoordScale();
 
@@ -244,7 +249,8 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
     return std::nullopt;
   }
   fml::StatusOr<RenderTarget> render_target = renderer.MakeSubpass(
-      "Denial Glass Material", ISize(material_size), command_buffer, callback,
+      "Denial Glass Material", ISize::Ceil(material_size), command_buffer,
+      callback,
       /*msaa_enabled=*/false, /*depth_stencil_enabled=*/false);
   if (!render_target.ok() ||
       !renderer.GetContext()->EnqueueCommandBuffer(std::move(command_buffer))) {

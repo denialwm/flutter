@@ -197,7 +197,8 @@ Damage DiffContext::ComputeDamage(
     std::erase_if(dependencies, [&](const ReadbackRegion* readback) {
       return readback->cache_state &&
              uses[readback->cache_state->token()] == 1u &&
-             pin_backdrop(readback->cache_state->token(), readback->paint_rect);
+             pin_backdrop(readback->cache_state->token(),
+                          readback->cache_coverage);
     });
   }
 
@@ -320,10 +321,12 @@ void DiffContext::AddExistingPaintRegion(const PaintRegion& region) {
 void DiffContext::AddReadbackRegion(
     const DlIRect& paint_rect,
     const DlIRect& readback_rect,
-    std::shared_ptr<BackdropFilterCacheState> cache_state) {
+    std::shared_ptr<BackdropFilterCacheState> cache_state,
+    std::optional<DlRect> cache_coverage) {
   Readback readback;
   readback.paint_rect = paint_rect;
   readback.readback_rect = readback_rect;
+  readback.cache_coverage = cache_coverage.value_or(DlRect::Make(paint_rect));
   // Ancestor image filters can change the coordinate space and raster extent
   // of an intermediate target. Keep their ordinary readback repair path.
   if (filter_bounds_adjustment_stack_.empty()) {
