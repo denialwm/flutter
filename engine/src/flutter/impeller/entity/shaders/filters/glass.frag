@@ -54,6 +54,14 @@ void roundedBoxField(vec2 position,
   vec2 outside = max(q, 0.0);
   signed_distance = length(outside) + min(max(q.x, q.y), 0.0) - radius;
 
+  // Below the bevel the surface is exactly flat. Its normal does not depend
+  // on the rounded-box gradient, including the inner medial-axis smoothing.
+  if (signed_distance <= -max(frag_info.thickness, 0.0001)) {
+    outward_normal = vec2(0.0);
+    normal_confidence = 0.0;
+    return;
+  }
+
   vec2 sign_position =
       vec2(centered.x < 0.0 ? -1.0 : 1.0, centered.y < 0.0 ? -1.0 : 1.0);
   // The exact rounded-box distance is non-differentiable on the medial axis
@@ -189,25 +197,31 @@ void main() {
   // liquid_glass_renderer implementation by Tim Lehmann (MIT). The analytical
   // boundary gradient is equivalent to the reference shader's SDF derivatives;
   // roundedBoxField only smooths their undefined inner medial-axis join.
-  float normal_xy_length =
-      clamp((thickness + signed_distance) / thickness, 0.0, 1.0) *
-      normal_confidence;
-  float normal_z =
-      sqrt(max(0.0, 1.0 - normal_xy_length * normal_xy_length));
-  vec3 surface_normal =
-      normalize(vec3(outward_normal * normal_xy_length, normal_z));
-  float height = glassHeight(signed_distance, thickness);
-  vec3 incident = vec3(0.0, 0.0, -1.0);
-  vec3 refracted_ray =
-      refract(incident, surface_normal,
-              1.0 / max(frag_info.refractive_index, 1.0));
-  float ray_length = (height + thickness * 8.0) /
-                     max(0.001, abs(refracted_ray.z));
-  vec2 displacement = refracted_ray.xy * ray_length;
+  vec3 surface_normal = vec3(0.0, 0.0, 1.0);
+  float height = thickness;
+  vec2 displacement = vec2(0.0);
+  if (signed_distance > -thickness) {
+    float normal_xy_length =
+        clamp((thickness + signed_distance) / thickness, 0.0, 1.0) *
+        normal_confidence;
+    float normal_z =
+        sqrt(max(0.0, 1.0 - normal_xy_length * normal_xy_length));
+    surface_normal =
+        normalize(vec3(outward_normal * normal_xy_length, normal_z));
+    height = glassHeight(signed_distance, thickness);
+    vec3 incident = vec3(0.0, 0.0, -1.0);
+    vec3 refracted_ray =
+        refract(incident, surface_normal,
+                1.0 / max(frag_info.refractive_index, 1.0));
+    float ray_length = (height + thickness * 8.0) /
+                       max(0.001, abs(refracted_ray.z));
+    displacement = refracted_ray.xy * ray_length;
+  }
 
   vec4 refracted_green = sampleFrost(displacement, 1.0);
   vec3 refracted_rgb = straightRgb(refracted_green);
-  if (frag_info.dispersion > 0.0001) {
+  if (frag_info.dispersion > 0.0001 &&
+      any(notEqual(displacement, vec2(0.0)))) {
     float chroma = frag_info.dispersion * 0.5;
     vec4 refracted_red = sampleFrost(displacement, 1.0 + chroma);
     vec4 refracted_blue = sampleFrost(displacement, 1.0 - chroma);
