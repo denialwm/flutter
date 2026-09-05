@@ -47,6 +47,17 @@ size_t AttachmentBytes(const RenderTarget& target) {
   return bytes;
 }
 
+size_t MotionRetentionBytes(const Context& context,
+                            std::string_view label,
+                            const RenderTarget& target) {
+  return IsGlassTargetRetentionRequested() &&
+                 (label == "Denial pooled glass layer" ||
+                  label == "Denial pooled glass material") &&
+                 context.GetBackendType() == Context::BackendType::kOpenGLES
+             ? AttachmentBytes(target)
+             : 0;
+}
+
 }  // namespace
 
 RenderTargetCache::RenderTargetCache(std::shared_ptr<Allocator> allocator,
@@ -180,7 +191,9 @@ RenderTarget RenderTargetCache::CreateOffscreen(
         .used_this_frame = true,                            //
         .keep_alive_frame_count = keep_alive_frame_count_,  //
         .config = config,                                   //
-        .render_target = created_target                     //
+        .render_target = created_target,                    //
+        .motion_retained_bytes =
+            MotionRetentionBytes(context, label, created_target),
     });
   }
   return created_target;
@@ -240,18 +253,13 @@ RenderTarget RenderTargetCache::CreateOffscreenMSAA(
     return created_target;
   }
   if (CacheEnabled()) {
-    const size_t motion_retained_bytes =
-        IsGlassTargetRetentionRequested() &&
-                label == "Denial pooled glass layer" &&
-                context.GetBackendType() == Context::BackendType::kOpenGLES
-            ? AttachmentBytes(created_target)
-            : 0;
     render_target_data_.push_back(RenderTargetData{
         .used_this_frame = true,                            //
         .keep_alive_frame_count = keep_alive_frame_count_,  //
         .config = config,                                   //
         .render_target = created_target,                    //
-        .motion_retained_bytes = motion_retained_bytes,     //
+        .motion_retained_bytes =
+            MotionRetentionBytes(context, label, created_target),
     });
   }
   return created_target;

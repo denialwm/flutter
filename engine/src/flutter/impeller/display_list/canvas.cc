@@ -88,6 +88,14 @@ bool IsPooledGlassTargetPaddingRequested() {
   return requested;
 }
 
+bool IsPooledGlassMaterialPaddingRequested() {
+  static const bool requested = [] {
+    const char* value = std::getenv("DENIA_GLASS_POOLED_MATERIAL_PADDING");
+    return value != nullptr && value[0] == '1' && value[1] == '\0';
+  }();
+  return requested;
+}
+
 struct BackdropLayerPlanAudit {
   using Clock = std::chrono::steady_clock;
 
@@ -2520,6 +2528,18 @@ void Canvas::SaveLayer(const Paint& paint,
         Matrix::MakeTranslation(Vector3(-local_position)) *
         backdrop_entity.GetTransform());
   } else {
+    if (IsPooledGlassMaterialPaddingRequested() && use_msaa &&
+        backdrop_filter &&
+        backdrop_filter->type() == flutter::DlImageFilterType::kGlass &&
+        !backdrop_alpha_threshold.has_value() && !paint.image_filter &&
+        !paint.color_filter &&
+        renderer_.GetContext()->GetBackendType() ==
+            Context::BackendType::kOpenGLES) {
+      // This uncached material is consumed immediately by the child layer.
+      // Persistent snapshots and threshold consumers never enter this path.
+      std::static_pointer_cast<GlassFilterContents>(backdrop_filter_contents)
+          ->SetMaterialTargetPaddingEnabled(true);
+    }
     backdrop_entity.SetContents(std::move(backdrop_filter_contents));
     backdrop_entity.SetTransform(
         Matrix::MakeTranslation(Vector3(-local_position)));
