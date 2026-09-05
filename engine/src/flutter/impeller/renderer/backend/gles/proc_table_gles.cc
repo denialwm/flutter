@@ -4,8 +4,12 @@
 
 #include "impeller/renderer/backend/gles/proc_table_gles.h"
 
+#include <atomic>
+#include <cstdlib>
 #include <format>
 #include <sstream>
+
+#include "fml/time/time_point.h"
 
 #include "GLES3/gl3.h"
 #include "impeller/base/allocation.h"
@@ -50,6 +54,23 @@ bool GLErrorIsFatal(GLenum value) {
   return false;
 }
 
+DenialSlowGLCallScope::DenialSlowGLCallScope(std::string_view name)
+    : name_(name),
+      start_us_(fml::TimePoint::Now().ToEpochDelta().ToMicroseconds()) {}
+
+DenialSlowGLCallScope::~DenialSlowGLCallScope() {
+  const int64_t elapsed_us =
+      fml::TimePoint::Now().ToEpochDelta().ToMicroseconds() - start_us_;
+  if (elapsed_us < 2000) {
+    return;
+  }
+  static std::atomic<uint32_t> records = 0;
+  if (records.fetch_add(1, std::memory_order_relaxed) < 512) {
+    FML_LOG(IMPORTANT) << "DENIA_GL_CALL_SLOW start_us=" << start_us_
+                       << " duration_us=" << elapsed_us << " name=" << name_;
+  }
+}
+
 ProcTableGLES::Resolver WrappedResolver(
     const ProcTableGLES::Resolver& resolver) {
   return [resolver](const char* function_name) -> void* {
@@ -89,11 +110,16 @@ ProcTableGLES::ProcTableGLES(  // NOLINT(google-readability-function-size)
     return;
   }
 
+  const char* audit_value = std::getenv("DENIA_GL_RESOURCE_AUDIT");
+  const bool log_slow_calls =
+      audit_value && audit_value[0] == '1' && audit_value[1] == '\0';
+
 #define IMPELLER_PROC(proc_ivar)                                \
   if (auto fn_ptr = resolver(proc_ivar.name.data())) {          \
     proc_ivar.function =                                        \
         reinterpret_cast<decltype(proc_ivar.function)>(fn_ptr); \
     proc_ivar.error_fn = error_fn;                              \
+    proc_ivar.log_slow_calls = log_slow_calls;                  \
   } else {                                                      \
     VALIDATION_LOG << "Could not resolve " << proc_ivar.name;   \
     return;                                                     \
@@ -120,6 +146,7 @@ ProcTableGLES::ProcTableGLES(  // NOLINT(google-readability-function-size)
     proc_ivar.function =                                        \
         reinterpret_cast<decltype(proc_ivar.function)>(fn_ptr); \
     proc_ivar.error_fn = error_fn;                              \
+    proc_ivar.log_slow_calls = log_slow_calls;                  \
   }
 
   if (description_->GetGlVersion().IsAtLeast(Version(3))) {
