@@ -35,8 +35,6 @@ class GlassFilterContents final : public FilterContents {
       const Entity& entity,
       const std::optional<Rect>& coverage_hint);
 
-  void SetMaterialTargetPaddingEnabled(bool enabled);
-
  private:
   std::optional<Entity> RenderFilter(
       const FilterInput::Vector& inputs,
@@ -67,7 +65,6 @@ class GlassFilterContents final : public FilterContents {
   const Scalar light_intensity_;
   const Scalar edge_strength_;
   bool render_material_directly_ = false;
-  bool material_target_padding_enabled_ = false;
 };
 
 }  // namespace impeller
