@@ -45,11 +45,17 @@ std::shared_ptr<FilterContents> WrapInput(const flutter::DlImageFilter* filter,
       // frost convolution unbounded. This is the same proven clamp path used
       // by Denial's ordinary backdrop blur and preserves a valid blur halo for
       // refraction at the shape edge.
-      std::shared_ptr<FilterContents> frost = FilterContents::MakeGaussianBlur(
-          input, Sigma(glass_filter->sigma_x()), Sigma(glass_filter->sigma_y()),
-          Entity::TileMode::kClamp, std::nullopt,
-          FilterContents::BlurStyle::kNormal, nullptr,
-          glass_filter->downsample_scale());
+      FilterInput::Ref frost_input = input;
+      if (GlassFrostNeedsBlur(glass_filter->sigma_x(),
+                              glass_filter->sigma_y())) {
+        std::shared_ptr<FilterContents> frost =
+            FilterContents::MakeGaussianBlur(
+                input, Sigma(glass_filter->sigma_x()),
+                Sigma(glass_filter->sigma_y()), Entity::TileMode::kClamp,
+                std::nullopt, FilterContents::BlurStyle::kNormal, nullptr,
+                glass_filter->downsample_scale());
+        frost_input = FilterInput::Make(std::move(frost));
+      }
       const flutter::DlColor tint = glass_filter->tint();
       auto glass = std::make_shared<GlassFilterContents>(
           glass_filter->shape(), glass_filter->thickness(),
@@ -60,7 +66,7 @@ std::shared_ptr<FilterContents> WrapInput(const flutter::DlImageFilter* filter,
           glass_filter->tint_strength(), glass_filter->brightness(),
           glass_filter->light_angle(), glass_filter->light_intensity(),
           glass_filter->edge_strength());
-      glass->SetInputs({input, FilterInput::Make(std::move(frost))});
+      glass->SetInputs({input, std::move(frost_input)});
       return glass;
     }
     case flutter::DlImageFilterType::kDilate: {
