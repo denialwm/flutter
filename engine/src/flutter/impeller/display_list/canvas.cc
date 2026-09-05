@@ -2160,8 +2160,13 @@ void Canvas::SaveLayer(const Paint& paint,
 
     if (!isolated_backdrop_snapshot.has_value() &&
         !will_cache_backdrop_texture && can_cache_across_frames) {
+      // MSAA child content needs a color layer, but does not make a changing
+      // backdrop worth retaining. Persistent snapshots disable the temporary
+      // render-target pool while filtering. Eagerly materializing every new
+      // generation therefore reallocates the entire filter chain during a
+      // drag. Use the same reuse observation as the direct path; until the
+      // input stabilizes, the ordinary subpass can use pooled filter targets.
       should_materialize_isolated_snapshot =
-          !can_render_backdrop_directly ||
           renderer_.ShouldMaterializeBackdropSnapshot(backdrop_id.value());
     }
 
