@@ -6,10 +6,19 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 namespace flutter {
 
 namespace {
+
+bool UseInwardGlassBounds() {
+  static const bool requested = [] {
+    const char* value = std::getenv("DENIA_GLASS_INWARD_BOUNDS");
+    return value != nullptr && value[0] == '1' && value[1] == '\0';
+  }();
+  return requested;
+}
 
 DlScalar MaximumGlassDisplacement(DlScalar thickness,
                                   DlScalar refraction,
@@ -100,6 +109,27 @@ DlIRect* DlGlassImageFilter::get_input_device_bounds(
     const DlIRect& output_bounds,
     const DlMatrix& ctm,
     DlIRect& input_bounds) const {
+  if (UseInwardGlassBounds() && backdrop_alpha_threshold_ < 0.0f &&
+      ctm.IsTranslationScaleOnly() &&
+      DlIRect::RoundOut(shape_.GetBounds().TransformBounds(ctm)) ==
+          output_bounds) {
+    // The material shader refracts opposite the outward normal. For a full
+    // axis-aligned rounded box, each coordinate therefore moves toward its
+    // centre. A ray no longer than the smaller half-extent cannot leave the
+    // material rectangle, so only the Gaussian convolution needs a halo.
+    // Use 9 * thickness (height <= thickness plus the 8 * thickness optical
+    // path), maximum basis scale and two pixels of rounding slack. Cropped,
+    // rotated, deep or thresholded materials retain the general bound.
+    const DlScalar maximum_ray =
+        MaximumGlassDisplacement(thickness_, refraction_, dispersion_) *
+        (9.0f / 8.0f) * ctm.GetMaxBasisLengthXY();
+    const DlScalar half_extent =
+        std::min(output_bounds.GetWidth(), output_bounds.GetHeight()) * 0.5f;
+    if (maximum_ray + 2.0f <= half_extent) {
+      return outset_device_bounds(output_bounds, sigma_x_ * 3.0f,
+                                   sigma_y_ * 3.0f, ctm, input_bounds);
+    }
+  }
   return map_device_bounds(output_bounds, ctm, input_bounds);
 }
 
