@@ -11,6 +11,7 @@
 
 #include "fml/closure.h"
 #include "impeller/entity/contents/content_context.h"
+#include "impeller/entity/contents/texture_contents.h"
 #include "impeller/entity/glass.frag.h"
 #include "impeller/entity/glass.vert.h"
 #include "impeller/renderer/command.h"
@@ -107,6 +108,10 @@ GlassFilterContents::GlassFilterContents(RoundRect shape,
       edge_strength_(edge_strength) {}
 
 GlassFilterContents::~GlassFilterContents() = default;
+
+void GlassFilterContents::SetMaterialTargetPaddingEnabled(bool enabled) {
+  material_target_padding_enabled_ = enabled;
+}
 
 std::optional<Entity> GlassFilterContents::GetDirectEntity(
     const ContentContext& renderer,
@@ -280,9 +285,25 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
   if (!command_buffer) {
     return std::nullopt;
   }
+  const ISize material_pixel_size = ISize::Ceil(material_size);
+  ISize target_size = material_pixel_size;
+  const ISize maximum_size = renderer.GetContext()
+                                 ->GetCapabilities()
+                                 ->GetMaximumRenderPassAttachmentSize();
+  if (material_target_padding_enabled_ &&
+      renderer.GetRenderTargetCache()->CacheEnabled() &&
+      material_pixel_size.width <= maximum_size.width &&
+      material_pixel_size.height <= maximum_size.height) {
+    constexpr int64_t kGranularity = 128;
+    target_size =
+        ISize{((target_size.width + kGranularity - 1) / kGranularity) *
+                  kGranularity,
+              ((target_size.height + kGranularity - 1) / kGranularity) *
+                  kGranularity}
+            .Min(maximum_size);
+  }
   fml::StatusOr<RenderTarget> render_target = renderer.MakeSubpass(
-      "Denial Glass Material", ISize::Ceil(material_size), command_buffer,
-      callback,
+      "Denial Glass Material", target_size, command_buffer, callback,
       /*msaa_enabled=*/false, /*depth_stencil_enabled=*/false);
   if (!render_target.ok() ||
       !renderer.GetContext()->EnqueueCommandBuffer(std::move(command_buffer))) {
@@ -294,6 +315,23 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
   output_sampler.mag_filter = MinMagFilter::kLinear;
   output_sampler.width_address_mode = SamplerAddressMode::kClampToEdge;
   output_sampler.height_address_mode = SamplerAddressMode::kClampToEdge;
+  if (target_size != material_pixel_size) {
+    // Retain the original geometry and texel coordinates. Strict sampling
+    // clamps to the original edge texel centers, matching CLAMP_TO_EDGE on
+    // the former exact-size texture even at fractional layer translations.
+    // The transparent allocation padding is never sampled or composited.
+    const Rect source_rect = Rect::MakeSize(material_pixel_size);
+    auto contents = TextureContents::MakeRect(source_rect);
+    contents->SetTexture(render_target.value().GetRenderTargetTexture());
+    contents->SetSourceRect(source_rect);
+    contents->SetStrictSourceRect(true);
+    contents->SetSamplerDescriptor(output_sampler);
+    Entity result;
+    result.SetBlendMode(entity.GetBlendMode());
+    result.SetTransform(Matrix::MakeTranslation(material_coverage.GetOrigin()));
+    result.SetContents(std::move(contents));
+    return result;
+  }
   return Entity::FromSnapshot(
       Snapshot{
           .texture = render_target.value().GetRenderTargetTexture(),
