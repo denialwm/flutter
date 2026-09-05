@@ -41,6 +41,41 @@ TEST(GlassFilterContentsTest, DamageOutsideMaterialIsRejected) {
                    .has_value());
 }
 
+TEST(GlassFilterContentsTest, UncachedLayerMatchesCachedMaterialCoordinates) {
+  const Rect material_bounds = Rect::MakeXYWH(400, 300, 200, 50);
+  const Matrix input_transform =
+      Matrix::MakeTranslation(Vector3(-400, -300, 0));
+  const Rect target_coverage = Rect::MakeXYWH(0, 0, 200, 50);
+  const auto cached =
+      ResolveGlassMaterialDraw(material_bounds, material_bounds);
+  const auto uncached = ResolveGlassMaterialDraw(
+      target_coverage, material_bounds, input_transform);
+
+  ASSERT_TRUE(cached);
+  ASSERT_TRUE(uncached);
+  EXPECT_EQ(uncached->coverage,
+            cached->coverage.TransformBounds(input_transform));
+  EXPECT_EQ(uncached->material_size, cached->material_size);
+  EXPECT_EQ(uncached->material_position, cached->material_position);
+}
+
+TEST(GlassFilterContentsTest, TranslatedDamageCropKeepsFullMaterialGeometry) {
+  const Rect material_bounds = Rect::MakeXYWH(400.5f, 300.25f, 200, 50);
+  const Rect damage_coverage = Rect::MakeXYWH(430.5f, 310.25f, 30, 20);
+  // The intermediate target rounds its origin down. The input and the shape
+  // must retain the same fractional offset within that target.
+  const Matrix input_transform =
+      Matrix::MakeTranslation(Vector3(-430, -310, 0));
+  const auto draw =
+      ResolveGlassMaterialDraw(damage_coverage.TransformBounds(input_transform),
+                               material_bounds, input_transform);
+
+  ASSERT_TRUE(draw);
+  EXPECT_EQ(draw->coverage, Rect::MakeXYWH(0.5f, 0.25f, 30, 20));
+  EXPECT_EQ(draw->material_size, Size(200, 50));
+  EXPECT_EQ(draw->material_position, Point(30, 10));
+}
+
 TEST(GlassFilterContentsTest, ZeroFrostBypassesGaussianPass) {
   EXPECT_FALSE(GlassFrostNeedsBlur(0, 0));
   EXPECT_TRUE(GlassFrostNeedsBlur(1, 0));
