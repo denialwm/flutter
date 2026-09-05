@@ -413,6 +413,17 @@ bool EmbedderEngine::SetExternalTextureGlStateCallback(
       std::move(callback));
   return true;
 }
+
+bool EmbedderEngine::SetExternalTexturePresentationCallback(
+    EmbedderExternalTextureGL::ExternalTexturePresentationCallback callback) {
+  if (!external_texture_resolver_ ||
+      !external_texture_resolver_->SupportsExternalTextures() || !callback) {
+    return false;
+  }
+  external_texture_resolver_->SetExternalTexturePresentationCallback(
+      std::move(callback));
+  return true;
+}
 #endif
 
 Shell& EmbedderEngine::GetShell() {
