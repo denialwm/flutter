@@ -46,7 +46,10 @@ constexpr std::array<std::string_view,
 };
 
 bool IsAuditRequested() {
-  const char* value = std::getenv("DENIA_RENDER_AUDIT");
+  // Per-draw timestamp queries can perturb a tile-based GPU and do not
+  // necessarily represent whole-pass time there. Keep this invasive stage
+  // tracing separate from the ordinary compositor/frame diagnostics.
+  const char* value = std::getenv("DENIA_GPU_STAGE_AUDIT");
   return value != nullptr && value[0] != '\0' &&
          !(value[0] == '0' && value[1] == '\0');
 }
