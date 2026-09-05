@@ -70,6 +70,10 @@ class RenderTargetCache : public RenderTargetAllocator {
     uint32_t keep_alive_frame_count;
     RenderTargetConfig config;
     RenderTarget render_target;
+    // Optional short-lived retention of padded glass MSAA targets. The normal
+    // per-frame cache still owns all other targets exactly as before.
+    size_t motion_retained_bytes = 0;
+    int64_t motion_last_used_us = 0;
   };
 
   bool CacheEnabled() const;

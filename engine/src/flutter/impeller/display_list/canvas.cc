@@ -489,7 +489,8 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
     ISize size,
     const Color& clear_color,
     bool use_msaa,
-    bool preserve_depth_stencil_between_passes = false) {
+    bool preserve_depth_stencil_between_passes = false,
+    bool pooled_glass_layer = false) {
   const std::shared_ptr<Context>& context = renderer.GetContext();
 
   /// All of the load/store actions are managed by `InlinePassContext` when
@@ -506,7 +507,8 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
         /*context=*/*context,
         /*size=*/size,
         /*mip_count=*/1,
-        /*label=*/"EntityPass",
+        /*label=*/
+            pooled_glass_layer ? "Denial pooled glass layer" : "EntityPass",
         /*color_attachment_config=*/
         RenderTarget::AttachmentConfigMSAA{
             .storage_mode = StorageMode::kDeviceTransient,
@@ -2438,12 +2440,14 @@ void Canvas::SaveLayer(const Paint& paint,
   }
 
   std::optional<ISize> texture_region;
-  if (IsPooledGlassTargetPaddingRequested() && use_msaa && backdrop_filter &&
+  const bool pooled_glass_layer =
+      IsPooledGlassTargetPaddingRequested() && use_msaa && backdrop_filter &&
       backdrop_filter->type() == flutter::DlImageFilterType::kGlass &&
       !backdrop_alpha_threshold.has_value() && !paint.image_filter &&
       !paint.color_filter &&
       renderer_.GetContext()->GetBackendType() ==
-          Context::BackendType::kOpenGLES) {
+          Context::BackendType::kOpenGLES;
+  if (pooled_glass_layer) {
     // During motion, clipping changes a color layer's exact allocation size
     // almost every frame. Pooling a small set of padded sizes avoids retiring
     // large MSAA attachments at that rate. Coverage, origin, clip state and
@@ -2468,7 +2472,9 @@ void Canvas::SaveLayer(const Paint& paint,
                           CreateRenderTarget(renderer_,                  //
                                              subpass_size,               //
                                              Color::BlackTransparent(),  //
-                                             use_msaa                    //
+                                             use_msaa,                   //
+                                             false,                      //
+                                             pooled_glass_layer          //
                                              )));
   save_layer_state_.push_back(SaveLayerState{
       paint_copy, subpass_coverage.Shift(-coverage_origin_adjustment),
