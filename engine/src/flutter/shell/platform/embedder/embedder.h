@@ -3714,6 +3714,9 @@ FlutterEngineResult DenialFlutterEngineSetExternalTextureGlStateCallback(
 // pixel coordinates: source addresses the original imported buffer;
 // destination and background address the virtual canvas. No texture storage
 // is allocated. The canvas is clipped to the ordinary TextureLayer bounds.
+// The background extends the texel at offset (5, 5) inside the visible source,
+// clamped for small sources, using its RGBA and the content's inherited paint.
+// This samples the same imported image as the content without CPU readback.
 typedef struct {
   size_t struct_size;
   double width;
@@ -3721,6 +3724,7 @@ typedef struct {
   double source[4];
   double destination[4];
   double background[4];
+  // Fallback only when the source has no intersection with the imported image.
   uint32_t background_argb;
 } DenialFlutterExternalTexturePresentation;
 

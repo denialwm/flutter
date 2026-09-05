@@ -36,6 +36,7 @@ class EmbedderExternalTextureGL : public flutter::Texture {
   sk_sp<DlImage> last_image_;
   ExternalTexturePresentationCallback presentation_callback_;
   DenialFlutterExternalTexturePresentation presentation_ = {};
+  DlRect background_sample_;
 
   sk_sp<DlImage> ResolveTexture(int64_t texture_id,
                                 GrDirectContext* context,

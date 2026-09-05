@@ -4,6 +4,7 @@
 
 #include "flutter/shell/platform/embedder/embedder_external_texture_gl.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "flutter/fml/logging.h"
@@ -56,6 +57,7 @@ void EmbedderExternalTextureGL::Paint(PaintContext& context,
                        SkISize::Make(bounds.GetWidth(), bounds.GetHeight())  //
         );
     presentation_ = {};
+    background_sample_ = {};
     presentation_.struct_size = sizeof(presentation_);
     if (last_image_ && presentation_callback_) {
       const bool supplied = presentation_callback_(Id(), &presentation_);
@@ -71,6 +73,25 @@ void EmbedderExternalTextureGL::Paint(PaintContext& context,
           !finite_rect(presentation_.destination) ||
           !finite_rect(presentation_.background)) {
         presentation_ = {};
+      }
+    }
+    if (last_image_ && presentation_.width > 0) {
+      const auto visible_source =
+          DlRect::MakeXYWH(presentation_.source[0], presentation_.source[1],
+                           presentation_.source[2], presentation_.source[3])
+              .Intersection(DlRect::Make(last_image_->GetBounds()));
+      if (visible_source.has_value()) {
+        // Retain coordinates, never a CPU copy of the colour. Both the strip
+        // and app sample this same imported image, including on buffer-only
+        // updates. Clamp small/cropped buffers to a texel they actually cover.
+        const auto sample_axis = [](DlScalar start, DlScalar end) {
+          return std::clamp(std::floor(start + 5), std::floor(start),
+                            std::ceil(end) - 1);
+        };
+        background_sample_ = DlRect::MakeXYWH(
+            sample_axis(visible_source->GetLeft(), visible_source->GetRight()),
+            sample_axis(visible_source->GetTop(), visible_source->GetBottom()),
+            1, 1);
       }
     }
   }
@@ -89,14 +110,23 @@ void EmbedderExternalTextureGL::Paint(PaintContext& context,
                               bounds.GetTop() + rect[1] * sy, rect[2] * sx,
                               rect[3] * sy);
     };
-    DlPaint background = paint ? *paint : DlPaint();
-    background.setColor(DlColor(presentation_.background_argb)
-                            .modulateOpacity(background.getOpacity()));
     canvas->Save();
     canvas->ClipRect(bounds);
-    // A small solid quad and the original image share this TextureLayer.
-    // No saveLayer, intermediate image, buffer copy, or sampled header texture.
-    canvas->DrawRect(project(presentation_.background), background);
+    if (!background_sample_.IsEmpty()) {
+      // Strict sampling clamps this 1x1 source to its texel centre. Replacing
+      // the solid quad with a textured quad adds no draw, image allocation,
+      // saveLayer, readback, or extra frame scheduling. Preserve pixel alpha
+      // and the same inherited paint/opacity as the app content below it.
+      canvas->DrawImageRect(last_image_, background_sample_,
+                            project(presentation_.background),
+                            DlImageSampling::kNearestNeighbor, paint,
+                            DlSrcRectConstraint::kStrict);
+    } else {
+      DlPaint background = paint ? *paint : DlPaint();
+      background.setColor(DlColor(presentation_.background_argb)
+                              .modulateOpacity(background.getOpacity()));
+      canvas->DrawRect(project(presentation_.background), background);
+    }
     if (!source.IsEmpty()) {
       canvas->DrawImageRect(last_image_, source,
                             project(presentation_.destination), sampling,
