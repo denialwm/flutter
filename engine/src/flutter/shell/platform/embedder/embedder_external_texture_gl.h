@@ -19,11 +19,14 @@ class EmbedderExternalTextureGL : public flutter::Texture {
   using ExternalTextureCallback = std::function<
       std::unique_ptr<FlutterOpenGLTexture>(int64_t, size_t, size_t)>;
   using ExternalTextureGlStateCallback = std::function<bool(int64_t)>;
+  using ExternalTexturePresentationCallback =
+      std::function<bool(int64_t, DenialFlutterExternalTexturePresentation*)>;
 
   EmbedderExternalTextureGL(
       int64_t texture_identifier,
       const ExternalTextureCallback& callback,
-      const ExternalTextureGlStateCallback& gl_state_callback);
+      const ExternalTextureGlStateCallback& gl_state_callback,
+      ExternalTexturePresentationCallback presentation_callback = {});
 
   ~EmbedderExternalTextureGL();
 
@@ -31,6 +34,8 @@ class EmbedderExternalTextureGL : public flutter::Texture {
   const ExternalTextureCallback& external_texture_callback_;
   const ExternalTextureGlStateCallback& external_texture_gl_state_callback_;
   sk_sp<DlImage> last_image_;
+  ExternalTexturePresentationCallback presentation_callback_;
+  DenialFlutterExternalTexturePresentation presentation_ = {};
 
   sk_sp<DlImage> ResolveTexture(int64_t texture_id,
                                 GrDirectContext* context,

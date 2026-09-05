@@ -20,6 +20,11 @@ void EmbedderExternalTextureResolver::SetExternalTextureGlStateCallback(
     EmbedderExternalTextureGL::ExternalTextureGlStateCallback callback) {
   gl_state_callback_ = std::move(callback);
 }
+
+void EmbedderExternalTextureResolver::SetExternalTexturePresentationCallback(
+    EmbedderExternalTextureGL::ExternalTexturePresentationCallback callback) {
+  presentation_callback_ = std::move(callback);
+}
 #endif
 
 #ifdef SHELL_ENABLE_METAL
@@ -32,8 +37,8 @@ std::unique_ptr<Texture>
 EmbedderExternalTextureResolver::ResolveExternalTexture(int64_t texture_id) {
 #ifdef SHELL_ENABLE_GL
   if (gl_callback_) {
-    return std::make_unique<EmbedderExternalTextureGL>(texture_id, gl_callback_,
-                                                       gl_state_callback_);
+    return std::make_unique<EmbedderExternalTextureGL>(
+        texture_id, gl_callback_, gl_state_callback_, presentation_callback_);
   }
 #endif
 

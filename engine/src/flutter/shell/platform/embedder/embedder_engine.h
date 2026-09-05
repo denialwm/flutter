@@ -105,6 +105,8 @@ class EmbedderEngine {
 #ifdef SHELL_ENABLE_GL
   bool SetExternalTextureGlStateCallback(
       EmbedderExternalTextureGL::ExternalTextureGlStateCallback callback);
+  bool SetExternalTexturePresentationCallback(
+      EmbedderExternalTextureGL::ExternalTexturePresentationCallback callback);
 #endif
 
   Shell& GetShell();

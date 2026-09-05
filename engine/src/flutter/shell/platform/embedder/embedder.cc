@@ -3984,6 +3984,28 @@ FlutterEngineResult DenialFlutterEngineSetRenderOutputs(
 
 #ifdef SHELL_ENABLE_GL
 FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineSetExternalTexturePresentationCallback(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    DenialFlutterExternalTexturePresentationCallback callback,
+    void* user_data) {
+  if (engine == nullptr || callback == nullptr) {
+    return LOG_EMBEDDER_ERROR(
+        kInvalidArguments, "Invalid external-texture presentation callback.");
+  }
+  auto presentation_callback =
+      [callback, user_data](int64_t id,
+                            DenialFlutterExternalTexturePresentation* result) {
+        return callback(user_data, id, result);
+      };
+  return reinterpret_cast<flutter::EmbedderEngine*>(engine)
+                 ->SetExternalTexturePresentationCallback(
+                     std::move(presentation_callback))
+             ? kSuccess
+             : LOG_EMBEDDER_ERROR(
+                   kInternalInconsistency,
+                   "Could not install texture presentation callback.");
+}
+
 FlutterEngineResult DenialFlutterEngineSetExternalTextureGlStateCallback(
     FLUTTER_API_SYMBOL(FlutterEngine) engine,
     DenialFlutterExternalTextureGlStateCallback callback,

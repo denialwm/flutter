@@ -4,6 +4,8 @@
 
 #include "flutter/shell/platform/embedder/embedder_external_texture_gl.h"
 
+#include <cmath>
+
 #include "flutter/fml/logging.h"
 #include "impeller/core/texture_descriptor.h"
 #include "impeller/display_list/aiks_context.h"
@@ -30,10 +32,12 @@ namespace flutter {
 EmbedderExternalTextureGL::EmbedderExternalTextureGL(
     int64_t texture_identifier,
     const ExternalTextureCallback& callback,
-    const ExternalTextureGlStateCallback& gl_state_callback)
+    const ExternalTextureGlStateCallback& gl_state_callback,
+    ExternalTexturePresentationCallback presentation_callback)
     : Texture(texture_identifier),
       external_texture_callback_(callback),
-      external_texture_gl_state_callback_(gl_state_callback) {
+      external_texture_gl_state_callback_(gl_state_callback),
+      presentation_callback_(std::move(presentation_callback)) {
   FML_DCHECK(external_texture_callback_);
 }
 
@@ -51,11 +55,56 @@ void EmbedderExternalTextureGL::Paint(PaintContext& context,
                        context.aiks_context,                                 //
                        SkISize::Make(bounds.GetWidth(), bounds.GetHeight())  //
         );
+    presentation_ = {};
+    presentation_.struct_size = sizeof(presentation_);
+    if (last_image_ && presentation_callback_) {
+      const bool supplied = presentation_callback_(Id(), &presentation_);
+      const auto finite_rect = [](const double* rect) {
+        return std::isfinite(rect[0]) && std::isfinite(rect[1]) &&
+               std::isfinite(rect[2]) && std::isfinite(rect[3]) &&
+               rect[2] >= 0 && rect[3] >= 0;
+      };
+      if (!supplied || presentation_.struct_size != sizeof(presentation_) ||
+          !std::isfinite(presentation_.width) ||
+          !std::isfinite(presentation_.height) || presentation_.width <= 0 ||
+          presentation_.height <= 0 || !finite_rect(presentation_.source) ||
+          !finite_rect(presentation_.destination) ||
+          !finite_rect(presentation_.background)) {
+        presentation_ = {};
+      }
+    }
   }
 
   DlCanvas* canvas = context.canvas;
   const DlPaint* paint = context.paint;
 
+  if (last_image_ && presentation_.width > 0) {
+    const auto source =
+        DlRect::MakeXYWH(presentation_.source[0], presentation_.source[1],
+                         presentation_.source[2], presentation_.source[3]);
+    const auto project = [&](const double* rect) {
+      const double sx = bounds.GetWidth() / presentation_.width;
+      const double sy = bounds.GetHeight() / presentation_.height;
+      return DlRect::MakeXYWH(bounds.GetLeft() + rect[0] * sx,
+                              bounds.GetTop() + rect[1] * sy, rect[2] * sx,
+                              rect[3] * sy);
+    };
+    DlPaint background = paint ? *paint : DlPaint();
+    background.setColor(DlColor(presentation_.background_argb)
+                            .modulateOpacity(background.getOpacity()));
+    canvas->Save();
+    canvas->ClipRect(bounds);
+    // A small solid quad and the original image share this TextureLayer.
+    // No saveLayer, intermediate image, buffer copy, or sampled header texture.
+    canvas->DrawRect(project(presentation_.background), background);
+    if (!source.IsEmpty()) {
+      canvas->DrawImageRect(last_image_, source,
+                            project(presentation_.destination), sampling,
+                            paint);
+    }
+    canvas->Restore();
+    return;
+  }
   if (last_image_) {
     DlRect image_bounds = DlRect::Make(last_image_->GetBounds());
     if (bounds != image_bounds) {

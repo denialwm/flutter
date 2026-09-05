@@ -3710,6 +3710,34 @@ FlutterEngineResult DenialFlutterEngineSetExternalTextureGlStateCallback(
     DenialFlutterExternalTextureGlStateCallback callback,
     void* user_data);
 
+// Virtual external-texture canvas. Rectangles are x, y, width, height in
+// pixel coordinates: source addresses the original imported buffer;
+// destination and background address the virtual canvas. No texture storage
+// is allocated. The canvas is clipped to the ordinary TextureLayer bounds.
+typedef struct {
+  size_t struct_size;
+  double width;
+  double height;
+  double source[4];
+  double destination[4];
+  double background[4];
+  uint32_t background_argb;
+} DenialFlutterExternalTexturePresentation;
+
+// Called once alongside each resolved external image, never for retained
+// paints. Return false for the unmodified image path. The callback must not
+// call GL. Geometry changes require marking the texture frame available.
+typedef bool (*DenialFlutterExternalTexturePresentationCallback)(
+    void* user_data,
+    int64_t texture_identifier,
+    DenialFlutterExternalTexturePresentation* presentation);
+
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineSetExternalTexturePresentationCallback(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    DenialFlutterExternalTexturePresentationCallback callback,
+    void* user_data);
+
 //------------------------------------------------------------------------------
 /// @brief      Schedule a callback to be called after the next frame is drawn.
 ///             This must be called from the platform thread. The callback is
