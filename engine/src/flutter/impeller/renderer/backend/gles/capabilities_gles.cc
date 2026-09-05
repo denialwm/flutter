@@ -4,6 +4,8 @@
 
 #include "impeller/renderer/backend/gles/capabilities_gles.h"
 
+#include <cstdlib>
+
 #include "impeller/core/formats.h"
 #include "impeller/renderer/backend/gles/proc_table_gles.h"
 
@@ -131,10 +133,25 @@ CapabilitiesGLES::CapabilitiesGLES(const ProcTableGLES& gl) {
     supports_32bit_primitive_indices_ = true;
   }
 
+  const char* implicit_msaa_value = std::getenv("DENIA_GLES_IMPLICIT_MSAA");
+  const bool request_implicit_msaa = implicit_msaa_value &&
+                                     implicit_msaa_value[0] == '1' &&
+                                     implicit_msaa_value[1] == '\0';
   if (desc->HasExtension(kMultisampledRenderToTextureExt)) {
     // GLES 3 can use core multisample renderbuffers and explicit resolves.
     // Keep the extension path only for GLES 2, where those APIs are absent.
     supports_implicit_msaa_ = desc->GetGlVersion().major_version < 3;
+
+    // Keep the existing default, but allow a controlled return to the
+    // upstream render-to-texture path on GLES 3 implementations that advertise
+    // both extensions and resolve their entry points. Sample count stays 4x.
+    if (request_implicit_msaa && desc->IsES() &&
+        desc->GetGlVersion().major_version >= 3 &&
+        desc->HasExtension(kMultisampledRenderToTexture2Ext) &&
+        gl.FramebufferTexture2DMultisampleEXT.IsAvailable() &&
+        gl.RenderbufferStorageMultisampleEXT.IsAvailable()) {
+      supports_implicit_msaa_ = true;
+    }
 
     if (desc->HasExtension(kMultisampledRenderToTexture2Ext)) {
       // We hard-code 4x MSAA, so let's make sure it's supported.
@@ -149,6 +166,16 @@ CapabilitiesGLES::CapabilitiesGLES(const ProcTableGLES& gl) {
   }
   is_es_ = desc->IsES();
   is_angle_ = desc->IsANGLE();
+  if (implicit_msaa_value) {
+    FML_LOG(IMPORTANT) << "DENIA_GLES_MSAA requested_implicit="
+                       << request_implicit_msaa
+                       << " implicit=" << supports_implicit_msaa_
+                       << " offscreen_4x=" << supports_offscreen_msaa_
+                       << " render_to_texture="
+                       << desc->HasExtension(kMultisampledRenderToTextureExt)
+                       << " render_to_texture2="
+                       << desc->HasExtension(kMultisampledRenderToTexture2Ext);
+  }
 }
 
 bool CapabilitiesGLES::IsES() const {
