@@ -188,6 +188,48 @@ TEST_P(AiksTest, GlassBackdropSnapshotCoversFractionalExtentAfterRootFlip) {
   }
 }
 
+TEST_P(AiksTest, GlassUncachedLayerMatchesSnapshotCoverage) {
+  ContentContext context(GetContext(), nullptr);
+  TextureDescriptor descriptor;
+  descriptor.size = {1920, 1080};
+  descriptor.format = context.GetDeviceCapabilities().GetDefaultColorFormat();
+  descriptor.usage = TextureUsage::kRenderTarget | TextureUsage::kShaderRead;
+  descriptor.storage_mode = StorageMode::kDevicePrivate;
+  auto texture =
+      context.GetContext()->GetResourceAllocator()->CreateTexture(descriptor);
+  ASSERT_TRUE(texture);
+
+  const Rect material_bounds = Rect::MakeXYWH(400, 300, 200, 50);
+  GlassFilterContents glass(
+      RoundRect::MakeRectXY(Rect::MakeSize(material_bounds.GetSize()), 10, 10),
+      /*thickness=*/20, /*refraction=*/0.55, /*dispersion=*/0.12,
+      /*saturation=*/1.2, Color::White(), /*tint_strength=*/0.08,
+      /*brightness=*/0.06, /*light_angle=*/0, /*light_intensity=*/0.7,
+      /*edge_strength=*/0.4);
+  auto input = FilterInput::Make(texture);
+  glass.SetInputs({input, input});
+  glass.SetIsBackdropFilter(true);
+  glass.SetMaterialBounds(material_bounds);
+  const auto cached = glass.RenderToSnapshot(
+      context, Entity{}, {.coverage_limit = material_bounds});
+  ASSERT_TRUE(cached);
+
+  // Exercise the actual filter evaluation used by Canvas's uncached child
+  // layer. Its input moves to layer-local coordinates; the shape must follow.
+  // Inspect only geometry and allocation metadata, never rendered pixels.
+  const Matrix input_transform =
+      Matrix::MakeTranslation(Vector3(-400, -300, 0));
+  Entity child_entity;
+  child_entity.SetTransform(input_transform);
+  const auto uncached = glass.GetEntity(context, child_entity, std::nullopt);
+  ASSERT_TRUE(uncached);
+  ASSERT_TRUE(uncached->GetCoverage());
+  ASSERT_TRUE(cached->GetCoverage());
+  EXPECT_EQ(uncached->GetCoverage().value(),
+            cached->GetCoverage()->TransformBounds(input_transform));
+  EXPECT_EQ(uncached->GetCoverage().value(), Rect::MakeXYWH(0, 0, 200, 50));
+}
+
 TEST_P(AiksTest, BackdropSnapshotMaterializesOnlyAfterGenerationIsStable) {
   ContentContext context(GetContext(), nullptr);
   const int64_t first = flutter::MakeBackdropFilterCacheKey(11u, 1u);

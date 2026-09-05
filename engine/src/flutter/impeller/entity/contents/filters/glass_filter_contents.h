@@ -21,7 +21,8 @@ struct GlassMaterialDraw {
 // redefining its rounded-box coordinate system to that damage crop.
 std::optional<GlassMaterialDraw> ResolveGlassMaterialDraw(
     const Rect& coverage,
-    const std::optional<Rect>& material_bounds);
+    const std::optional<Rect>& material_bounds,
+    const Matrix& input_transform = Matrix());
 
 bool GlassFrostNeedsBlur(Scalar sigma_x, Scalar sigma_y);
 
@@ -49,8 +50,10 @@ class GlassFilterContents final : public FilterContents {
       const Entity& entity,
       const std::optional<Rect>& coverage_hint);
 
-  // Supplies the complete material extent in the same target coordinates as
-  // the filter coverage. A frame-damage clip may make the latter only a slice.
+  // Supplies the complete material extent in the backdrop input's coordinates.
+  // Rendering applies the entity transform to both input and material bounds;
+  // an uncached save layer translates them into its own target coordinates.
+  // A frame-damage clip may make the filter coverage only a slice of the shape.
   void SetMaterialBounds(const Rect& bounds);
 
   void SetMaterialTargetPaddingEnabled(bool enabled);

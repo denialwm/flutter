@@ -86,11 +86,17 @@ Scalar MaximumGlassDisplacement(Scalar thickness,
 
 std::optional<GlassMaterialDraw> ResolveGlassMaterialDraw(
     const Rect& coverage,
-    const std::optional<Rect>& material_bounds) {
+    const std::optional<Rect>& material_bounds,
+    const Matrix& input_transform) {
+  const std::optional<Rect> target_bounds =
+      material_bounds.has_value()
+          ? std::make_optional(
+                material_bounds->TransformBounds(input_transform))
+          : std::nullopt;
   Rect draw_coverage = coverage;
-  if (material_bounds.has_value()) {
+  if (target_bounds.has_value()) {
     const std::optional<Rect> intersection =
-        draw_coverage.Intersection(material_bounds.value());
+        draw_coverage.Intersection(target_bounds.value());
     if (!intersection.has_value()) {
       return std::nullopt;
     }
@@ -100,7 +106,7 @@ std::optional<GlassMaterialDraw> ResolveGlassMaterialDraw(
     return std::nullopt;
   }
 
-  const Rect full_bounds = material_bounds.value_or(draw_coverage);
+  const Rect full_bounds = target_bounds.value_or(draw_coverage);
   return GlassMaterialDraw{
       .coverage = draw_coverage,
       .material_size = full_bounds.GetSize(),
@@ -180,7 +186,8 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
   }
 
   const std::optional<GlassMaterialDraw> material_draw =
-      ResolveGlassMaterialDraw(material_coverage, material_bounds_);
+      ResolveGlassMaterialDraw(material_coverage, material_bounds_,
+                               entity.GetTransform());
   if (!material_draw.has_value()) {
     return std::nullopt;
   }
