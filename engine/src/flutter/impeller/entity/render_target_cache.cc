@@ -25,6 +25,14 @@ bool IsGlassTargetRetentionRequested() {
   return requested;
 }
 
+bool IsGlassTargetRetentionByBudgetRequested() {
+  static const bool requested = [] {
+    const char* value = std::getenv("DENIA_GLASS_RETAIN_TARGETS_BY_BUDGET");
+    return value && value[0] == '1' && value[1] == '\0';
+  }();
+  return requested;
+}
+
 size_t AttachmentBytes(const RenderTarget& target) {
   const auto color = target.GetColorAttachment(0);
   const auto& depth = target.GetDepthAttachment();
@@ -96,7 +104,8 @@ void RenderTargetCache::End() {
       td.keep_alive_frame_count--;
       retain.push_back(td);
     } else if (td.motion_retained_bytes > 0 &&
-               now() - td.motion_last_used_us <= 2500000) {
+               (IsGlassTargetRetentionByBudgetRequested() ||
+                now() - td.motion_last_used_us <= 2500000)) {
       motion_idle.push_back(&td);
     }
   }
@@ -104,6 +113,9 @@ void RenderTargetCache::End() {
   // these GL objects across the return path avoids relying on a driver's
   // whole-second BO cache expiry. Limit extra retention independently of the
   // existing active/four-frame cache, and prefer the most recently used sizes.
+  // Budget-only retention also avoids timed destruction after glass leaves
+  // the scene. The same byte cap still evicts old entries when space is needed;
+  // unused glass targets alone do not need a clock read in that mode.
   std::sort(motion_idle.begin(), motion_idle.end(),
             [](const auto* a, const auto* b) {
               return a->motion_last_used_us > b->motion_last_used_us;
