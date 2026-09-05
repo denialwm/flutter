@@ -27,6 +27,14 @@ class GlassFilterContents final : public FilterContents {
 
   ~GlassFilterContents() override;
 
+  // Resolve a shader draw for a direct backdrop assignment. Unlike GetEntity,
+  // this result is not TextureContents. Snapshot and alpha-threshold consumers
+  // must keep using GetEntity so they retain the materialized texture.
+  std::optional<Entity> GetDirectEntity(
+      const ContentContext& renderer,
+      const Entity& entity,
+      const std::optional<Rect>& coverage_hint);
+
  private:
   std::optional<Entity> RenderFilter(
       const FilterInput::Vector& inputs,
@@ -56,6 +64,7 @@ class GlassFilterContents final : public FilterContents {
   const Scalar light_angle_;
   const Scalar light_intensity_;
   const Scalar edge_strength_;
+  bool render_material_directly_ = false;
 };
 
 }  // namespace impeller

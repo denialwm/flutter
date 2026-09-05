@@ -37,6 +37,7 @@
 #include "impeller/entity/contents/color_source_contents.h"
 #include "impeller/entity/contents/content_context.h"
 #include "impeller/entity/contents/filters/filter_contents.h"
+#include "impeller/entity/contents/filters/glass_filter_contents.h"
 #include "impeller/entity/contents/framebuffer_blend_contents.h"
 #include "impeller/entity/contents/line_contents.h"
 #include "impeller/entity/contents/shadow_vertices_contents.h"
@@ -70,6 +71,14 @@ namespace impeller {
 namespace {
 
 constexpr Scalar kAntialiasPadding = 1.0f;
+
+bool IsDirectGlassMaterialRequested() {
+  static const bool requested = [] {
+    const char* value = std::getenv("DENIA_GLASS_DIRECT_MATERIAL");
+    return value != nullptr && value[0] == '1' && value[1] == '\0';
+  }();
+  return requested;
+}
 
 struct BackdropLayerPlanAudit {
   using Clock = std::chrono::steady_clock;
@@ -2309,9 +2318,25 @@ void Canvas::SaveLayer(const Paint& paint,
     const uint32_t backdrop_depth = ++current_depth_;
     if (!resolved_backdrop_entity.has_value()) {
       backdrop_entity.SetClipDepth(backdrop_depth);
-      resolved_backdrop_entity = backdrop_filter_contents->GetEntity(
-          renderer_, backdrop_entity, subpass_coverage);
-      if (resolved_backdrop_entity.has_value() &&
+      const bool direct_glass_material =
+          IsDirectGlassMaterialRequested() &&
+          backdrop_filter->type() == flutter::DlImageFilterType::kGlass &&
+          !backdrop_alpha_threshold.has_value() &&
+          renderer_.GetContext()->GetBackendType() ==
+              Context::BackendType::kOpenGLES;
+      if (direct_glass_material) {
+        // WrapInput maps a DlGlassImageFilter to GlassFilterContents. Only
+        // this non-threshold, uncached direct path may return a shader entity;
+        // texture fusion and persistent snapshots keep their existing type.
+        resolved_backdrop_entity =
+            std::static_pointer_cast<GlassFilterContents>(
+                backdrop_filter_contents)
+                ->GetDirectEntity(renderer_, backdrop_entity, subpass_coverage);
+      } else {
+        resolved_backdrop_entity = backdrop_filter_contents->GetEntity(
+            renderer_, backdrop_entity, subpass_coverage);
+      }
+      if (!direct_glass_material && resolved_backdrop_entity.has_value() &&
           (backdrop_filter->type() == flutter::DlImageFilterType::kBlur ||
            backdrop_filter->type() == flutter::DlImageFilterType::kGlass)) {
         // GaussianBlurFilterContents resolves its final pass through
