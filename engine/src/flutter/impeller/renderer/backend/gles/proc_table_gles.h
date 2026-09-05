@@ -5,6 +5,7 @@
 #ifndef FLUTTER_IMPELLER_RENDERER_BACKEND_GLES_PROC_TABLE_GLES_H_
 #define FLUTTER_IMPELLER_RENDERER_BACKEND_GLES_PROC_TABLE_GLES_H_
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -23,6 +24,18 @@ namespace impeller {
 
 std::string_view GLErrorToString(GLenum value);
 bool GLErrorIsFatal(GLenum value);
+
+// Opt-in wall-time diagnostics for deferred driver work outside explicit
+// allocation calls. No GL queries, waits, argument reads, or pixel readback.
+class DenialSlowGLCallScope {
+ public:
+  explicit DenialSlowGLCallScope(std::string_view name);
+  ~DenialSlowGLCallScope();
+
+ private:
+  std::string_view name_;
+  int64_t start_us_;
+};
 
 struct AutoErrorCheck {
   const PFNGLGETERRORPROC error_fn;
@@ -116,6 +129,9 @@ struct GLProc {
   ///
   bool log_calls = false;
 
+  // Set once when resolving the table. The normal path never reads a clock.
+  bool log_slow_calls = false;
+
   //----------------------------------------------------------------------------
   /// @brief      Call the GL function with the appropriate parameters. Lookup
   ///             the documentation for the GL function being called to
@@ -135,6 +151,10 @@ struct GLProc {
       FML_LOG(IMPORTANT) << name << BuildGLArguments(args...);
     }
 #endif  // defined(IMPELLER_DEBUG) && !defined(NDEBUG)
+    if (log_slow_calls) {
+      const DenialSlowGLCallScope audit(name);
+      return function(std::forward<Args>(args)...);
+    }
     return function(std::forward<Args>(args)...);
   }
 
