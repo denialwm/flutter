@@ -302,6 +302,9 @@ class Canvas {
     Rect coverage;
     bool has_backdrop_filter = false;
     std::optional<AlphaThresholdBackdrop> alpha_threshold_backdrop;
+    // A pooled target may include unused padding. Restore only the original
+    // pixel region so allocation granularity cannot expand the visible layer.
+    std::optional<ISize> texture_region;
   };
 
   // Visible for testing.

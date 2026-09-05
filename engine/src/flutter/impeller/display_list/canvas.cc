@@ -80,6 +80,14 @@ bool IsDirectGlassMaterialRequested() {
   return requested;
 }
 
+bool IsPooledGlassTargetPaddingRequested() {
+  static const bool requested = [] {
+    const char* value = std::getenv("DENIA_GLASS_POOLED_TARGET_PADDING");
+    return value != nullptr && value[0] == '1' && value[1] == '\0';
+  }();
+  return requested;
+}
+
 struct BackdropLayerPlanAudit {
   using Clock = std::chrono::steady_clock;
 
@@ -447,11 +455,14 @@ static std::shared_ptr<Contents> CreateContentsForSubpassTarget(
     const Paint& paint,
     const std::shared_ptr<Texture>& target,
     const Matrix& effect_transform,
-    std::string_view label) {
-  auto contents = TextureContents::MakeRect(Rect::MakeSize(target->GetSize()));
+    std::string_view label,
+    const std::optional<ISize>& texture_region) {
+  const Rect region =
+      Rect::MakeSize(texture_region.value_or(target->GetSize()));
+  auto contents = TextureContents::MakeRect(region);
   contents->SetTexture(target);
   contents->SetLabel(label);
-  contents->SetSourceRect(Rect::MakeSize(target->GetSize()));
+  contents->SetSourceRect(region);
   contents->SetOpacity(paint.color.alpha);
   contents->SetDeferApplyingOpacity(true);
 
@@ -2426,6 +2437,32 @@ void Canvas::SaveLayer(const Paint& paint,
     }
   }
 
+  std::optional<ISize> texture_region;
+  if (IsPooledGlassTargetPaddingRequested() && use_msaa && backdrop_filter &&
+      backdrop_filter->type() == flutter::DlImageFilterType::kGlass &&
+      !backdrop_alpha_threshold.has_value() && !paint.image_filter &&
+      !paint.color_filter &&
+      renderer_.GetContext()->GetBackendType() ==
+          Context::BackendType::kOpenGLES) {
+    // During motion, clipping changes a color layer's exact allocation size
+    // almost every frame. Pooling a small set of padded sizes avoids retiring
+    // large MSAA attachments at that rate. Coverage, origin, clip state and
+    // restore geometry remain exact; only the backing allocation grows.
+    constexpr int64_t kGranularity = 128;
+    const ISize pooled_size =
+        ISize{((subpass_size.width + kGranularity - 1) / kGranularity) *
+                  kGranularity,
+              ((subpass_size.height + kGranularity - 1) / kGranularity) *
+                  kGranularity}
+            .Min(renderer_.GetContext()
+                     ->GetCapabilities()
+                     ->GetMaximumRenderPassAttachmentSize());
+    if (pooled_size != subpass_size) {
+      texture_region = subpass_size;
+      subpass_size = pooled_size;
+    }
+  }
+
   render_passes_.push_back(
       LazyRenderingConfig(renderer_,                                     //
                           CreateRenderTarget(renderer_,                  //
@@ -2435,7 +2472,8 @@ void Canvas::SaveLayer(const Paint& paint,
                                              )));
   save_layer_state_.push_back(SaveLayerState{
       paint_copy, subpass_coverage.Shift(-coverage_origin_adjustment),
-      backdrop_filter != nullptr, std::move(alpha_threshold_backdrop)});
+      backdrop_filter != nullptr, std::move(alpha_threshold_backdrop),
+      texture_region});
 
   render_passes_.back().GetInlinePassContext()->GetRenderPass()->SetLabel(
       backdrop_filter ? "Denial Backdrop Layer Color"
@@ -2539,8 +2577,8 @@ bool Canvas::Restore() {
         Matrix::MakeTranslation(Vector3{-global_pass_position}) *  //
             transform_stack_.back().transform,                     //
         save_layer_state.has_backdrop_filter ? "Denial backdrop layer restore"
-                                             : "Subpass"  //
-    );
+                                             : "Subpass",  //
+        save_layer_state.texture_region);
 
     lazy_render_pass.GetInlinePassContext()->EndPass();
 
