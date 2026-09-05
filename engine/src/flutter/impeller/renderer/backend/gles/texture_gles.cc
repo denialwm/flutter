@@ -15,6 +15,7 @@
 #include "impeller/base/validation.h"
 #include "impeller/core/formats.h"
 #include "impeller/core/texture_descriptor.h"
+#include "impeller/renderer/backend/gles/denial_resource_audit_gles.h"
 #include "impeller/renderer/backend/gles/formats_gles.h"
 
 namespace impeller {
@@ -455,6 +456,9 @@ void TextureGLES::InitializeContentsIfNecessary() {
         return;
       }
       TRACE_EVENT0("impeller", "TexImage2DInitialization");
+      const DenialResourceAuditGLES audit(
+          DenialResourceAuditGLES::Stage::kTextureStorage,
+          static_cast<int>(desc.format), size.width, size.height);
       if (desc.type == TextureType::kTextureCube) {
         // Cubemap handles must be bound to GL_TEXTURE_CUBE_MAP and each face
         // target must be defined independently before sampling. Allocate the
@@ -506,6 +510,10 @@ void TextureGLES::InitializeContentsIfNecessary() {
       }
       gl.BindRenderbuffer(GL_RENDERBUFFER, handle.value());
       {
+        const DenialResourceAuditGLES audit(
+            DenialResourceAuditGLES::Stage::kRenderbufferStorage,
+            static_cast<int>(GetTextureDescriptor().format), size.width,
+            size.height);
         if (type_ == Type::kRenderBufferMultisampled) {
           // BEWARE: these functions are not at all equivalent! the extensions
           // are from EXT_multisampled_render_to_texture and cannot be used
