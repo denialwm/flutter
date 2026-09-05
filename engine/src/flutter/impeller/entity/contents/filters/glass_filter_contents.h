@@ -11,6 +11,20 @@
 
 namespace impeller {
 
+struct GlassMaterialDraw {
+  Rect coverage;
+  Size material_size;
+  Point material_position;
+};
+
+// Resolves the portion of a glass material that needs drawing without
+// redefining its rounded-box coordinate system to that damage crop.
+std::optional<GlassMaterialDraw> ResolveGlassMaterialDraw(
+    const Rect& coverage,
+    const std::optional<Rect>& material_bounds);
+
+bool GlassFrostNeedsBlur(Scalar sigma_x, Scalar sigma_y);
+
 class GlassFilterContents final : public FilterContents {
  public:
   GlassFilterContents(RoundRect shape,
@@ -34,6 +48,10 @@ class GlassFilterContents final : public FilterContents {
       const ContentContext& renderer,
       const Entity& entity,
       const std::optional<Rect>& coverage_hint);
+
+  // Supplies the complete material extent in the same target coordinates as
+  // the filter coverage. A frame-damage clip may make the latter only a slice.
+  void SetMaterialBounds(const Rect& bounds);
 
   void SetMaterialTargetPaddingEnabled(bool enabled);
 
@@ -66,6 +84,7 @@ class GlassFilterContents final : public FilterContents {
   const Scalar light_angle_;
   const Scalar light_intensity_;
   const Scalar edge_strength_;
+  std::optional<Rect> material_bounds_;
   bool render_material_directly_ = false;
   bool material_target_padding_enabled_ = false;
 };

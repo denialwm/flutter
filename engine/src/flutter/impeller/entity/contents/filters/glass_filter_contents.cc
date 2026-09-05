@@ -84,6 +84,34 @@ Scalar MaximumGlassDisplacement(Scalar thickness,
 
 }  // namespace
 
+std::optional<GlassMaterialDraw> ResolveGlassMaterialDraw(
+    const Rect& coverage,
+    const std::optional<Rect>& material_bounds) {
+  Rect draw_coverage = coverage;
+  if (material_bounds.has_value()) {
+    const std::optional<Rect> intersection =
+        draw_coverage.Intersection(material_bounds.value());
+    if (!intersection.has_value()) {
+      return std::nullopt;
+    }
+    draw_coverage = intersection.value();
+  }
+  if (draw_coverage.IsEmpty()) {
+    return std::nullopt;
+  }
+
+  const Rect full_bounds = material_bounds.value_or(draw_coverage);
+  return GlassMaterialDraw{
+      .coverage = draw_coverage,
+      .material_size = full_bounds.GetSize(),
+      .material_position = draw_coverage.GetOrigin() - full_bounds.GetOrigin(),
+  };
+}
+
+bool GlassFrostNeedsBlur(Scalar sigma_x, Scalar sigma_y) {
+  return sigma_x != 0.0f || sigma_y != 0.0f;
+}
+
 GlassFilterContents::GlassFilterContents(RoundRect shape,
                                          Scalar thickness,
                                          Scalar refraction,
@@ -108,6 +136,10 @@ GlassFilterContents::GlassFilterContents(RoundRect shape,
       edge_strength_(edge_strength) {}
 
 GlassFilterContents::~GlassFilterContents() = default;
+
+void GlassFilterContents::SetMaterialBounds(const Rect& bounds) {
+  material_bounds_ = bounds;
+}
 
 void GlassFilterContents::SetMaterialTargetPaddingEnabled(bool enabled) {
   material_target_padding_enabled_ = enabled;
@@ -147,6 +179,13 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
     material_coverage = intersection.value();
   }
 
+  const std::optional<GlassMaterialDraw> material_draw =
+      ResolveGlassMaterialDraw(material_coverage, material_bounds_);
+  if (!material_draw.has_value()) {
+    return std::nullopt;
+  }
+  material_coverage = material_draw->coverage;
+
   // The frost path normally resolves through Impeller's established
   // crop-aware Gaussian filter. Resource pressure must not make an entire
   // backdrop scope disappear, so retain the undiffused scene as a graceful
@@ -167,7 +206,9 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
     return std::nullopt;
   }
 
-  const Size material_size = material_coverage.GetSize();
+  const Size draw_size = material_coverage.GetSize();
+  const Size material_size = material_draw->material_size;
+  const Point material_position = material_draw->material_position;
   const Matrix material_transform = entity.GetTransform() * effect_transform;
   const Scalar scale_x =
       std::max(material_transform.TransformDirection(Vector2(1, 0)).GetLength(),
@@ -187,12 +228,12 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
 
   const Quad blurred_coordinates = blurred_uvs.value();
   const Vector4 blurred_uv_basis =
-      TextureUvBasis(blurred_coordinates, material_size,
+      TextureUvBasis(blurred_coordinates, draw_size,
                      blurred_snapshot->texture->GetYCoordScale());
 
   Contents::RenderProc render_material =
-      [blurred_snapshot, blurred_coordinates, material_size, corner_radii,
-       blurred_uv_basis, physical_thickness,
+      [blurred_snapshot, blurred_coordinates, draw_size, material_size,
+       material_position, corner_radii, blurred_uv_basis, physical_thickness,
        refractive_index = GlassRefractiveIndex(refraction_),
        dispersion = dispersion_, saturation = saturation_, tint = tint_,
        tint_strength = tint_strength_, brightness = brightness_,
@@ -202,16 +243,17 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
                                        RenderPass& pass) {
         auto& data = renderer.GetTransientsDataBuffer();
         const std::array<VS::PerVertexData, 4> vertices = {
-            VS::PerVertexData{Point(0, 0), blurred_coordinates[0], Point(0, 0)},
-            VS::PerVertexData{Point(material_size.width, 0),
-                              blurred_coordinates[1],
-                              Point(material_size.width, 0)},
-            VS::PerVertexData{Point(0, material_size.height),
+            VS::PerVertexData{Point(0, 0), blurred_coordinates[0],
+                              material_position},
+            VS::PerVertexData{Point(draw_size.width, 0), blurred_coordinates[1],
+                              material_position + Vector2(draw_size.width, 0)},
+            VS::PerVertexData{Point(0, draw_size.height),
                               blurred_coordinates[2],
-                              Point(0, material_size.height)},
-            VS::PerVertexData{Point(material_size.width, material_size.height),
-                              blurred_coordinates[3],
-                              Point(material_size.width, material_size.height)},
+                              material_position + Vector2(0, draw_size.height)},
+            VS::PerVertexData{
+                Point(draw_size.width, draw_size.height),
+                blurred_coordinates[3],
+                material_position + Vector2(draw_size.width, draw_size.height)},
         };
 
         VS::FrameInfo frame_info;
@@ -265,9 +307,9 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
     result.SetTransform(Matrix::MakeTranslation(material_coverage.GetOrigin()));
     result.SetContents(Contents::MakeAnonymous(
         std::move(render_material),
-        [material_size](const Entity& material_entity) -> std::optional<Rect> {
-          return Rect::MakeSize(material_size)
-              .TransformBounds(material_entity.GetTransform());
+        [draw_size](const Entity& material_entity) -> std::optional<Rect> {
+          return Rect::MakeSize(draw_size).TransformBounds(
+              material_entity.GetTransform());
         }));
     return result;
   }
@@ -285,7 +327,7 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
   if (!command_buffer) {
     return std::nullopt;
   }
-  const ISize material_pixel_size = ISize::Ceil(material_size);
+  const ISize material_pixel_size = ISize::Ceil(draw_size);
   ISize target_size = material_pixel_size;
   const ISize maximum_size = renderer.GetContext()
                                  ->GetCapabilities()

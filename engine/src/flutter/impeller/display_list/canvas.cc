@@ -526,7 +526,7 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
         /*size=*/size,
         /*mip_count=*/1,
         /*label=*/
-            pooled_glass_layer ? "Denial pooled glass layer" : "EntityPass",
+        pooled_glass_layer ? "Denial pooled glass layer" : "EntityPass",
         /*color_attachment_config=*/
         RenderTarget::AttachmentConfigMSAA{
             .storage_mode = StorageMode::kDeviceTransient,
@@ -2361,6 +2361,17 @@ void Canvas::SaveLayer(const Paint& paint,
   };
   if (backdrop_filter) {
     local_position = subpass_coverage.GetOrigin() - GetGlobalPassPosition();
+    std::optional<Rect> glass_material_bounds;
+    if (const flutter::DlGlassImageFilter* glass = backdrop_filter->asGlass()) {
+      // Partial frame damage becomes the saveLayer coverage limit. Preserve
+      // the transformed full shape separately so a cropped glass draw keeps
+      // the same SDF coordinates as a full repaint.
+      const flutter::DlRect& bounds = glass->shape().GetBounds();
+      glass_material_bounds =
+          Rect::MakeLTRB(bounds.GetLeft(), bounds.GetTop(), bounds.GetRight(),
+                         bounds.GetBottom())
+              .TransformBounds(transform_stack_.back().transform);
+    }
 
     std::shared_ptr<Texture> input_texture;
 
@@ -2470,6 +2481,10 @@ void Canvas::SaveLayer(const Paint& paint,
       backdrop_filter_contents =
           WrapInput(renderer_, backdrop_filter,
                     FilterInput::Make(std::move(input_texture)));
+      if (glass_material_bounds.has_value()) {
+        std::static_pointer_cast<GlassFilterContents>(backdrop_filter_contents)
+            ->SetMaterialBounds(glass_material_bounds.value());
+      }
       backdrop_filter_contents->SetEffectTransform(
           transform_stack_.back().transform.Basis());
       backdrop_filter_contents->SetRenderingMode(backdrop_rendering_mode);

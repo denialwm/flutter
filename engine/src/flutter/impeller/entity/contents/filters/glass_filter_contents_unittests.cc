@@ -9,6 +9,44 @@
 namespace impeller {
 namespace testing {
 
+TEST(GlassFilterContentsTest, DamageCropKeepsFullMaterialCoordinates) {
+  const Rect material_bounds = Rect::MakeXYWH(40, 30, 200, 100);
+  const Rect damage_coverage = Rect::MakeXYWH(40, 30, 30, 20);
+
+  const std::optional<GlassMaterialDraw> draw =
+      ResolveGlassMaterialDraw(damage_coverage, material_bounds);
+
+  ASSERT_TRUE(draw.has_value());
+  EXPECT_EQ(draw->coverage, damage_coverage);
+  EXPECT_EQ(draw->material_size, Size(200, 100));
+  EXPECT_EQ(draw->material_position, Point(0, 0));
+}
+
+TEST(GlassFilterContentsTest, InteriorDamageCropKeepsMaterialOffset) {
+  const Rect material_bounds = Rect::MakeXYWH(40, 30, 200, 100);
+  const Rect damage_coverage = Rect::MakeXYWH(90, 55, 30, 20);
+
+  const std::optional<GlassMaterialDraw> draw =
+      ResolveGlassMaterialDraw(damage_coverage, material_bounds);
+
+  ASSERT_TRUE(draw.has_value());
+  EXPECT_EQ(draw->coverage, damage_coverage);
+  EXPECT_EQ(draw->material_size, Size(200, 100));
+  EXPECT_EQ(draw->material_position, Point(50, 25));
+}
+
+TEST(GlassFilterContentsTest, DamageOutsideMaterialIsRejected) {
+  EXPECT_FALSE(ResolveGlassMaterialDraw(Rect::MakeXYWH(0, 0, 10, 10),
+                                        Rect::MakeXYWH(40, 30, 200, 100))
+                   .has_value());
+}
+
+TEST(GlassFilterContentsTest, ZeroFrostBypassesGaussianPass) {
+  EXPECT_FALSE(GlassFrostNeedsBlur(0, 0));
+  EXPECT_TRUE(GlassFrostNeedsBlur(1, 0));
+  EXPECT_TRUE(GlassFrostNeedsBlur(0, 1));
+}
+
 TEST(GlassFilterContentsTest, ReflectedEffectKeepsShapeInTargetCoordinates) {
   GlassFilterContents contents(
       RoundRect::MakeRectXY(Rect::MakeXYWH(0, 0, 89, 22), 10, 10),
