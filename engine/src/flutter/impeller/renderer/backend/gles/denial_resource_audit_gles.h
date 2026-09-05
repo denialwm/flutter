@@ -52,11 +52,11 @@ class DenialResourceAuditGLES {
     static std::atomic<uint32_t> slow_records = 0;
     if (elapsed_us >= 2000 &&
         slow_records.fetch_add(1, std::memory_order_relaxed) < 512) {
-      FML_LOG(INFO) << "DENIA_GL_RESOURCE_SLOW start_us=" << start_us_
-                    << " duration_us=" << elapsed_us
-                    << " stage=" << static_cast<int>(stage_)
-                    << " kind=" << kind_ << " width=" << width_
-                    << " height=" << height_;
+      FML_LOG(IMPORTANT) << "DENIA_GL_RESOURCE_SLOW start_us=" << start_us_
+                         << " duration_us=" << elapsed_us
+                         << " stage=" << static_cast<int>(stage_)
+                         << " kind=" << kind_ << " width=" << width_
+                         << " height=" << height_;
     }
 
     struct Summary {
@@ -75,14 +75,14 @@ class DenialResourceAuditGLES {
     if (end_us - summary.start_us >= 1000000) {
       static std::atomic<uint32_t> summary_records = 0;
       if (summary_records.fetch_add(1, std::memory_order_relaxed) < 128) {
-        FML_LOG(INFO) << "DENIA_GL_RESOURCE_COUNTS start_us="
-                      << summary.start_us << " end_us=" << end_us
-                      << " create=" << summary.calls[0]
-                      << " collect=" << summary.calls[1]
-                      << " consolidate=" << summary.calls[2]
-                      << " texture_storage=" << summary.calls[3]
-                      << " renderbuffer_storage=" << summary.calls[4]
-                      << " allocated_pixels=" << summary.allocated_pixels;
+        FML_LOG(IMPORTANT) << "DENIA_GL_RESOURCE_COUNTS start_us="
+                           << summary.start_us << " end_us=" << end_us
+                           << " create=" << summary.calls[0]
+                           << " collect=" << summary.calls[1]
+                           << " consolidate=" << summary.calls[2]
+                           << " texture_storage=" << summary.calls[3]
+                           << " renderbuffer_storage=" << summary.calls[4]
+                           << " allocated_pixels=" << summary.allocated_pixels;
       }
       summary = {};
     }
