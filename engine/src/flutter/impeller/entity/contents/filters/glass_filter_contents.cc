@@ -9,6 +9,7 @@
 #include <cmath>
 #include <utility>
 
+#include "fml/closure.h"
 #include "impeller/entity/contents/content_context.h"
 #include "impeller/entity/glass.frag.h"
 #include "impeller/entity/glass.vert.h"
@@ -107,6 +108,16 @@ GlassFilterContents::GlassFilterContents(RoundRect shape,
 
 GlassFilterContents::~GlassFilterContents() = default;
 
+std::optional<Entity> GlassFilterContents::GetDirectEntity(
+    const ContentContext& renderer,
+    const Entity& entity,
+    const std::optional<Rect>& coverage_hint) {
+  const bool previous = std::exchange(render_material_directly_, true);
+  fml::ScopedCleanupClosure restore(
+      [&] { render_material_directly_ = previous; });
+  return GetEntity(renderer, entity, coverage_hint);
+}
+
 std::optional<Entity> GlassFilterContents::RenderFilter(
     const FilterInput::Vector& inputs,
     const ContentContext& renderer,
@@ -174,7 +185,7 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
       TextureUvBasis(blurred_coordinates, material_size,
                      blurred_snapshot->texture->GetYCoordScale());
 
-  ContentContext::SubpassCallback callback =
+  Contents::RenderProc render_material =
       [blurred_snapshot, blurred_coordinates, material_size, corner_radii,
        blurred_uv_basis, physical_thickness,
        refractive_index = GlassRefractiveIndex(refraction_),
@@ -182,6 +193,7 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
        tint_strength = tint_strength_, brightness = brightness_,
        light_angle = light_angle_, light_intensity = light_intensity_,
        edge_strength = edge_strength_](const ContentContext& renderer,
+                                       const Entity& material_entity,
                                        RenderPass& pass) {
         auto& data = renderer.GetTransientsDataBuffer();
         const std::array<VS::PerVertexData, 4> vertices = {
@@ -200,7 +212,7 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         VS::FrameInfo frame_info;
         // The allocation rounds up; keep geometry and optical coordinates at
         // their physical size instead of stretching them across that padding.
-        frame_info.mvp = Matrix::MakeOrthographic(pass.GetRenderTargetSize());
+        frame_info.mvp = material_entity.GetShaderTransform(pass);
         frame_info.blurred_sampler_y_coord_scale =
             blurred_snapshot->texture->GetYCoordScale();
 
@@ -228,9 +240,8 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         blurred_sampler.width_address_mode = SamplerAddressMode::kClampToEdge;
         blurred_sampler.height_address_mode = SamplerAddressMode::kClampToEdge;
 
-        auto options = OptionsFromPass(pass);
+        auto options = OptionsFromPassAndEntity(pass, material_entity);
         options.primitive_type = PrimitiveType::kTriangleStrip;
-        options.blend_mode = BlendMode::kSrc;
         pass.SetPipeline(renderer.GetGlassPipeline(options));
         pass.SetCommandLabel("Denial Glass Material");
         pass.SetVertexBuffer(CreateVertexBuffer(vertices, data));
@@ -241,6 +252,27 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
             renderer.GetContext()->GetSamplerLibrary()->GetSampler(
                 blurred_sampler));
         return pass.Draw().ok();
+      };
+
+  if (render_material_directly_) {
+    Entity result;
+    result.SetBlendMode(entity.GetBlendMode());
+    result.SetTransform(Matrix::MakeTranslation(material_coverage.GetOrigin()));
+    result.SetContents(Contents::MakeAnonymous(
+        std::move(render_material),
+        [material_size](const Entity& material_entity) -> std::optional<Rect> {
+          return Rect::MakeSize(material_size)
+              .TransformBounds(material_entity.GetTransform());
+        }));
+    return result;
+  }
+
+  ContentContext::SubpassCallback callback =
+      [render_material = std::move(render_material)](
+          const ContentContext& renderer, RenderPass& pass) {
+        Entity material_entity;
+        material_entity.SetBlendMode(BlendMode::kSrc);
+        return render_material(renderer, material_entity, pass);
       };
 
   std::shared_ptr<CommandBuffer> command_buffer =
