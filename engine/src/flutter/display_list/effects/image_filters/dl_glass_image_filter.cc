@@ -115,19 +115,29 @@ DlIRect* DlGlassImageFilter::get_input_device_bounds(
           output_bounds) {
     // The material shader refracts opposite the outward normal. For a full
     // axis-aligned rounded box, each coordinate therefore moves toward its
-    // centre. A ray no longer than the smaller half-extent cannot leave the
-    // material rectangle, so only the Gaussian convolution needs a halo.
+    // centre. Every source coordinate is bounded by the union of the material
+    // rectangle and [centre - maximum_ray, centre + maximum_ray]. Thus a ray
+    // shorter than a half-extent requires no extra halo along that axis.
     // Use 9 * thickness (height <= thickness plus the 8 * thickness optical
     // path), maximum basis scale and two pixels of rounding slack. Cropped,
-    // rotated, deep or thresholded materials retain the general bound.
+    // rotated or thresholded materials retain the general bound.
+    const DlScalar half_width = output_bounds.GetWidth() * 0.5f;
+    const DlScalar half_height = output_bounds.GetHeight() * 0.5f;
+    const DlScalar physical_thickness =
+        std::min(thickness_ * ctm.GetMaxBasisLengthXY(),
+                 std::min(half_width, half_height));
     const DlScalar maximum_ray =
-        MaximumGlassDisplacement(thickness_, refraction_, dispersion_) *
-        (9.0f / 8.0f) * ctm.GetMaxBasisLengthXY();
-    const DlScalar half_extent =
-        std::min(output_bounds.GetWidth(), output_bounds.GetHeight()) * 0.5f;
-    if (maximum_ray + 2.0f <= half_extent) {
-      return outset_device_bounds(output_bounds, sigma_x_ * 3.0f,
-                                   sigma_y_ * 3.0f, ctm, input_bounds);
+        MaximumGlassDisplacement(physical_thickness, refraction_, dispersion_) *
+        (9.0f / 8.0f);
+    DlIRect blur_bounds;
+    if (std::isfinite(maximum_ray) &&
+        outset_device_bounds(output_bounds, sigma_x_ * 3.0f, sigma_y_ * 3.0f,
+                             ctm, blur_bounds)) {
+      input_bounds = DlIRect::RoundOut(
+          DlRect::Make(blur_bounds)
+              .Expand(std::max(maximum_ray - half_width, 0.0f) + 2.0f,
+                      std::max(maximum_ray - half_height, 0.0f) + 2.0f));
+      return &input_bounds;
     }
   }
   return map_device_bounds(output_bounds, ctm, input_bounds);
