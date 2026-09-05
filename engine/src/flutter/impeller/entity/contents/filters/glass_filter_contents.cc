@@ -291,6 +291,7 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
                                  ->GetCapabilities()
                                  ->GetMaximumRenderPassAttachmentSize();
   if (material_target_padding_enabled_ &&
+      renderer.GetRenderTargetCache()->CacheEnabled() &&
       material_pixel_size.width <= maximum_size.width &&
       material_pixel_size.height <= maximum_size.height) {
     constexpr int64_t kGranularity = 128;
