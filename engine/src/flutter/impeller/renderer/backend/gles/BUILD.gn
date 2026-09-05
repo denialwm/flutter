@@ -60,6 +60,7 @@ impeller_component("gles") {
     "context_gles.h",
     "denial_gpu_audit_gles.cc",
     "denial_gpu_audit_gles.h",
+    "denial_resource_audit_gles.h",
     "description_gles.cc",
     "description_gles.h",
     "device_buffer_gles.cc",

@@ -10,6 +10,7 @@
 #include "fml/closure.h"
 #include "fml/logging.h"
 #include "impeller/base/validation.h"
+#include "impeller/renderer/backend/gles/denial_resource_audit_gles.h"
 
 namespace impeller {
 
@@ -17,6 +18,8 @@ namespace impeller {
 std::optional<ReactorGLES::GLStorage> ReactorGLES::CreateGLHandle(
     const ProcTableGLES& gl,
     HandleType type) {
+  const DenialResourceAuditGLES audit(
+      DenialResourceAuditGLES::Stage::kCreateHandle, static_cast<int>(type));
   GLStorage handle = GLStorage{.handle = GL_NONE};
   switch (type) {
     case HandleType::kUnknown:
@@ -45,6 +48,8 @@ std::optional<ReactorGLES::GLStorage> ReactorGLES::CreateGLHandle(
 bool ReactorGLES::CollectGLHandle(const ProcTableGLES& gl,
                                   HandleType type,
                                   ReactorGLES::GLStorage handle) {
+  const DenialResourceAuditGLES audit(
+      DenialResourceAuditGLES::Stage::kCollectHandle, static_cast<int>(type));
   switch (type) {
     case HandleType::kUnknown:
       return false;
@@ -295,6 +300,8 @@ bool ReactorGLES::ReactOnce() {
 
 bool ReactorGLES::ConsolidateHandles() {
   TRACE_EVENT0("impeller", __FUNCTION__);
+  const DenialResourceAuditGLES audit(
+      DenialResourceAuditGLES::Stage::kConsolidate);
   const auto& gl = GetProcTable();
   std::thread::id current_thread = std::this_thread::get_id();
   std::vector<std::tuple<HandleGLES, std::optional<GLStorage>>>
