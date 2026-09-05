@@ -88,6 +88,14 @@ bool IsPooledGlassTargetPaddingRequested() {
   return requested;
 }
 
+bool IsDirectSubpassGlassMaterialRequested() {
+  static const bool requested = [] {
+    const char* value = std::getenv("DENIA_GLASS_DIRECT_SUBPASS_MATERIAL");
+    return value != nullptr && value[0] == '1' && value[1] == '\0';
+  }();
+  return requested;
+}
+
 struct BackdropLayerPlanAudit {
   using Clock = std::chrono::steady_clock;
 
@@ -2514,9 +2522,31 @@ void Canvas::SaveLayer(const Paint& paint,
         Matrix::MakeTranslation(Vector3(-local_position)) *
         backdrop_entity.GetTransform());
   } else {
-    backdrop_entity.SetContents(std::move(backdrop_filter_contents));
+    backdrop_entity.SetContents(backdrop_filter_contents);
     backdrop_entity.SetTransform(
         Matrix::MakeTranslation(Vector3(-local_position)));
+    if (IsDirectSubpassGlassMaterialRequested() && use_msaa &&
+        backdrop_filter &&
+        backdrop_filter->type() == flutter::DlImageFilterType::kGlass &&
+        !backdrop_alpha_threshold.has_value() && !paint.image_filter &&
+        !paint.color_filter &&
+        renderer_.GetContext()->GetBackendType() ==
+            Context::BackendType::kOpenGLES) {
+      // Child content still needs this MSAA color layer. Draw the glass
+      // material into that layer instead of first allocating a single-sample
+      // material texture and immediately drawing it here. Preserve the
+      // filter's normal transform/coverage evaluation, blur inputs, child
+      // clipping and outer layer restore. Persistent snapshots and alpha
+      // thresholds retain their texture-backed paths.
+      auto direct_backdrop =
+          std::static_pointer_cast<GlassFilterContents>(
+              backdrop_filter_contents)
+              ->GetDirectEntity(renderer_, backdrop_entity,
+                                backdrop_filter_contents->GetCoverageHint());
+      if (direct_backdrop.has_value()) {
+        backdrop_entity = std::move(direct_backdrop.value());
+      }
+    }
   }
   backdrop_entity.SetClipDepth(std::numeric_limits<uint32_t>::max());
   backdrop_entity.Render(renderer_, GetCurrentRenderPass());
