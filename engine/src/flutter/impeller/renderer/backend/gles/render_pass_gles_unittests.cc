@@ -7,6 +7,10 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "impeller/core/formats.h"
+#include "impeller/entity/contents/content_context.h"
+#include "impeller/entity/gles/entity_shaders_gles.h"
+#include "impeller/entity/gles/framebuffer_blend_shaders_gles.h"
+#include "impeller/entity/gles/modern_shaders_gles.h"
 #include "impeller/renderer/backend/gles/command_buffer_gles.h"
 #include "impeller/renderer/backend/gles/context_gles.h"
 #include "impeller/renderer/backend/gles/proc_table_gles.h"
@@ -64,6 +68,79 @@ std::shared_ptr<ContextGLES> CreateFakeGLESContext() {
                              dummy_shader_library, false);
 }
 }  // namespace
+
+TEST(RenderPassGLESTest, DirectGlassPipelineRetainsDepthClipping) {
+  // Exercise the production pipeline variant cache with mocked GL calls.
+  // No window, real graphics context, draw, or pixel readback is needed.
+  const ProcTableGLES::Resolver resolver = [](const char* name) -> void* {
+    if (strcmp(name, "glCreateShader") == 0) {
+      return reinterpret_cast<void*>(+[](GLenum) -> GLuint { return 1; });
+    }
+    if (strcmp(name, "glCreateProgram") == 0) {
+      return reinterpret_cast<void*>(+[]() -> GLuint { return 1; });
+    }
+    if (strcmp(name, "glIsProgram") == 0) {
+      return reinterpret_cast<void*>(
+          +[](GLuint) -> GLboolean { return GL_TRUE; });
+    }
+    if (strcmp(name, "glGetShaderiv") == 0) {
+      return reinterpret_cast<void*>(+[](GLuint, GLenum query, GLint* value) {
+        *value = query == GL_COMPILE_STATUS ? GL_TRUE : 0;
+      });
+    }
+    if (strcmp(name, "glGetProgramiv") == 0) {
+      return reinterpret_cast<void*>(+[](GLuint, GLenum query, GLint* value) {
+        *value = query == GL_LINK_STATUS ? GL_TRUE : 0;
+      });
+    }
+    return kMockResolverGLES(name);
+  };
+  auto mock_gl = MockGLES::Init(std::nullopt, "OpenGL ES 2.0", resolver);
+  auto context =
+      ContextGLES::Create(Flags{}, std::make_unique<ProcTableGLES>(resolver),
+                          {std::make_shared<fml::NonOwnedMapping>(
+                               impeller_entity_shaders_gles_data,
+                               impeller_entity_shaders_gles_length),
+                           std::make_shared<fml::NonOwnedMapping>(
+                               impeller_modern_shaders_gles_data,
+                               impeller_modern_shaders_gles_length),
+                           std::make_shared<fml::NonOwnedMapping>(
+                               impeller_framebuffer_blend_shaders_gles_data,
+                               impeller_framebuffer_blend_shaders_gles_length)},
+                          false);
+  ASSERT_TRUE(context);
+  auto worker = std::make_shared<MockWorker>();
+  context->AddReactorWorker(worker);
+  ContentContext renderer(context, nullptr);
+  ASSERT_TRUE(renderer.IsValid());
+
+  ContentContextOptions options;
+  options.sample_count = SampleCount::kCount1;
+  options.color_attachment_pixel_format =
+      renderer.GetDeviceCapabilities().GetDefaultColorFormat();
+  options.primitive_type = PrimitiveType::kTriangleStrip;
+  options.blend_mode = BlendMode::kSrc;
+  options.depth_compare = CompareFunction::kGreaterEqual;
+  options.stencil_mode = ContentContextOptions::StencilMode::kIgnore;
+  // Resolve an offscreen variant first, as cached material rendering does.
+  options.has_depth_stencil_attachments = false;
+  auto offscreen = renderer.GetGlassPipeline(options);
+  ASSERT_TRUE(offscreen);
+  EXPECT_FALSE(
+      offscreen->GetDescriptor().GetDepthStencilAttachmentDescriptor());
+
+  options.has_depth_stencil_attachments = true;
+  auto direct = renderer.GetGlassPipeline(options);
+  ASSERT_TRUE(direct);
+  const auto& descriptor = direct->GetDescriptor();
+  ASSERT_TRUE(descriptor.GetDepthStencilAttachmentDescriptor());
+  EXPECT_EQ(descriptor.GetDepthStencilAttachmentDescriptor()->depth_compare,
+            CompareFunction::kGreaterEqual);
+  EXPECT_TRUE(descriptor.GetFrontStencilAttachmentDescriptor());
+  EXPECT_NE(descriptor.GetDepthPixelFormat(), PixelFormat::kUnknown);
+  EXPECT_NE(descriptor.GetStencilPixelFormat(), PixelFormat::kUnknown);
+  EXPECT_EQ(renderer.GetGlassPipeline(options), direct);
+}
 
 TEST_P(RenderPassGLESWithDiscardFrameBufferExtTest, DiscardFramebufferExt) {
   auto mock_gl_impl = std::make_unique<NiceMock<MockGLESImpl>>();

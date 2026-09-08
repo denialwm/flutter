@@ -35,6 +35,7 @@ impeller_component("gles_unittests") {
   ]
   deps = [
     ":gles",
+    "//flutter/impeller/entity",
     "//flutter/impeller/playground:playground_test",
     "//flutter/testing:testing_lib",
   ]

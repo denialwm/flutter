@@ -19,7 +19,7 @@ TEST(GlassFilterContentsTest, DamageCropKeepsFullMaterialCoordinates) {
   ASSERT_TRUE(draw.has_value());
   EXPECT_EQ(draw->coverage, damage_coverage);
   EXPECT_EQ(draw->material_size, Size(200, 100));
-  EXPECT_EQ(draw->material_position, Point(0, 0));
+  EXPECT_EQ(draw->material_coordinates[0], Point(0, 0));
 }
 
 TEST(GlassFilterContentsTest, InteriorDamageCropKeepsMaterialOffset) {
@@ -32,7 +32,7 @@ TEST(GlassFilterContentsTest, InteriorDamageCropKeepsMaterialOffset) {
   ASSERT_TRUE(draw.has_value());
   EXPECT_EQ(draw->coverage, damage_coverage);
   EXPECT_EQ(draw->material_size, Size(200, 100));
-  EXPECT_EQ(draw->material_position, Point(50, 25));
+  EXPECT_EQ(draw->material_coordinates[0], Point(50, 25));
 }
 
 TEST(GlassFilterContentsTest, DamageOutsideMaterialIsRejected) {
@@ -56,7 +56,7 @@ TEST(GlassFilterContentsTest, UncachedLayerMatchesCachedMaterialCoordinates) {
   EXPECT_EQ(uncached->coverage,
             cached->coverage.TransformBounds(input_transform));
   EXPECT_EQ(uncached->material_size, cached->material_size);
-  EXPECT_EQ(uncached->material_position, cached->material_position);
+  EXPECT_EQ(uncached->material_coordinates, cached->material_coordinates);
 }
 
 TEST(GlassFilterContentsTest, TranslatedDamageCropKeepsFullMaterialGeometry) {
@@ -73,7 +73,58 @@ TEST(GlassFilterContentsTest, TranslatedDamageCropKeepsFullMaterialGeometry) {
   ASSERT_TRUE(draw);
   EXPECT_EQ(draw->coverage, Rect::MakeXYWH(0.5f, 0.25f, 30, 20));
   EXPECT_EQ(draw->material_size, Size(200, 50));
-  EXPECT_EQ(draw->material_position, Point(30, 10));
+  EXPECT_EQ(draw->material_coordinates[0], Point(30, 10));
+}
+
+TEST(GlassFilterContentsTest, ReflectedShapeKeepsCornerIdentityAndNormals) {
+  const Rect bounds = Rect::MakeXYWH(40, 30, 320, 200);
+  const Matrix transform =
+      Matrix::MakeTranslation({0, 600, 0}) * Matrix::MakeScale({2, -2, 1});
+  const auto draw = ResolveGlassMaterialDraw(bounds.TransformBounds(transform),
+                                             bounds, transform);
+  ASSERT_TRUE(draw);
+  EXPECT_EQ(draw->material_size, Size(640, 400));
+  EXPECT_EQ(draw->material_scale, Vector2(2, 2));
+  const Quad expected = {Point(0, 400), Point(640, 400), Point(0, 0),
+                         Point(640, 0)};
+  EXPECT_EQ(draw->material_coordinates, expected);
+  EXPECT_EQ(draw->normal_transform, Vector4(1, 0, 0, -1));
+}
+
+TEST(GlassFilterContentsTest, ReflectionAndRotationKeepDamageInMaterialSpace) {
+  const Rect bounds = Rect::MakeXYWH(40, 30, 320, 200);
+  for (const Vector3 scale : {Vector3(2, 2, 1), Vector3(-2, 2, 1),
+                              Vector3(2, -2, 1), Vector3(-2, -2, 1)}) {
+    for (const Scalar angle : {0.0f, 30.0f, 90.0f, 180.0f}) {
+      const Matrix transform = Matrix::MakeTranslation({800, 900, 0}) *
+                               Matrix::MakeRotationZ(Degrees(angle)) *
+                               Matrix::MakeScale(scale);
+      const Rect full = bounds.TransformBounds(transform);
+      const Rect damage =
+          Rect::MakeXYWH(full.GetCenter().x, full.GetCenter().y, 10, 15);
+      const auto draw = ResolveGlassMaterialDraw(damage, bounds, transform);
+      ASSERT_TRUE(draw);
+      const Quad target = damage.GetPoints();
+      for (size_t i = 0; i < target.size(); i++) {
+        const Point local =
+            draw->material_coordinates[i] / 2 + bounds.GetOrigin();
+        EXPECT_TRUE(PointNear(transform * local, target[i]));
+      }
+      EXPECT_TRUE(SizeNear(draw->material_size, Size(640, 400)));
+      // The inverse-transpose normal follows the same reflected/rotated shape.
+      const auto normal = draw->normal_transform;
+      EXPECT_TRUE(PointNear(Point(normal.x, normal.y),
+                            transform.TransformDirection(Vector2(1, 0)) / 2));
+      EXPECT_TRUE(PointNear(Point(normal.z, normal.w),
+                            transform.TransformDirection(Vector2(0, 1)) / 2));
+    }
+  }
+}
+
+TEST(GlassFilterContentsTest, SingularMaterialTransformIsRejected) {
+  EXPECT_FALSE(ResolveGlassMaterialDraw(Rect::MakeWH(100, 100),
+                                        Rect::MakeWH(100, 100),
+                                        Matrix::MakeScale({0, 1, 1})));
 }
 
 TEST(GlassFilterContentsTest, ZeroFrostBypassesGaussianPass) {
@@ -82,7 +133,7 @@ TEST(GlassFilterContentsTest, ZeroFrostBypassesGaussianPass) {
   EXPECT_TRUE(GlassFrostNeedsBlur(0, 1));
 }
 
-TEST(GlassFilterContentsTest, ReflectedEffectKeepsShapeInTargetCoordinates) {
+TEST(GlassFilterContentsTest, ReflectedEffectTransformsShapeCoverage) {
   GlassFilterContents contents(
       RoundRect::MakeRectXY(Rect::MakeXYWH(0, 0, 89, 22), 10, 10),
       /*thickness=*/20, /*refraction=*/0.55, /*dispersion=*/0.12,
@@ -96,7 +147,8 @@ TEST(GlassFilterContentsTest, ReflectedEffectKeepsShapeInTargetCoordinates) {
   const std::optional<Rect> coverage = contents.GetCoverage(entity);
 
   ASSERT_TRUE(coverage.has_value());
-  EXPECT_TRUE(RectNear(coverage.value(), Rect::MakeXYWH(0, 0, 97.9f, 24.2f)));
+  EXPECT_TRUE(
+      RectNear(coverage.value(), Rect::MakeXYWH(0, -24.2f, 97.9f, 24.2f)));
 }
 
 TEST(GlassFilterContentsTest, BackdropCoverageUsesSaveLayerCoordinates) {

@@ -2141,25 +2141,15 @@ void Canvas::SaveLayer(const Paint& paint,
   };
   if (backdrop_filter) {
     local_position = subpass_coverage.GetOrigin() - GetGlobalPassPosition();
-    std::optional<Rect> glass_material_bounds;
-    if (const flutter::DlGlassImageFilter* glass = backdrop_filter->asGlass()) {
-      // Partial frame damage becomes the saveLayer coverage limit. Preserve
-      // the transformed full shape separately so a cropped glass draw keeps
-      // the same SDF coordinates as a full repaint.
-      const flutter::DlRect& bounds = glass->shape().GetBounds();
-      glass_material_bounds =
-          Rect::MakeLTRB(bounds.GetLeft(), bounds.GetTop(), bounds.GetRight(),
-                         bounds.GetBottom())
-              .TransformBounds(transform_stack_.back().transform);
-    }
+    const Matrix material_transform = GetCurrentTransform();
     Canvas::BackdropFilterProc backdrop_filter_proc =
-        [backdrop_filter = backdrop_filter, glass_material_bounds](
+        [backdrop_filter, material_transform](
             const FilterInput::Ref& input, const Matrix& effect_transform,
             Entity::RenderingMode rendering_mode) {
           auto filter = WrapInput(backdrop_filter, input);
-          if (glass_material_bounds.has_value()) {
+          if (backdrop_filter->asGlass()) {
             std::static_pointer_cast<GlassFilterContents>(filter)
-                ->SetMaterialBounds(glass_material_bounds.value());
+                ->SetMaterialTransform(material_transform);
           }
           filter->SetEffectTransform(effect_transform);
           filter->SetRenderingMode(rendering_mode);

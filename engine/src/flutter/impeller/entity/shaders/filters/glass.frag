@@ -10,11 +10,13 @@ precision highp float;
 #include <impeller/types.glsl>
 
 uniform f16sampler2D blurred_texture_sampler;
+uniform f16sampler2D scene_texture_sampler;
 
 uniform FragInfo {
   vec2 material_size;
   vec4 corner_radii;
   vec4 blurred_uv_basis;
+  vec4 normal_transform;
   vec4 tint;
   float thickness;
   float refractive_index;
@@ -26,6 +28,7 @@ uniform FragInfo {
   float light_intensity;
   float edge_strength;
   float blurred_opacity;
+  float scene_opacity;
   float bevel_width_scale;
   float refraction_depth_scale;
   float rim_width;
@@ -35,6 +38,7 @@ uniform FragInfo {
 frag_info;
 
 in highp vec2 v_blurred_texture_coords;
+in highp vec2 v_scene_texture_coords;
 in highp vec2 v_material_position;
 
 out f16vec4 frag_color;
@@ -179,6 +183,18 @@ vec3 applyGlassTint(vec3 color) {
   return mix(color, screened, strength);
 }
 
+vec4 applyMaterialCoverage(vec4 material, float coverage) {
+  if (coverage >= 1.0) {
+    return material;
+  }
+  vec4 scene = vec4(texture(scene_texture_sampler, v_scene_texture_coords)) *
+               frag_info.scene_opacity;
+  // A backdrop filter replaces scene pixels. Shape coverage must interpolate
+  // that replacement with the original premultiplied scene, including alpha.
+  // Ordinary image filtering supplies zero scene opacity and remains masked.
+  return mix(scene, material, coverage);
+}
+
 void main() {
   float signed_distance;
   vec2 outward_normal;
@@ -186,10 +202,15 @@ void main() {
   roundedBoxField(v_material_position, signed_distance, outward_normal,
                   normal_confidence);
 
+  if (dot(outward_normal, outward_normal) > 0.0) {
+    outward_normal = normalize(frag_info.normal_transform.xy * outward_normal.x +
+                               frag_info.normal_transform.zw * outward_normal.y);
+  }
+
   float thickness = max(frag_info.thickness, 0.0001);
   float foreground_alpha = 1.0 - smoothstep(-2.0, 0.0, signed_distance);
   if (foreground_alpha < 0.01) {
-    frag_color = f16vec4(0.0hf);
+    frag_color = f16vec4(applyMaterialCoverage(vec4(0.0), 0.0));
     return;
   }
 
@@ -230,7 +251,7 @@ void main() {
                          straightRgb(refracted_blue).b);
   }
 
-  float material_alpha = refracted_green.a * foreground_alpha;
+  float material_alpha = refracted_green.a;
   vec3 material_rgb = applyGlassTint(refracted_rgb);
   vec2 light_direction =
       vec2(cos(frag_info.light_angle), sin(frag_info.light_angle));
@@ -243,5 +264,6 @@ void main() {
                       : frag_info.brightness * material_rgb;
   material_rgb = clamp(material_rgb, 0.0, 1.0);
 
-  frag_color = f16vec4(material_rgb * material_alpha, material_alpha);
+  frag_color = f16vec4(applyMaterialCoverage(
+      vec4(material_rgb * material_alpha, material_alpha), foreground_alpha));
 }

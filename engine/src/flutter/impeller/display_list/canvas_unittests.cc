@@ -153,8 +153,7 @@ TEST_P(AiksTest, GlassBackdropSnapshotCoversFractionalExtentAfterRootFlip) {
   for (const Rect& damage_coverage : bounds) {
     const Rect target_coverage = damage_coverage.TransformBounds(root_flip);
     GlassFilterContents glass(
-        RoundRect::MakeRectXY(Rect::MakeSize(damage_coverage.GetSize()), 10,
-                              10),
+        RoundRect::MakeRectXY(damage_coverage, 10, 10),
         /*thickness=*/20, /*refraction=*/0.55, /*dispersion=*/0.12,
         /*saturation=*/1.2, Color::White(), /*tint_strength=*/0.08,
         /*brightness=*/0.06, /*light_angle=*/0, /*light_intensity=*/0.7,
@@ -163,6 +162,7 @@ TEST_P(AiksTest, GlassBackdropSnapshotCoversFractionalExtentAfterRootFlip) {
     glass.SetInputs({input, input});
     glass.SetEffectTransform(Matrix::MakeScale({1.1f, -1.1f, 1}));
     glass.SetIsBackdropFilter(true);
+    glass.SetMaterialTransform(root_flip);
     const auto snapshot = glass.RenderToSnapshot(
         context, Entity{}, {.coverage_limit = target_coverage});
     ASSERT_TRUE(snapshot);
@@ -209,7 +209,8 @@ TEST_P(AiksTest, GlassUncachedLayerMatchesSnapshotCoverage) {
   auto input = FilterInput::Make(texture);
   glass.SetInputs({input, input});
   glass.SetIsBackdropFilter(true);
-  glass.SetMaterialBounds(material_bounds);
+  glass.SetMaterialTransform(
+      Matrix::MakeTranslation(material_bounds.GetOrigin()));
   const auto cached = glass.RenderToSnapshot(
       context, Entity{}, {.coverage_limit = material_bounds});
   ASSERT_TRUE(cached);
