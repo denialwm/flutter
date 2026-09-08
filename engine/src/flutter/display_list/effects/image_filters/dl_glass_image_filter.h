@@ -27,7 +27,12 @@ class DlGlassImageFilter final : public DlImageFilter {
                      DlScalar light_intensity,
                      DlScalar edge_strength,
                      DlScalar backdrop_alpha_threshold,
-                     bool backdrop_alpha_threshold_is_single_surface)
+                     bool backdrop_alpha_threshold_is_single_surface,
+                     DlScalar bevel_width_scale = 1.0f,
+                     DlScalar refraction_depth_scale = 1.0f,
+                     DlScalar rim_width = 1.5f,
+                     DlScalar rim_falloff = 0.89f,
+                     DlScalar opposite_light_strength = 0.8f)
       : sigma_x_(sigma_x),
         sigma_y_(sigma_y),
         shape_(shape),
@@ -44,7 +49,12 @@ class DlGlassImageFilter final : public DlImageFilter {
         edge_strength_(edge_strength),
         backdrop_alpha_threshold_(backdrop_alpha_threshold),
         backdrop_alpha_threshold_is_single_surface_(
-            backdrop_alpha_threshold_is_single_surface) {}
+            backdrop_alpha_threshold_is_single_surface),
+        bevel_width_scale_(bevel_width_scale),
+        refraction_depth_scale_(refraction_depth_scale),
+        rim_width_(rim_width),
+        rim_falloff_(rim_falloff),
+        opposite_light_strength_(opposite_light_strength) {}
 
   static std::shared_ptr<DlImageFilter> Make(
       DlScalar sigma_x,
@@ -62,7 +72,12 @@ class DlGlassImageFilter final : public DlImageFilter {
       DlScalar light_intensity,
       DlScalar edge_strength,
       DlScalar backdrop_alpha_threshold = -1.0f,
-      bool backdrop_alpha_threshold_is_single_surface = false);
+      bool backdrop_alpha_threshold_is_single_surface = false,
+      DlScalar bevel_width_scale = 1.0f,
+      DlScalar refraction_depth_scale = 1.0f,
+      DlScalar rim_width = 1.5f,
+      DlScalar rim_falloff = 0.89f,
+      DlScalar opposite_light_strength = 0.8f);
 
   std::shared_ptr<DlImageFilter> shared() const override {
     return std::make_shared<DlGlassImageFilter>(*this);
@@ -85,6 +100,12 @@ class DlGlassImageFilter final : public DlImageFilter {
   DlIRect* get_input_device_bounds(const DlIRect& output_bounds,
                                    const DlMatrix& ctm,
                                    DlIRect& input_bounds) const override;
+
+  DlScalar bevel_width_scale() const { return bevel_width_scale_; }
+  DlScalar refraction_depth_scale() const { return refraction_depth_scale_; }
+  DlScalar rim_width() const { return rim_width_; }
+  DlScalar rim_falloff() const { return rim_falloff_; }
+  DlScalar opposite_light_strength() const { return opposite_light_strength_; }
 
   DlScalar sigma_x() const { return sigma_x_; }
   DlScalar sigma_y() const { return sigma_y_; }
@@ -127,6 +148,11 @@ class DlGlassImageFilter final : public DlImageFilter {
   DlScalar edge_strength_;
   DlScalar backdrop_alpha_threshold_;
   bool backdrop_alpha_threshold_is_single_surface_;
+  DlScalar bevel_width_scale_;
+  DlScalar refraction_depth_scale_;
+  DlScalar rim_width_;
+  DlScalar rim_falloff_;
+  DlScalar opposite_light_strength_;
 };
 
 }  // namespace flutter

@@ -26,6 +26,11 @@ uniform FragInfo {
   float light_intensity;
   float edge_strength;
   float blurred_opacity;
+  float bevel_width_scale;
+  float refraction_depth_scale;
+  float rim_width;
+  float rim_falloff;
+  float opposite_light_strength;
 }
 frag_info;
 
@@ -56,7 +61,8 @@ void roundedBoxField(vec2 position,
 
   // Below the bevel the surface is exactly flat. Its normal does not depend
   // on the rounded-box gradient, including the inner medial-axis smoothing.
-  if (signed_distance <= -max(frag_info.thickness, 0.0001)) {
+  if (signed_distance <=
+      -max(frag_info.thickness * frag_info.bevel_width_scale, 0.0001)) {
     outward_normal = vec2(0.0);
     normal_confidence = 0.0;
     return;
@@ -80,14 +86,11 @@ void roundedBoxField(vec2 position,
     outward_normal = vec2(0.0, sign_position.y);
   } else {
     vec2 inward = max(-q, 0.0);
-    vec2 smooth_weights =
-        vec2(inward.y * inward.y, inward.x * inward.x);
+    vec2 smooth_weights = vec2(inward.y * inward.y, inward.x * inward.x);
     float weight_length = length(smooth_weights);
-    outward_normal =
-        (weight_length > 0.0001
-             ? smooth_weights / weight_length
-             : normalize(vec2(1.0))) *
-        sign_position;
+    outward_normal = (weight_length > 0.0001 ? smooth_weights / weight_length
+                                             : normalize(vec2(1.0))) *
+                     sign_position;
   }
   // Every outward direction converges at the circular corner's centre.  Let
   // the surface become flat over one physical pixel there so the direction's
@@ -122,21 +125,19 @@ float glassHeight(float signed_distance, float thickness) {
 vec3 adaptiveHighlightColor(vec3 background_color) {
   const vec3 luma_weights = vec3(0.299, 0.587, 0.114);
   float luminance = dot(background_color, luma_weights);
-  float maximum = max(max(background_color.r, background_color.g),
-                      background_color.b);
-  float minimum = min(min(background_color.r, background_color.g),
-                      background_color.b);
-  float color_saturation =
-      maximum > 0.0 ? (maximum - minimum) / maximum : 0.0;
+  float maximum =
+      max(max(background_color.r, background_color.g), background_color.b);
+  float minimum =
+      min(min(background_color.r, background_color.g), background_color.b);
+  float color_saturation = maximum > 0.0 ? (maximum - minimum) / maximum : 0.0;
   vec3 colored_highlight = vec3(1.0);
   if (luminance > 0.001) {
     colored_highlight = background_color / luminance;
     float gray = dot(colored_highlight, luma_weights);
-    colored_highlight =
-        min(mix(vec3(gray), colored_highlight, 1.3), vec3(1.0));
+    colored_highlight = min(mix(vec3(gray), colored_highlight, 1.3), vec3(1.0));
   }
-  float color_influence = smoothstep(0.0, 0.6, luminance) *
-                          smoothstep(0.0, 0.4, color_saturation);
+  float color_influence =
+      smoothstep(0.0, 0.6, luminance) * smoothstep(0.0, 0.4, color_saturation);
   return mix(vec3(1.0), colored_highlight, color_influence);
 }
 
@@ -149,17 +150,17 @@ vec3 glassLighting(vec3 surface_normal,
   float normalized_height = height / thickness;
   float surface_shape = clamp((1.0 - normalized_height) * 1.111, 0.0, 1.0);
   float thickness_factor = clamp((thickness - 5.0) * 0.5, 0.0, 1.0);
-  float rim_position = signed_distance / 1.5;
-  float rim = 1.0 / (1.0 + 0.89 * rim_position * rim_position);
+  float rim_position = signed_distance / frag_info.rim_width;
+  float rim = 1.0 / (1.0 + frag_info.rim_falloff * rim_position * rim_position);
   if (surface_shape < 0.01 || thickness_factor < 0.01 || rim < 0.01 ||
       frag_info.light_intensity < 0.01 || frag_info.edge_strength < 0.01) {
     return vec3(0.0);
   }
 
   float main_light = max(0.0, dot(surface_normal.xy, light_direction));
-  float opposite_light =
-      max(0.0, dot(surface_normal.xy, -light_direction));
-  float influence = main_light + opposite_light * 0.8;
+  float opposite_light = max(0.0, dot(surface_normal.xy, -light_direction));
+  float influence =
+      main_light + opposite_light * frag_info.opposite_light_strength;
   vec3 highlight_color = adaptiveHighlightColor(background_color);
   vec3 directional = highlight_color * 0.7 * influence * influence *
                      frag_info.light_intensity * 2.0;
@@ -169,8 +170,7 @@ vec3 glassLighting(vec3 surface_normal,
 
 vec3 applyGlassTint(vec3 color) {
   float strength = clamp(frag_info.tint_strength * frag_info.tint.a, 0.0, 1.0);
-  float tint_luminance =
-      dot(frag_info.tint.rgb, vec3(0.299, 0.587, 0.114));
+  float tint_luminance = dot(frag_info.tint.rgb, vec3(0.299, 0.587, 0.114));
   if (tint_luminance < 0.5) {
     return mix(color, color * frag_info.tint.rgb * 2.0, strength);
   }
@@ -200,28 +200,29 @@ void main() {
   vec3 surface_normal = vec3(0.0, 0.0, 1.0);
   float height = thickness;
   vec2 displacement = vec2(0.0);
-  if (signed_distance > -thickness) {
+  float bevel_width = thickness * frag_info.bevel_width_scale;
+  if (signed_distance > -bevel_width) {
     float normal_xy_length =
-        clamp((thickness + signed_distance) / thickness, 0.0, 1.0) *
+        clamp((bevel_width + signed_distance) / bevel_width, 0.0, 1.0) *
         normal_confidence;
-    float normal_z =
-        sqrt(max(0.0, 1.0 - normal_xy_length * normal_xy_length));
-    surface_normal =
-        normalize(vec3(outward_normal * normal_xy_length, normal_z));
-    height = glassHeight(signed_distance, thickness);
+    float normal_z = sqrt(max(0.0, 1.0 - normal_xy_length * normal_xy_length));
+    surface_normal = normalize(
+        vec3(outward_normal * normal_xy_length / frag_info.bevel_width_scale,
+             normal_z));
+    height =
+        glassHeight(signed_distance / frag_info.bevel_width_scale, thickness);
     vec3 incident = vec3(0.0, 0.0, -1.0);
-    vec3 refracted_ray =
-        refract(incident, surface_normal,
-                1.0 / max(frag_info.refractive_index, 1.0));
-    float ray_length = (height + thickness * 8.0) /
-                       max(0.001, abs(refracted_ray.z));
-    displacement = refracted_ray.xy * ray_length;
+    vec3 refracted_ray = refract(incident, surface_normal,
+                                 1.0 / max(frag_info.refractive_index, 1.0));
+    float ray_length =
+        (height + thickness * 8.0) / max(0.001, abs(refracted_ray.z));
+    displacement =
+        refracted_ray.xy * ray_length * frag_info.refraction_depth_scale;
   }
 
   vec4 refracted_green = sampleFrost(displacement, 1.0);
   vec3 refracted_rgb = straightRgb(refracted_green);
-  if (frag_info.dispersion > 0.0001 &&
-      any(notEqual(displacement, vec2(0.0)))) {
+  if (frag_info.dispersion > 0.0001 && any(notEqual(displacement, vec2(0.0)))) {
     float chroma = frag_info.dispersion * 0.5;
     vec4 refracted_red = sampleFrost(displacement, 1.0 + chroma);
     vec4 refracted_blue = sampleFrost(displacement, 1.0 - chroma);

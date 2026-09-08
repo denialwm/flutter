@@ -150,6 +150,11 @@ abstract class ImageFilterConfig {
     double lightAngle,
     double lightIntensity,
     double edgeStrength,
+    double bevelWidthScale,
+    double refractionDepthScale,
+    double rimWidth,
+    double rimFalloff,
+    double oppositeLightStrength,
     double? backdropAlphaThreshold,
     bool backdropAlphaThresholdIsSingleSurface,
   }) = _GlassImageFilterConfig;
@@ -331,6 +336,11 @@ class _GlassImageFilterConfig extends ImageFilterConfig {
     this.lightAngle = 3.9269908169872414,
     this.lightIntensity = 0.7,
     this.edgeStrength = 0.65,
+    this.bevelWidthScale = 1.0,
+    this.refractionDepthScale = 1.0,
+    this.rimWidth = 1.5,
+    this.rimFalloff = 0.89,
+    this.oppositeLightStrength = 0.8,
     this.backdropAlphaThreshold,
     this.backdropAlphaThresholdIsSingleSurface = false,
   }) : assert(sigmaX >= 0 && sigmaY >= 0),
@@ -366,6 +376,11 @@ class _GlassImageFilterConfig extends ImageFilterConfig {
   final double lightAngle;
   final double lightIntensity;
   final double edgeStrength;
+  final double bevelWidthScale;
+  final double refractionDepthScale;
+  final double rimWidth;
+  final double rimFalloff;
+  final double oppositeLightStrength;
   final double? backdropAlphaThreshold;
   final bool backdropAlphaThresholdIsSingleSurface;
 
@@ -392,6 +407,11 @@ class _GlassImageFilterConfig extends ImageFilterConfig {
       lightAngle: lightAngle,
       lightIntensity: lightIntensity,
       edgeStrength: edgeStrength,
+      bevelWidthScale: bevelWidthScale,
+      refractionDepthScale: refractionDepthScale,
+      rimWidth: rimWidth,
+      rimFalloff: rimFalloff,
+      oppositeLightStrength: oppositeLightStrength,
       backdropAlphaThreshold: backdropAlphaThreshold,
       backdropAlphaThresholdIsSingleSurface: backdropAlphaThresholdIsSingleSurface,
     );
@@ -417,6 +437,11 @@ class _GlassImageFilterConfig extends ImageFilterConfig {
         other.lightAngle == lightAngle &&
         other.lightIntensity == lightIntensity &&
         other.edgeStrength == edgeStrength &&
+        other.bevelWidthScale == bevelWidthScale &&
+        other.refractionDepthScale == refractionDepthScale &&
+        other.rimWidth == rimWidth &&
+        other.rimFalloff == rimFalloff &&
+        other.oppositeLightStrength == oppositeLightStrength &&
         other.backdropAlphaThreshold == backdropAlphaThreshold &&
         other.backdropAlphaThresholdIsSingleSurface == backdropAlphaThresholdIsSingleSurface;
   }
@@ -440,6 +465,11 @@ class _GlassImageFilterConfig extends ImageFilterConfig {
     lightAngle,
     lightIntensity,
     edgeStrength,
+    bevelWidthScale,
+    refractionDepthScale,
+    rimWidth,
+    rimFalloff,
+    oppositeLightStrength,
     backdropAlphaThreshold,
     backdropAlphaThresholdIsSingleSurface,
   ]);

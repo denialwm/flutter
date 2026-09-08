@@ -38,7 +38,12 @@ class GlassFilterContents final : public FilterContents {
                       Scalar brightness,
                       Scalar light_angle,
                       Scalar light_intensity,
-                      Scalar edge_strength);
+                      Scalar edge_strength,
+                      Scalar bevel_width_scale = 1.0f,
+                      Scalar refraction_depth_scale = 1.0f,
+                      Scalar rim_width = 1.5f,
+                      Scalar rim_falloff = 0.89f,
+                      Scalar opposite_light_strength = 0.8f);
 
   ~GlassFilterContents() override;
 
@@ -87,6 +92,11 @@ class GlassFilterContents final : public FilterContents {
   const Scalar light_angle_;
   const Scalar light_intensity_;
   const Scalar edge_strength_;
+  const Scalar bevel_width_scale_;
+  const Scalar refraction_depth_scale_;
+  const Scalar rim_width_;
+  const Scalar rim_falloff_;
+  const Scalar opposite_light_strength_;
   std::optional<Rect> material_bounds_;
   bool render_material_directly_ = false;
   bool material_target_padding_enabled_ = false;
