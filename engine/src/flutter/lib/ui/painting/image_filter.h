@@ -57,7 +57,12 @@ class ImageFilter : public RefCountedDartWrappable<ImageFilter> {
                  double light_intensity,
                  double edge_strength,
                  double backdrop_alpha_threshold,
-                 bool backdrop_alpha_threshold_is_single_surface);
+                 bool backdrop_alpha_threshold_is_single_surface,
+                 double bevel_width_scale,
+                 double refraction_depth_scale,
+                 double rim_width,
+                 double rim_falloff,
+                 double opposite_light_strength);
   void initDilate(double radius_x, double radius_y);
   void initErode(double radius_x, double radius_y);
   void initMatrix(const tonic::Float64List& matrix4, int filter_quality_index);

@@ -65,7 +65,9 @@ std::shared_ptr<FilterContents> WrapInput(const flutter::DlImageFilter* filter,
                 tint.getAlphaF()),
           glass_filter->tint_strength(), glass_filter->brightness(),
           glass_filter->light_angle(), glass_filter->light_intensity(),
-          glass_filter->edge_strength());
+          glass_filter->edge_strength(), glass_filter->bevel_width_scale(),
+          glass_filter->refraction_depth_scale(), glass_filter->rim_width(),
+          glass_filter->rim_falloff(), glass_filter->opposite_light_strength());
       glass->SetInputs({input, std::move(frost_input)});
       return glass;
     }

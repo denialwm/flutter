@@ -70,13 +70,18 @@ Scalar GlassRefractiveIndex(Scalar refraction) {
 
 Scalar MaximumGlassDisplacement(Scalar thickness,
                                 Scalar refraction,
-                                Scalar dispersion) {
+                                Scalar dispersion,
+                                Scalar bevel_width_scale,
+                                Scalar refraction_depth_scale) {
   const Scalar refractive_index = GlassRefractiveIndex(refraction);
   // At the outside edge the surface normal lies in the XY plane and the
   // reference model's optical path is 8 * thickness. This is the maximum ray
-  // displacement over the complete rounded surface.
+  // displacement over the original circular surface. A scaled bevel changes
+  // the surface slope, so bound its full path (height + 8 * thickness) by
+  // 9 * thickness. Keep the original padding at the default width.
   const Scalar refraction_distance =
-      std::max(thickness, 0.0f) * 8.0f *
+      std::max(thickness, 0.0f) * (bevel_width_scale == 1.0f ? 8.0f : 9.0f) *
+      refraction_depth_scale *
       std::sqrt(std::max(refractive_index * refractive_index - 1.0f, 0.0f));
   return refraction_distance *
          (1.0f + std::clamp(dispersion, 0.0f, 1.0f) * 0.5f);
@@ -128,7 +133,12 @@ GlassFilterContents::GlassFilterContents(RoundRect shape,
                                          Scalar brightness,
                                          Scalar light_angle,
                                          Scalar light_intensity,
-                                         Scalar edge_strength)
+                                         Scalar edge_strength,
+                                         Scalar bevel_width_scale,
+                                         Scalar refraction_depth_scale,
+                                         Scalar rim_width,
+                                         Scalar rim_falloff,
+                                         Scalar opposite_light_strength)
     : shape_(std::move(shape)),
       thickness_(thickness),
       refraction_(refraction),
@@ -139,7 +149,12 @@ GlassFilterContents::GlassFilterContents(RoundRect shape,
       brightness_(brightness),
       light_angle_(light_angle),
       light_intensity_(light_intensity),
-      edge_strength_(edge_strength) {}
+      edge_strength_(edge_strength),
+      bevel_width_scale_(bevel_width_scale),
+      refraction_depth_scale_(refraction_depth_scale),
+      rim_width_(rim_width),
+      rim_falloff_(rim_falloff),
+      opposite_light_strength_(opposite_light_strength) {}
 
 GlassFilterContents::~GlassFilterContents() = default;
 
@@ -245,9 +260,12 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
        dispersion = dispersion_, saturation = saturation_, tint = tint_,
        tint_strength = tint_strength_, brightness = brightness_,
        light_angle = light_angle_, light_intensity = light_intensity_,
-       edge_strength = edge_strength_](const ContentContext& renderer,
-                                       const Entity& material_entity,
-                                       RenderPass& pass) {
+       edge_strength = edge_strength_, bevel_width_scale = bevel_width_scale_,
+       refraction_depth_scale = refraction_depth_scale_, rim_width = rim_width_,
+       rim_falloff = rim_falloff_,
+       opposite_light_strength = opposite_light_strength_](
+          const ContentContext& renderer, const Entity& material_entity,
+          RenderPass& pass) {
         auto& data = renderer.GetTransientsDataBuffer();
         const std::array<VS::PerVertexData, 4> vertices = {
             VS::PerVertexData{Point(0, 0), blurred_coordinates[0],
@@ -284,6 +302,11 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         frag_info.light_angle = light_angle;
         frag_info.light_intensity = light_intensity;
         frag_info.edge_strength = edge_strength;
+        frag_info.bevel_width_scale = bevel_width_scale;
+        frag_info.refraction_depth_scale = refraction_depth_scale;
+        frag_info.rim_width = rim_width;
+        frag_info.rim_falloff = rim_falloff;
+        frag_info.opposite_light_strength = opposite_light_strength;
         frag_info.blurred_opacity = blurred_snapshot->opacity;
 
         SamplerDescriptor blurred_sampler =
@@ -417,7 +440,8 @@ std::optional<Rect> GlassFilterContents::GetFilterSourceCoverage(
     const Matrix& effect_transform,
     const Rect& output_limit) const {
   const Scalar padding =
-      MaximumGlassDisplacement(thickness_, refraction_, dispersion_);
+      MaximumGlassDisplacement(thickness_, refraction_, dispersion_,
+                               bevel_width_scale_, refraction_depth_scale_);
   const Vector2 transformed =
       effect_transform.TransformDirection(Vector2(padding, padding)).Abs();
   return output_limit.Expand(transformed);

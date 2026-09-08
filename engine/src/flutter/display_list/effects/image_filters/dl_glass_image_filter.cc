@@ -22,10 +22,13 @@ bool UseInwardGlassBounds() {
 
 DlScalar MaximumGlassDisplacement(DlScalar thickness,
                                   DlScalar refraction,
-                                  DlScalar dispersion) {
+                                  DlScalar dispersion,
+                                  DlScalar bevel_width_scale,
+                                  DlScalar refraction_depth_scale) {
   const DlScalar refractive_index = 1.0f + refraction * 0.2f;
   const DlScalar refraction_distance =
-      thickness * 8.0f *
+      thickness * (bevel_width_scale == 1.0f ? 8.0f : 9.0f) *
+      refraction_depth_scale *
       std::sqrt(std::max(refractive_index * refractive_index - 1.0f, 0.0f));
   return refraction_distance * (1.0f + dispersion * 0.5f);
 }
@@ -34,10 +37,13 @@ DlScalar GlassBoundsPadding(DlScalar sigma_x,
                             DlScalar sigma_y,
                             DlScalar thickness,
                             DlScalar refraction,
-                            DlScalar dispersion) {
+                            DlScalar dispersion,
+                            DlScalar bevel_width_scale,
+                            DlScalar refraction_depth_scale) {
   return std::max(
       {sigma_x * 3.0f, sigma_y * 3.0f,
-       MaximumGlassDisplacement(thickness, refraction, dispersion)});
+       MaximumGlassDisplacement(thickness, refraction, dispersion,
+                                bevel_width_scale, refraction_depth_scale)});
 }
 
 }  // namespace
@@ -58,14 +64,21 @@ std::shared_ptr<DlImageFilter> DlGlassImageFilter::Make(
     DlScalar light_intensity,
     DlScalar edge_strength,
     DlScalar backdrop_alpha_threshold,
-    bool backdrop_alpha_threshold_is_single_surface) {
+    bool backdrop_alpha_threshold_is_single_surface,
+    DlScalar bevel_width_scale,
+    DlScalar refraction_depth_scale,
+    DlScalar rim_width,
+    DlScalar rim_falloff,
+    DlScalar opposite_light_strength) {
   if (!shape.IsFinite() || shape.IsEmpty() || !std::isfinite(sigma_x) ||
       !std::isfinite(sigma_y) || !std::isfinite(downsample_scale) ||
       !std::isfinite(thickness) || !std::isfinite(refraction) ||
       !std::isfinite(dispersion) || !std::isfinite(saturation) ||
       !std::isfinite(tint_strength) || !std::isfinite(brightness) ||
       !std::isfinite(light_angle) || !std::isfinite(light_intensity) ||
-      !std::isfinite(edge_strength) ||
+      !std::isfinite(edge_strength) || !std::isfinite(bevel_width_scale) ||
+      !std::isfinite(refraction_depth_scale) || !std::isfinite(rim_width) ||
+      !std::isfinite(rim_falloff) || !std::isfinite(opposite_light_strength) ||
       !std::isfinite(backdrop_alpha_threshold)) {
     return nullptr;
   }
@@ -81,17 +94,24 @@ std::shared_ptr<DlImageFilter> DlGlassImageFilter::Make(
   light_intensity = std::clamp(light_intensity, 0.0f, 4.0f);
   edge_strength = std::clamp(edge_strength, 0.0f, 4.0f);
   backdrop_alpha_threshold = std::clamp(backdrop_alpha_threshold, -1.0f, 1.0f);
+  bevel_width_scale = std::clamp(bevel_width_scale, 0.25f, 3.0f);
+  refraction_depth_scale = std::clamp(refraction_depth_scale, 0.25f, 3.0f);
+  rim_width = std::clamp(rim_width, 0.5f, 6.0f);
+  rim_falloff = std::clamp(rim_falloff, 0.1f, 3.0f);
+  opposite_light_strength = std::clamp(opposite_light_strength, 0.0f, 1.5f);
   return std::make_shared<DlGlassImageFilter>(
       sigma_x, sigma_y, shape, downsample_scale, thickness, refraction,
       dispersion, saturation, tint, tint_strength, brightness, light_angle,
       light_intensity, edge_strength, backdrop_alpha_threshold,
-      backdrop_alpha_threshold_is_single_surface);
+      backdrop_alpha_threshold_is_single_surface, bevel_width_scale,
+      refraction_depth_scale, rim_width, rim_falloff, opposite_light_strength);
 }
 
 DlRect* DlGlassImageFilter::map_local_bounds(const DlRect& input_bounds,
                                              DlRect& output_bounds) const {
-  const DlScalar padding = GlassBoundsPadding(sigma_x_, sigma_y_, thickness_,
-                                              refraction_, dispersion_);
+  const DlScalar padding = GlassBoundsPadding(
+      sigma_x_, sigma_y_, thickness_, refraction_, dispersion_,
+      bevel_width_scale_, refraction_depth_scale_);
   output_bounds = input_bounds.Expand(padding);
   return &output_bounds;
 }
@@ -99,8 +119,9 @@ DlRect* DlGlassImageFilter::map_local_bounds(const DlRect& input_bounds,
 DlIRect* DlGlassImageFilter::map_device_bounds(const DlIRect& input_bounds,
                                                const DlMatrix& ctm,
                                                DlIRect& output_bounds) const {
-  const DlScalar padding = GlassBoundsPadding(sigma_x_, sigma_y_, thickness_,
-                                              refraction_, dispersion_);
+  const DlScalar padding = GlassBoundsPadding(
+      sigma_x_, sigma_y_, thickness_, refraction_, dispersion_,
+      bevel_width_scale_, refraction_depth_scale_);
   return outset_device_bounds(input_bounds, padding, padding, ctm,
                               output_bounds);
 }
@@ -127,7 +148,8 @@ DlIRect* DlGlassImageFilter::get_input_device_bounds(
         std::min(thickness_ * ctm.GetMaxBasisLengthXY(),
                  std::min(half_width, half_height));
     const DlScalar maximum_ray =
-        MaximumGlassDisplacement(physical_thickness, refraction_, dispersion_) *
+        MaximumGlassDisplacement(physical_thickness, refraction_, dispersion_,
+                                 bevel_width_scale_, refraction_depth_scale_) *
         (9.0f / 8.0f);
     DlIRect blur_bounds;
     if (std::isfinite(maximum_ray) &&
@@ -160,6 +182,13 @@ bool DlGlassImageFilter::equals_(const DlImageFilter& other) const {
          DlScalarNearlyEqual(light_angle_, that->light_angle_) &&
          DlScalarNearlyEqual(light_intensity_, that->light_intensity_) &&
          DlScalarNearlyEqual(edge_strength_, that->edge_strength_) &&
+         DlScalarNearlyEqual(bevel_width_scale_, that->bevel_width_scale_) &&
+         DlScalarNearlyEqual(refraction_depth_scale_,
+                             that->refraction_depth_scale_) &&
+         DlScalarNearlyEqual(rim_width_, that->rim_width_) &&
+         DlScalarNearlyEqual(rim_falloff_, that->rim_falloff_) &&
+         DlScalarNearlyEqual(opposite_light_strength_,
+                             that->opposite_light_strength_) &&
          DlScalarNearlyEqual(backdrop_alpha_threshold_,
                              that->backdrop_alpha_threshold_) &&
          backdrop_alpha_threshold_is_single_surface_ ==

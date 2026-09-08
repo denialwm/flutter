@@ -4411,6 +4411,11 @@ abstract class ImageFilter {
 
   /// Creates Denial's native rounded glass material.
   ///
+  /// [bevelWidthScale] adjusts the bevel band and [refractionDepthScale]
+  /// adjusts ray travel. Both default to 1. [rimWidth], [rimFalloff], and
+  /// [oppositeLightStrength] control rim lighting; their defaults (1.5, 0.89,
+  /// and 0.8) preserve the original glass appearance.
+  ///
   /// The filter refracts a frosted Gaussian backdrop through a rounded optical
   /// surface. [shape] supplies the boundary used for refraction and directional
   /// edge lighting. [refraction] is a normalized strength from 0.0 to 1.0 and
@@ -4431,6 +4436,11 @@ abstract class ImageFilter {
     double lightAngle = 3.9269908169872414,
     double lightIntensity = 0.7,
     double edgeStrength = 0.65,
+    double bevelWidthScale = 1.0,
+    double refractionDepthScale = 1.0,
+    double rimWidth = 1.5,
+    double rimFalloff = 0.89,
+    double oppositeLightStrength = 0.8,
     double? backdropAlphaThreshold,
     bool backdropAlphaThresholdIsSingleSurface = false,
   }) {
@@ -4449,6 +4459,11 @@ abstract class ImageFilter {
       lightAngle: lightAngle,
       lightIntensity: lightIntensity,
       edgeStrength: edgeStrength,
+      bevelWidthScale: bevelWidthScale,
+      refractionDepthScale: refractionDepthScale,
+      rimWidth: rimWidth,
+      rimFalloff: rimFalloff,
+      oppositeLightStrength: oppositeLightStrength,
       backdropAlphaThreshold: backdropAlphaThreshold,
       backdropAlphaThresholdIsSingleSurface: backdropAlphaThresholdIsSingleSurface,
     );
@@ -4704,6 +4719,11 @@ class _GlassImageFilter implements ImageFilter {
     required this.lightAngle,
     required this.lightIntensity,
     required this.edgeStrength,
+    required this.bevelWidthScale,
+    required this.refractionDepthScale,
+    required this.rimWidth,
+    required this.rimFalloff,
+    required this.oppositeLightStrength,
     required this.backdropAlphaThreshold,
     required this.backdropAlphaThresholdIsSingleSurface,
   });
@@ -4722,6 +4742,11 @@ class _GlassImageFilter implements ImageFilter {
   final double lightAngle;
   final double lightIntensity;
   final double edgeStrength;
+  final double bevelWidthScale;
+  final double refractionDepthScale;
+  final double rimWidth;
+  final double rimFalloff;
+  final double oppositeLightStrength;
   final double? backdropAlphaThreshold;
   final bool backdropAlphaThresholdIsSingleSurface;
 
@@ -4754,6 +4779,11 @@ class _GlassImageFilter implements ImageFilter {
         other.lightAngle == lightAngle &&
         other.lightIntensity == lightIntensity &&
         other.edgeStrength == edgeStrength &&
+        other.bevelWidthScale == bevelWidthScale &&
+        other.refractionDepthScale == refractionDepthScale &&
+        other.rimWidth == rimWidth &&
+        other.rimFalloff == rimFalloff &&
+        other.oppositeLightStrength == oppositeLightStrength &&
         other.backdropAlphaThreshold == backdropAlphaThreshold &&
         other.backdropAlphaThresholdIsSingleSurface == backdropAlphaThresholdIsSingleSurface;
   }
@@ -4774,6 +4804,11 @@ class _GlassImageFilter implements ImageFilter {
     lightAngle,
     lightIntensity,
     edgeStrength,
+    bevelWidthScale,
+    refractionDepthScale,
+    rimWidth,
+    rimFalloff,
+    oppositeLightStrength,
     backdropAlphaThreshold,
     backdropAlphaThresholdIsSingleSurface,
   ]);
@@ -4944,6 +4979,11 @@ base class _ImageFilter extends NativeFieldWrapperClass1 {
       filter.edgeStrength,
       filter.backdropAlphaThreshold ?? -1,
       filter.backdropAlphaThresholdIsSingleSurface,
+      filter.bevelWidthScale,
+      filter.refractionDepthScale,
+      filter.rimWidth,
+      filter.rimFalloff,
+      filter.oppositeLightStrength,
     );
   }
 
@@ -5045,6 +5085,11 @@ base class _ImageFilter extends NativeFieldWrapperClass1 {
       Double,
       Double,
       Bool,
+      Double,
+      Double,
+      Double,
+      Double,
+      Double,
     )
   >(symbol: 'ImageFilter::initGlass')
   external void _initGlass(
@@ -5064,6 +5109,11 @@ base class _ImageFilter extends NativeFieldWrapperClass1 {
     double edgeStrength,
     double backdropAlphaThreshold,
     bool backdropAlphaThresholdIsSingleSurface,
+    double bevelWidthScale,
+    double refractionDepthScale,
+    double rimWidth,
+    double rimFalloff,
+    double oppositeLightStrength,
   );
 
   @Native<Void Function(Pointer<Void>, Double, Double)>(

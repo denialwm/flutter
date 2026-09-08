@@ -123,7 +123,12 @@ void ImageFilter::initGlass(double sigma_x,
                             double light_intensity,
                             double edge_strength,
                             double backdrop_alpha_threshold,
-                            bool backdrop_alpha_threshold_is_single_surface) {
+                            bool backdrop_alpha_threshold_is_single_surface,
+                            double bevel_width_scale,
+                            double refraction_depth_scale,
+                            double rim_width,
+                            double rim_falloff,
+                            double opposite_light_strength) {
   is_dynamic_tile_mode_ = false;
   filter_ = DlGlassImageFilter::Make(
       SafeNarrow(sigma_x), SafeNarrow(sigma_y), shape.rrect,
@@ -132,7 +137,9 @@ void ImageFilter::initGlass(double sigma_x,
       DlColor(tint), SafeNarrow(tint_strength), SafeNarrow(brightness),
       SafeNarrow(light_angle), SafeNarrow(light_intensity),
       SafeNarrow(edge_strength), SafeNarrow(backdrop_alpha_threshold),
-      backdrop_alpha_threshold_is_single_surface);
+      backdrop_alpha_threshold_is_single_surface, SafeNarrow(bevel_width_scale),
+      SafeNarrow(refraction_depth_scale), SafeNarrow(rim_width),
+      SafeNarrow(rim_falloff), SafeNarrow(opposite_light_strength));
 }
 
 void ImageFilter::initDilate(double radius_x, double radius_y) {
