@@ -14,15 +14,17 @@ namespace impeller {
 struct GlassMaterialDraw {
   Rect coverage;
   Size material_size;
-  Point material_position;
+  Vector2 material_scale;
+  Quad material_coordinates;
+  Vector4 normal_transform;
 };
 
 // Resolves the portion of a glass material that needs drawing without
 // redefining its rounded-box coordinate system to that damage crop.
 std::optional<GlassMaterialDraw> ResolveGlassMaterialDraw(
     const Rect& coverage,
-    const std::optional<Rect>& material_bounds,
-    const Matrix& input_transform = Matrix());
+    const Rect& material_bounds,
+    const Matrix& material_transform = Matrix());
 
 bool GlassFrostNeedsBlur(Scalar sigma_x, Scalar sigma_y);
 
@@ -55,11 +57,10 @@ class GlassFilterContents final : public FilterContents {
       const Entity& entity,
       const std::optional<Rect>& coverage_hint);
 
-  // Supplies the complete material extent in the backdrop input's coordinates.
-  // Rendering applies the entity transform to both input and material bounds;
-  // an uncached save layer translates them into its own target coordinates.
-  // A frame-damage clip may make the filter coverage only a slice of the shape.
-  void SetMaterialBounds(const Rect& bounds);
+  // Maps the complete layout shape into backdrop input coordinates. Retain
+  // orientation as well as bounds so damage crops, reflections and rotations
+  // keep the same rounded boundary and optical normals.
+  void SetMaterialTransform(const Matrix& transform);
 
   void SetMaterialTargetPaddingEnabled(bool enabled);
 
@@ -97,7 +98,7 @@ class GlassFilterContents final : public FilterContents {
   const Scalar rim_width_;
   const Scalar rim_falloff_;
   const Scalar opposite_light_strength_;
-  std::optional<Rect> material_bounds_;
+  std::optional<Matrix> material_transform_;
   bool render_material_directly_ = false;
   bool material_target_padding_enabled_ = false;
 };

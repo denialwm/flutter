@@ -22,18 +22,41 @@ namespace impeller {
 
 namespace {
 
-Matrix GetMaterialGeometryTransform(const Matrix& effect_transform) {
-  Matrix geometry_transform = effect_transform.Basis();
-  // Backdrop inputs and their coverage live in render-target coordinates.
-  // GLES expresses the root surface orientation as a reflected effect basis;
-  // applying that reflection to layout-provided material bounds sends the
-  // shape to the opposite side of the texture. Remove only that render-target
-  // reflection while retaining user rotation and scale.
-  if (geometry_transform.GetDeterminant() < 0.0f) {
-    geometry_transform =
-        Matrix::MakeScale(Vector3(1.0f, -1.0f, 1.0f)) * geometry_transform;
+// A direct material may sample the current parent attachment. Preserve only
+// the demanded scene region before drawing into it; cached/offscreen materials
+// already render into separate storage and can use the input snapshot directly.
+std::optional<Snapshot> CopyGlassScene(const ContentContext& renderer,
+                                       const Snapshot& scene,
+                                       const Rect& coverage) {
+  const auto scene_coverage = scene.GetCoverage();
+  const auto copy_coverage =
+      scene_coverage ? coverage.Intersection(*scene_coverage) : std::nullopt;
+  if (!copy_coverage) {
+    return std::nullopt;
   }
-  return geometry_transform;
+  const Rect bounds = Rect::RoundOut(*copy_coverage);
+  auto commands = renderer.GetContext()->CreateCommandBuffer();
+  if (!commands) {
+    return std::nullopt;
+  }
+  auto target = renderer.MakeSubpass(
+      "Denial Glass Scene", ISize::Ceil(bounds.GetSize()), commands,
+      [&](const ContentContext& context, RenderPass& pass) {
+        Entity copy = Entity::FromSnapshot(scene, BlendMode::kSrc);
+        copy.SetTransform(Matrix::MakeTranslation(-bounds.GetOrigin()) *
+                          copy.GetTransform());
+        return copy.Render(context, pass);
+      },
+      /*msaa_enabled=*/false, /*depth_stencil_enabled=*/false);
+  if (!target.ok() ||
+      !renderer.GetContext()->EnqueueCommandBuffer(std::move(commands))) {
+    return std::nullopt;
+  }
+  return Snapshot{
+      .texture = target.value().GetRenderTargetTexture(),
+      .transform = Matrix::MakeTranslation(bounds.GetOrigin()),
+      .sampler_descriptor = scene.sampler_descriptor,
+  };
 }
 
 Point RemapTextureCoordinate(Point coordinate, Scalar y_coord_scale) {
@@ -91,31 +114,41 @@ Scalar MaximumGlassDisplacement(Scalar thickness,
 
 std::optional<GlassMaterialDraw> ResolveGlassMaterialDraw(
     const Rect& coverage,
-    const std::optional<Rect>& material_bounds,
-    const Matrix& input_transform) {
-  const std::optional<Rect> target_bounds =
-      material_bounds.has_value()
-          ? std::make_optional(
-                material_bounds->TransformBounds(input_transform))
-          : std::nullopt;
-  Rect draw_coverage = coverage;
-  if (target_bounds.has_value()) {
-    const std::optional<Rect> intersection =
-        draw_coverage.Intersection(target_bounds.value());
-    if (!intersection.has_value()) {
-      return std::nullopt;
-    }
-    draw_coverage = intersection.value();
+    const Rect& material_bounds,
+    const Matrix& material_transform) {
+  if (material_bounds.IsEmpty() || !material_transform.IsInvertible()) {
+    return std::nullopt;
   }
-  if (draw_coverage.IsEmpty()) {
+  const auto draw_coverage = coverage.Intersection(
+      material_bounds.TransformBounds(material_transform));
+  if (!draw_coverage || draw_coverage->IsEmpty()) {
     return std::nullopt;
   }
 
-  const Rect full_bounds = target_bounds.value_or(draw_coverage);
+  // Evaluate the SDF in physical material coordinates, not the target's
+  // axis-aligned bounding box. Corner identities then survive any reflection
+  // or rotation without special cases or damage-dependent radius remapping.
+  const Vector2 scale = material_transform.GetBasisScaleXY();
+  const Matrix target_to_material =
+      Matrix::MakeScale(scale) *
+      Matrix::MakeTranslation(-material_bounds.GetOrigin()) *
+      material_transform.Invert();
+  Quad coordinates = draw_coverage->GetPoints();
+  for (Point& coordinate : coordinates) {
+    coordinate = target_to_material * coordinate;
+  }
+  // A distance-field gradient transforms with the inverse transpose. Map it
+  // back to target space before refraction and lighting use that direction.
+  const Matrix normals = target_to_material.Basis().Transpose();
   return GlassMaterialDraw{
-      .coverage = draw_coverage,
-      .material_size = full_bounds.GetSize(),
-      .material_position = draw_coverage.GetOrigin() - full_bounds.GetOrigin(),
+      .coverage = *draw_coverage,
+      .material_size = Size(material_bounds.GetWidth() * scale.x,
+                            material_bounds.GetHeight() * scale.y),
+      .material_scale = scale,
+      .material_coordinates = coordinates,
+      .normal_transform =
+          Vector4(normals.GetBasisX2D().x, normals.GetBasisX2D().y,
+                  normals.GetBasisY2D().x, normals.GetBasisY2D().y),
   };
 }
 
@@ -158,8 +191,8 @@ GlassFilterContents::GlassFilterContents(RoundRect shape,
 
 GlassFilterContents::~GlassFilterContents() = default;
 
-void GlassFilterContents::SetMaterialBounds(const Rect& bounds) {
-  material_bounds_ = bounds;
+void GlassFilterContents::SetMaterialTransform(const Matrix& transform) {
+  material_transform_ = transform;
 }
 
 void GlassFilterContents::SetMaterialTargetPaddingEnabled(bool enabled) {
@@ -200,13 +233,21 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
     material_coverage = intersection.value();
   }
 
+  const Matrix material_transform =
+      entity.GetTransform() * material_transform_.value_or(effect_transform);
   const std::optional<GlassMaterialDraw> material_draw =
-      ResolveGlassMaterialDraw(material_coverage, material_bounds_,
-                               entity.GetTransform());
+      ResolveGlassMaterialDraw(material_coverage, shape_.GetBounds(),
+                               material_transform);
   if (!material_draw.has_value()) {
     return std::nullopt;
   }
   material_coverage = material_draw->coverage;
+
+  std::optional<Snapshot> scene_snapshot = inputs[0]->GetSnapshot(
+      "Denial Glass Scene", renderer, entity, material_coverage);
+  if (!scene_snapshot) {
+    return std::nullopt;
+  }
 
   // The frost path normally resolves through Impeller's established
   // crop-aware Gaussian filter. Resource pressure must not make an entire
@@ -215,29 +256,42 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
   std::optional<Snapshot> blurred_snapshot = inputs[1]->GetSnapshot(
       "Denial Glass Frost", renderer, entity, material_coverage);
   if (!blurred_snapshot.has_value()) {
-    blurred_snapshot = inputs[0]->GetSnapshot(
-        "Denial Glass Scene Fallback", renderer, entity, material_coverage);
-  }
-  if (!blurred_snapshot.has_value()) {
-    return std::nullopt;
+    blurred_snapshot = scene_snapshot;
   }
 
+  if (render_material_directly_) {
+    const bool frost_uses_scene =
+        blurred_snapshot->texture == scene_snapshot->texture;
+    // Zero frost (or the allocation fallback) refracts the original scene, so
+    // its copy must also include the optical sampling margin.
+    const Rect copy_coverage =
+        frost_uses_scene
+            ? GetFilterSourceCoverage(effect_transform, material_coverage)
+                  .value_or(material_coverage)
+            : material_coverage;
+    scene_snapshot = CopyGlassScene(renderer, *scene_snapshot, copy_coverage);
+    if (!scene_snapshot) {
+      return std::nullopt;
+    }
+    if (frost_uses_scene) {
+      blurred_snapshot = scene_snapshot;
+    }
+  }
+
+  const std::optional<Quad> scene_uvs =
+      scene_snapshot->GetCoverageUVs(material_coverage);
   const std::optional<Quad> blurred_uvs =
       blurred_snapshot->GetCoverageUVs(material_coverage);
-  if (!blurred_uvs.has_value()) {
+  if (!scene_uvs || !blurred_uvs) {
     return std::nullopt;
   }
 
   const Size draw_size = material_coverage.GetSize();
   const Size material_size = material_draw->material_size;
-  const Point material_position = material_draw->material_position;
-  const Matrix material_transform = entity.GetTransform() * effect_transform;
-  const Scalar scale_x =
-      std::max(material_transform.TransformDirection(Vector2(1, 0)).GetLength(),
-               0.0001f);
-  const Scalar scale_y =
-      std::max(material_transform.TransformDirection(Vector2(0, 1)).GetLength(),
-               0.0001f);
+  const Quad material_coordinates = material_draw->material_coordinates;
+  const Vector4 normal_transform = material_draw->normal_transform;
+  const Scalar scale_x = material_draw->material_scale.x;
+  const Scalar scale_y = material_draw->material_scale.y;
   const Scalar physical_thickness =
       std::min(thickness_ * (scale_x + scale_y) * 0.5f,
                std::min(material_size.width, material_size.height) * 0.5f);
@@ -248,14 +302,17 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
       PhysicalCornerRadius(radii.bottom_right, scale_x, scale_y),
       PhysicalCornerRadius(radii.bottom_left, scale_x, scale_y));
 
+  const Quad scene_coordinates = scene_uvs.value();
   const Quad blurred_coordinates = blurred_uvs.value();
   const Vector4 blurred_uv_basis =
       TextureUvBasis(blurred_coordinates, draw_size,
                      blurred_snapshot->texture->GetYCoordScale());
 
   Contents::RenderProc render_material =
-      [blurred_snapshot, blurred_coordinates, draw_size, material_size,
-       material_position, corner_radii, blurred_uv_basis, physical_thickness,
+      [scene_snapshot, scene_coordinates, blurred_snapshot, blurred_coordinates,
+       draw_size, material_size, material_coordinates, normal_transform,
+       corner_radii, blurred_uv_basis, physical_thickness,
+       preserve_scene = IsBackdropFilter(),
        refractive_index = GlassRefractiveIndex(refraction_),
        dispersion = dispersion_, saturation = saturation_, tint = tint_,
        tint_strength = tint_strength_, brightness = brightness_,
@@ -269,16 +326,15 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         auto& data = renderer.GetTransientsDataBuffer();
         const std::array<VS::PerVertexData, 4> vertices = {
             VS::PerVertexData{Point(0, 0), blurred_coordinates[0],
-                              material_position},
+                              scene_coordinates[0], material_coordinates[0]},
             VS::PerVertexData{Point(draw_size.width, 0), blurred_coordinates[1],
-                              material_position + Vector2(draw_size.width, 0)},
+                              scene_coordinates[1], material_coordinates[1]},
             VS::PerVertexData{Point(0, draw_size.height),
-                              blurred_coordinates[2],
-                              material_position + Vector2(0, draw_size.height)},
-            VS::PerVertexData{
-                Point(draw_size.width, draw_size.height),
-                blurred_coordinates[3],
-                material_position + Vector2(draw_size.width, draw_size.height)},
+                              blurred_coordinates[2], scene_coordinates[2],
+                              material_coordinates[2]},
+            VS::PerVertexData{Point(draw_size.width, draw_size.height),
+                              blurred_coordinates[3], scene_coordinates[3],
+                              material_coordinates[3]},
         };
 
         VS::FrameInfo frame_info;
@@ -288,7 +344,12 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         frame_info.blurred_sampler_y_coord_scale =
             blurred_snapshot->texture->GetYCoordScale();
 
+        frame_info.scene_sampler_y_coord_scale =
+            scene_snapshot->texture->GetYCoordScale();
+
         FS::FragInfo frag_info;
+        frag_info.normal_transform = normal_transform;
+        frag_info.scene_opacity = preserve_scene ? scene_snapshot->opacity : 0;
         frag_info.material_size = Vector2(material_size);
         frag_info.corner_radii = corner_radii;
         frag_info.blurred_uv_basis = blurred_uv_basis;
@@ -326,6 +387,10 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         FS::BindFragInfo(pass, data.EmplaceUniform(frag_info));
         FS::BindBlurredTextureSampler(
             pass, blurred_snapshot->texture,
+            renderer.GetContext()->GetSamplerLibrary()->GetSampler(
+                blurred_sampler));
+        FS::BindSceneTextureSampler(
+            pass, scene_snapshot->texture,
             renderer.GetContext()->GetSamplerLibrary()->GetSampler(
                 blurred_sampler));
         return pass.Draw().ok();
@@ -433,7 +498,7 @@ std::optional<Rect> GlassFilterContents::GetFilterCoverage(
     return inputs[0]->GetCoverage(entity);
   }
   return shape_.GetBounds().TransformBounds(
-      entity.GetTransform() * GetMaterialGeometryTransform(effect_transform));
+      entity.GetTransform() * material_transform_.value_or(effect_transform));
 }
 
 std::optional<Rect> GlassFilterContents::GetFilterSourceCoverage(
@@ -443,7 +508,8 @@ std::optional<Rect> GlassFilterContents::GetFilterSourceCoverage(
       MaximumGlassDisplacement(thickness_, refraction_, dispersion_,
                                bevel_width_scale_, refraction_depth_scale_);
   const Vector2 transformed =
-      effect_transform.TransformDirection(Vector2(padding, padding)).Abs();
+      effect_transform.TransformDirection(Vector2(padding, 0)).Abs() +
+      effect_transform.TransformDirection(Vector2(0, padding)).Abs();
   return output_limit.Expand(transformed);
 }
 
