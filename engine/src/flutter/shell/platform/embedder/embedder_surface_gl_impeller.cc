@@ -238,6 +238,9 @@ void EmbedderSurfaceGLImpeller::ReleaseResourceContext() const {
   // release their context references. Drop the surface's final reference while
   // the embedder resource context is still current so the reactor can delete
   // its shared GL objects instead of abandoning them in the share group.
+  if (impeller_context_) {
+    static_cast<impeller::Context&>(*impeller_context_).Shutdown();
+  }
   impeller_context_.reset();
   worker_->SetReactionsAllowedOnCurrentThread(false);
   gl_dispatch_table_.gl_clear_current_callback();

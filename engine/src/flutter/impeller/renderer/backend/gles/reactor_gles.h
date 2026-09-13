@@ -99,6 +99,11 @@ class ReactorGLES {
   ///
   ~ReactorGLES();
 
+  /// Deletes every tracked GL object while a worker context is current and
+  /// prevents any later work from entering the reactor. Safe to call more than
+  /// once during context teardown.
+  bool Shutdown();
+
   //----------------------------------------------------------------------------
   /// @brief      If this is a valid reactor. Invalid reactors must be discarded
   ///             immediately.
