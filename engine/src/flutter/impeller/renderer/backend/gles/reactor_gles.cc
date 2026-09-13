@@ -86,15 +86,43 @@ ReactorGLES::ReactorGLES(std::unique_ptr<ProcTableGLES> gl)
 }
 
 ReactorGLES::~ReactorGLES() {
-  if (CanReactOnCurrentThread()) {
-    for (auto& handle : handles_) {
-      if (handle.second.name.has_value()) {
-        CollectGLHandle(*proc_table_, handle.first.GetType(),
-                        handle.second.name.value());
-      }
-    }
-    proc_table_->Flush();
+  Shutdown();
+}
+
+bool ReactorGLES::Shutdown() {
+  if (!IsValid()) {
+    return true;
   }
+  if (!CanReactOnCurrentThread()) {
+    return false;
+  }
+
+  // No new work may be admitted after this point. Discard queued operations
+  // before taking the handle map: destroying their captures can return more
+  // handles to this reactor.
+  is_valid_ = false;
+  decltype(ops_) operations;
+  {
+    Lock ops_lock(ops_mutex_);
+    std::swap(ops_, operations);
+  }
+  operations.clear();
+
+  LiveHandles handles;
+  {
+    WriterLock handles_lock(handles_mutex_);
+    std::swap(handles_, handles);
+    handles_to_collect_count_ = 0;
+  }
+  for (auto& handle : handles) {
+    if (handle.second.name.has_value() && !handle.second.callback) {
+      CollectGLHandle(*proc_table_, handle.first.GetType(),
+                      handle.second.name.value());
+    }
+  }
+  handles.clear();
+  proc_table_->Flush();
+  return true;
 }
 
 bool ReactorGLES::IsValid() const {
@@ -176,7 +204,7 @@ std::optional<GLsync> ReactorGLES::GetGLFence(const HandleGLES& handle) const {
 }
 
 bool ReactorGLES::AddOperation(Operation operation, bool defer) {
-  if (!operation) {
+  if (!IsValid() || !operation) {
     return false;
   }
   auto thread_id = std::this_thread::get_id();
@@ -206,6 +234,9 @@ bool ReactorGLES::RegisterCleanupCallback(const HandleGLES& handle,
 }
 
 HandleGLES ReactorGLES::CreateUntrackedHandle(HandleType type) const {
+  if (!IsValid()) {
+    return HandleGLES::DeadHandle();
+  }
   FML_DCHECK(CanReactOnCurrentThread());
   auto new_handle = HandleGLES::Create(type);
   std::optional<ReactorGLES::GLStorage> gl_handle =
@@ -217,7 +248,7 @@ HandleGLES ReactorGLES::CreateUntrackedHandle(HandleType type) const {
 }
 
 HandleGLES ReactorGLES::CreateHandle(HandleType type, GLuint external_handle) {
-  if (type == HandleType::kUnknown) {
+  if (!IsValid() || type == HandleType::kUnknown) {
     return HandleGLES::DeadHandle();
   }
   auto new_handle = HandleGLES::Create(type);

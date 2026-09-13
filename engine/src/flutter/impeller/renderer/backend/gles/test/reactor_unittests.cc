@@ -90,6 +90,30 @@ TEST(ReactorGLES, ReactCollectsHandlesWithoutOperations) {
   reactor.reset();
 }
 
+TEST(ReactorGLES, ExplicitShutdownDeletesHandlesExactlyOnce) {
+  auto mock_gles_impl = std::make_unique<MockGLESImpl>();
+
+  EXPECT_CALL(*mock_gles_impl, GenTextures(1, _))
+      .WillOnce([](GLsizei size, GLuint* queries) { queries[0] = 1234; });
+  EXPECT_CALL(*mock_gles_impl, DeleteTextures(1, ::testing::Pointee(1234)))
+      .Times(1);
+
+  std::shared_ptr<MockGLES> mock_gles =
+      MockGLES::Init(std::move(mock_gles_impl));
+  ProcTableGLES::Resolver resolver = kMockResolverGLES;
+  auto proc_table = std::make_unique<ProcTableGLES>(resolver);
+  auto worker = std::make_shared<TestWorker>();
+  auto reactor = std::make_shared<ReactorGLES>(std::move(proc_table));
+  reactor->AddWorker(worker);
+  reactor->CreateHandle(HandleType::kTexture);
+
+  EXPECT_TRUE(reactor->Shutdown());
+  EXPECT_TRUE(reactor->Shutdown());
+  EXPECT_FALSE(reactor->IsValid());
+  EXPECT_TRUE(reactor->CreateHandle(HandleType::kTexture).IsDead());
+  reactor.reset();
+}
+
 TEST(ReactorGLES, UntrackedHandle) {
   auto mock_gles_impl = std::make_unique<MockGLESImpl>();
 
