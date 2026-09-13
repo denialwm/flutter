@@ -68,7 +68,7 @@ TEST(ReactorGLES, DeletesHandlesDuringShutdown) {
   reactor.reset();
 }
 
-TEST(ReactorGLES, ExplicitShutdownDeletesHandlesExactlyOnce) {
+TEST(ReactorGLES, ReactCollectsHandlesWithoutOperations) {
   auto mock_gles_impl = std::make_unique<MockGLESImpl>();
 
   EXPECT_CALL(*mock_gles_impl, GenTextures(1, _))
@@ -83,12 +83,10 @@ TEST(ReactorGLES, ExplicitShutdownDeletesHandlesExactlyOnce) {
   auto worker = std::make_shared<TestWorker>();
   auto reactor = std::make_shared<ReactorGLES>(std::move(proc_table));
   reactor->AddWorker(worker);
-  reactor->CreateHandle(HandleType::kTexture);
+  auto handle = reactor->CreateHandle(HandleType::kTexture);
+  reactor->CollectHandle(handle);
 
-  EXPECT_TRUE(reactor->Shutdown());
-  EXPECT_TRUE(reactor->Shutdown());
-  EXPECT_FALSE(reactor->IsValid());
-  EXPECT_TRUE(reactor->CreateHandle(HandleType::kTexture).IsDead());
+  EXPECT_TRUE(reactor->React());
   reactor.reset();
 }
 

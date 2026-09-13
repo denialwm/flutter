@@ -234,12 +234,13 @@ sk_sp<GrDirectContext> EmbedderSurfaceGLImpeller::CreateResourceContext()
 
 // |EmbedderSurface|
 void EmbedderSurfaceGLImpeller::ReleaseResourceContext() const {
-  // Shell calls this on the IO thread after the rasterizer and IO manager
-  // release their context references. Drop the surface's final reference while
-  // the embedder resource context is still current so the reactor can delete
-  // its shared GL objects instead of abandoning them in the share group.
-  if (impeller_context_) {
-    static_cast<impeller::Context&>(*impeller_context_).Shutdown();
+  // Shell calls this on the IO thread after the rasterizer and IO manager have
+  // released their resources. Collect handles which have become unreferenced
+  // while the embedder resource context is still current. The context itself
+  // can remain alive briefly in asynchronous image-decoder work, so it must
+  // not be invalidated here.
+  if (impeller_context_ && !impeller_context_->GetReactor()->React()) {
+    FML_DLOG(ERROR) << "Could not drain the Impeller GLES reactor.";
   }
   impeller_context_.reset();
   worker_->SetReactionsAllowedOnCurrentThread(false);

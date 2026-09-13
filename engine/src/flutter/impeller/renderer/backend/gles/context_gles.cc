@@ -109,23 +109,7 @@ bool ContextGLES::IsValid() const {
   return is_valid_;
 }
 
-void ContextGLES::Shutdown() {
-  if (!is_valid_) {
-    return;
-  }
-  // Release context-owned objects first so untracked GLES handles are returned
-  // while the reactor can still service their synchronous collection.
-  gpu_tracer_.reset();
-  command_queue_.reset();
-  resource_allocator_.reset();
-  sampler_library_.reset();
-  pipeline_library_.reset();
-  shader_library_.reset();
-  if (!reactor_->Shutdown()) {
-    VALIDATION_LOG << "Could not shut down the GLES reactor on this thread.";
-  }
-  is_valid_ = false;
-}
+void ContextGLES::Shutdown() {}
 
 // |Context|
 std::string ContextGLES::DescribeGpuModel() const {
