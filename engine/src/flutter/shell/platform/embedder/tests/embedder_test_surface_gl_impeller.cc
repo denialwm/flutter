@@ -80,6 +80,32 @@ TEST(EmbedderSurfaceGLImpellerTest, GLES2ContextDoesNotHaveGLES3Shaders) {
   EXPECT_THAT(text, StartsWith("#version 100"));
 }
 
+TEST(EmbedderSurfaceGLImpellerTest, ReleasesResourceContextThroughEmbedder) {
+  auto gl_dispatch_table = StubDispatchTable(/* version */ "OpenGL ES 3.0");
+  size_t resource_make_count = 0u;
+  size_t clear_count = 0u;
+  gl_dispatch_table.gl_make_resource_current_callback = [&] {
+    resource_make_count++;
+    return true;
+  };
+  gl_dispatch_table.gl_clear_current_callback = [&] {
+    clear_count++;
+    return true;
+  };
+  auto surface = EmbedderSurfaceGLImpeller(
+      gl_dispatch_table, /* fbo_reset_after_present */ false,
+      /* fbo_zero_is_no_target */ false,
+      /* external_view_embedder */ nullptr);
+  const size_t clears_after_construction = clear_count;
+  const EmbedderSurface& embedder_surface = surface;
+
+  embedder_surface.CreateResourceContext();
+  embedder_surface.ReleaseResourceContext();
+
+  EXPECT_EQ(resource_make_count, 1u);
+  EXPECT_EQ(clear_count, clears_after_construction + 1u);
+}
+
 TEST(EmbedderSurfaceGLImpellerTest,
      ImpellerPresentPreservesFBOAndReportsDamage) {
   auto gl_dispatch_table = StubDispatchTable(/* version */ "OpenGL ES 3.0");

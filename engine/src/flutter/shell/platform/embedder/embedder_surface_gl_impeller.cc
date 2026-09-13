@@ -232,4 +232,10 @@ sk_sp<GrDirectContext> EmbedderSurfaceGLImpeller::CreateResourceContext()
   return nullptr;
 }
 
+// |EmbedderSurface|
+void EmbedderSurfaceGLImpeller::ReleaseResourceContext() const {
+  worker_->SetReactionsAllowedOnCurrentThread(false);
+  gl_dispatch_table_.gl_clear_current_callback();
+}
+
 }  // namespace flutter

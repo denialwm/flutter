@@ -128,4 +128,9 @@ sk_sp<GrDirectContext> EmbedderSurfaceGLSkia::CreateResourceContext() const {
   return nullptr;
 }
 
+// |EmbedderSurface|
+void EmbedderSurfaceGLSkia::ReleaseResourceContext() const {
+  gl_dispatch_table_.gl_clear_current_callback();
+}
+
 }  // namespace flutter
