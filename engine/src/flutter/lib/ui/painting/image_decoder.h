@@ -58,6 +58,10 @@ class ImageDecoder {
                       const Options& options,
                       const ImageResult& result) = 0;
 
+  /// Prevents new decode work and invokes `completion` on the UI task runner
+  /// after all previously accepted decode and upload work has completed.
+  virtual void DrainPendingTasks(fml::closure completion);
+
   fml::TaskRunnerAffineWeakPtr<ImageDecoder> GetWeakPtr() const;
 
  protected:

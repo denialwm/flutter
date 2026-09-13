@@ -303,6 +303,54 @@ TEST_F(ImageDecoderFixtureTest, InvalidImageResultsError) {
   latch.Wait();
 }
 
+TEST_F(ImageDecoderFixtureTest, ImpellerDrainWaitsForAcceptedDecode) {
+  auto loop = fml::ConcurrentMessageLoop::Create(/*worker_count=*/1u);
+  TaskRunners runners(GetCurrentTestName(),         // label
+                      CreateNewThread("platform"),  // platform
+                      CreateNewThread("raster"),    // raster
+                      CreateNewThread("ui"),        // ui
+                      CreateNewThread("io")         // io
+  );
+
+  fml::AutoResetWaitableEvent latch;
+  std::unique_ptr<TestIOManager> io_manager;
+  std::unique_ptr<ImageDecoder> decoder;
+  bool result_called = false;
+
+  runners.GetIOTaskRunner()->PostTask([&]() {
+    io_manager = std::make_unique<TestIOManager>(runners.GetIOTaskRunner());
+    runners.GetUITaskRunner()->PostTask([&]() {
+      Settings settings;
+      settings.enable_impeller = true;
+      decoder = ImageDecoder::Make(settings, runners, loop->GetTaskRunner(),
+                                   io_manager->GetWeakIOManager(),
+                                   std::make_shared<fml::SyncSwitch>());
+
+      fml::RefPtr<ImageDescriptor> image_descriptor =
+          fml::MakeRefCounted<ImageDescriptor>(
+              nullptr, std::make_unique<UnknownImageGenerator>());
+      decoder->Decode(
+          image_descriptor, {.target_width = 0, .target_height = 0},
+          [&](const sk_sp<DlImage>& image, const std::string& decode_error) {
+            EXPECT_TRUE(runners.GetUITaskRunner()->RunsTasksOnCurrentThread());
+            EXPECT_FALSE(image);
+            result_called = true;
+          });
+      decoder->DrainPendingTasks([&]() {
+        EXPECT_TRUE(runners.GetUITaskRunner()->RunsTasksOnCurrentThread());
+        EXPECT_TRUE(result_called);
+        decoder.reset();
+        runners.GetIOTaskRunner()->PostTask([&]() {
+          io_manager.reset();
+          latch.Signal();
+        });
+      });
+    });
+  });
+
+  latch.Wait();
+}
+
 TEST_F(ImageDecoderFixtureTest, ValidImageResultsInSuccess) {
   auto loop = fml::ConcurrentMessageLoop::Create();
   TaskRunners runners(GetCurrentTestName(),         // label

@@ -6,6 +6,7 @@
 
 #include <format>
 #include <memory>
+#include <mutex>
 
 #include "flutter/fml/closure.h"
 #include "flutter/fml/make_copyable.h"
@@ -32,6 +33,70 @@
 #include "third_party/skia/include/core/SkSize.h"
 
 namespace flutter {
+
+class PendingImageDecodeTasks final
+    : public std::enable_shared_from_this<PendingImageDecodeTasks> {
+ public:
+  class Token final {
+   public:
+    explicit Token(std::shared_ptr<PendingImageDecodeTasks> owner)
+        : owner_(std::move(owner)) {}
+
+    ~Token() { owner_->Finish(); }
+
+   private:
+    const std::shared_ptr<PendingImageDecodeTasks> owner_;
+  };
+
+  std::shared_ptr<Token> Start() {
+    std::scoped_lock lock(mutex_);
+    if (draining_) {
+      return nullptr;
+    }
+    pending_++;
+    return std::make_shared<Token>(shared_from_this());
+  }
+
+  void Drain(const fml::RefPtr<fml::TaskRunner>& ui_runner,
+             fml::closure completion) {
+    fml::closure ready;
+    {
+      std::scoped_lock lock(mutex_);
+      draining_ = true;
+      FML_DCHECK(!completion_);
+      completion_ = [ui_runner, completion = std::move(completion)]() mutable {
+        ui_runner->PostTask(std::move(completion));
+      };
+      if (pending_ == 0u) {
+        ready = std::move(completion_);
+      }
+    }
+    if (ready) {
+      ready();
+    }
+  }
+
+ private:
+  void Finish() {
+    fml::closure ready;
+    {
+      std::scoped_lock lock(mutex_);
+      FML_DCHECK(pending_ > 0u);
+      pending_--;
+      if (draining_ && pending_ == 0u) {
+        ready = std::move(completion_);
+      }
+    }
+    if (ready) {
+      ready();
+    }
+  }
+
+  std::mutex mutex_;
+  size_t pending_ = 0u;
+  bool draining_ = false;
+  fml::closure completion_;
+};
 
 namespace {
 /**
@@ -313,6 +378,7 @@ ImageDecoderImpeller::ImageDecoderImpeller(
     bool wide_gamut_enabled,
     const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch)
     : ImageDecoder(runners, std::move(concurrent_task_runner), io_manager),
+      pending_tasks_(std::make_shared<PendingImageDecodeTasks>()),
       wide_gamut_enabled_(wide_gamut_enabled),
       gpu_disabled_switch_(gpu_disabled_switch) {
   std::promise<std::shared_ptr<impeller::Context>> context_promise;
@@ -328,6 +394,10 @@ ImageDecoderImpeller::ImageDecoderImpeller(
 }
 
 ImageDecoderImpeller::~ImageDecoderImpeller() = default;
+
+void ImageDecoderImpeller::DrainPendingTasks(fml::closure completion) {
+  pending_tasks_->Drain(runners_.GetUITaskRunner(), std::move(completion));
+}
 
 absl::StatusOr<ImageDecoderImpeller::DecompressResult>
 ImageDecoderImpeller::DecompressTexture(
@@ -673,6 +743,12 @@ void ImageDecoderImpeller::Decode(fml::RefPtr<ImageDescriptor> descriptor,
   FML_DCHECK(descriptor);
   FML_DCHECK(p_result);
 
+  auto pending_task = pending_tasks_->Start();
+  if (!pending_task) {
+    p_result(nullptr, "The image decoder is shutting down");
+    return;
+  }
+
   // Wrap the result callback so that it can be invoked from any thread.
   auto raw_descriptor = descriptor.get();
   raw_descriptor->AddRef();
@@ -691,7 +767,7 @@ void ImageDecoderImpeller::Decode(fml::RefPtr<ImageDescriptor> descriptor,
        context = context_.get(),  //
        options,
        io_runner = runners_.GetIOTaskRunner(),  //
-       result,
+       result, pending_task = std::move(pending_task),
        wide_gamut_enabled = wide_gamut_enabled_,  //
        gpu_disabled_switch = gpu_disabled_switch_]() {
 #if FML_OS_IOS_SIMULATOR
@@ -720,7 +796,8 @@ void ImageDecoderImpeller::Decode(fml::RefPtr<ImageDescriptor> descriptor,
         }
 
         auto upload_texture_and_invoke_result = [result, context, bitmap_result,
-                                                 gpu_disabled_switch]() {
+                                                 gpu_disabled_switch,
+                                                 pending_task]() {
           UploadTextureToPrivate(result, context,               //
                                  bitmap_result->device_buffer,  //
                                  bitmap_result->image_info,     //

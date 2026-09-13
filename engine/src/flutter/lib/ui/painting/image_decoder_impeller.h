@@ -24,6 +24,8 @@ class DeviceBuffer;
 
 namespace flutter {
 
+class PendingImageDecodeTasks;
+
 class ImpellerAllocator : public SkBitmap::Allocator {
  public:
   explicit ImpellerAllocator(std::shared_ptr<impeller::Allocator> allocator);
@@ -57,6 +59,9 @@ class ImageDecoderImpeller final : public ImageDecoder {
   void Decode(fml::RefPtr<ImageDescriptor> descriptor,
               const Options& options,
               const ImageResult& result) override;
+
+  // |ImageDecoder|
+  void DrainPendingTasks(fml::closure completion) override;
 
   struct ImageInfo {
     impeller::ISize size;
@@ -105,6 +110,7 @@ class ImageDecoderImpeller final : public ImageDecoder {
  private:
   using FutureContext = std::shared_future<std::shared_ptr<impeller::Context>>;
   FutureContext context_;
+  const std::shared_ptr<PendingImageDecodeTasks> pending_tasks_;
 
   /// Whether wide gamut rendering has been enabled (but not necessarily whether
   /// or not it is supported).

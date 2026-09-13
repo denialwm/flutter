@@ -55,6 +55,10 @@ ImageDecoder::ImageDecoder(
 
 ImageDecoder::~ImageDecoder() = default;
 
+void ImageDecoder::DrainPendingTasks(fml::closure completion) {
+  completion();
+}
+
 fml::TaskRunnerAffineWeakPtr<ImageDecoder> ImageDecoder::GetWeakPtr() const {
   return weak_factory_.GetWeakPtr();
 }

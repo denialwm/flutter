@@ -685,6 +685,10 @@ void Engine::ShutdownPlatformIsolates() {
   runtime_controller_->ShutdownPlatformIsolates();
 }
 
+void Engine::DrainPendingImageTasks(fml::closure completion) {
+  image_decoder_->DrainPendingTasks(std::move(completion));
+}
+
 void Engine::FlushMicrotaskQueue() {
   runtime_controller_->FlushMicrotaskQueue();
 }

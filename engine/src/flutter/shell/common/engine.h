@@ -1028,6 +1028,9 @@ class Engine final : public RuntimeDelegate, PointerDataDispatcher::Delegate {
   ///
   void ShutdownPlatformIsolates();
 
+  /// Drains asynchronous image decoding and texture uploads during shutdown.
+  void DrainPendingImageTasks(fml::closure completion);
+
   //--------------------------------------------------------------------------
   /// @brief      Flushes the microtask queue of the root isolate.
   ///
