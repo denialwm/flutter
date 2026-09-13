@@ -96,6 +96,7 @@ TEST(EmbedderSurfaceGLImpellerTest, ReleasesResourceContextThroughEmbedder) {
       gl_dispatch_table, /* fbo_reset_after_present */ false,
       /* fbo_zero_is_no_target */ false,
       /* external_view_embedder */ nullptr);
+  std::weak_ptr<impeller::Context> context = surface.CreateImpellerContext();
   const size_t clears_after_construction = clear_count;
   const EmbedderSurface& embedder_surface = surface;
 
@@ -104,6 +105,7 @@ TEST(EmbedderSurfaceGLImpellerTest, ReleasesResourceContextThroughEmbedder) {
 
   EXPECT_EQ(resource_make_count, 1u);
   EXPECT_EQ(clear_count, clears_after_construction + 1u);
+  EXPECT_TRUE(context.expired());
 }
 
 TEST(EmbedderSurfaceGLImpellerTest,

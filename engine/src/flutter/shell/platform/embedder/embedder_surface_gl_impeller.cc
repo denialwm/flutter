@@ -234,6 +234,11 @@ sk_sp<GrDirectContext> EmbedderSurfaceGLImpeller::CreateResourceContext()
 
 // |EmbedderSurface|
 void EmbedderSurfaceGLImpeller::ReleaseResourceContext() const {
+  // Shell calls this on the IO thread after the rasterizer and IO manager
+  // release their context references. Drop the surface's final reference while
+  // the embedder resource context is still current so the reactor can delete
+  // its shared GL objects instead of abandoning them in the share group.
+  impeller_context_.reset();
   worker_->SetReactionsAllowedOnCurrentThread(false);
   gl_dispatch_table_.gl_clear_current_callback();
 }
