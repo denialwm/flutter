@@ -54,6 +54,14 @@ struct _FlTextInputHandler {
   // over the text input channel.
   GdkRectangle composing_rect;
 
+  // The current caret rect in local EditableText coordinates. Unlike the
+  // composing rect, Flutter publishes this before composition begins so input
+  // method status and candidate surfaces can be anchored immediately.
+  GdkRectangle caret_rect;
+
+  gboolean composing_rect_valid;
+  gboolean caret_rect_valid;
+
   GCancellable* cancellable;
 };
 
@@ -245,6 +253,8 @@ static void set_client(int64_t client_id, gpointer user_data) {
   FlTextInputHandler* self = FL_TEXT_INPUT_HANDLER(user_data);
 
   self->client_id = client_id;
+  self->composing_rect_valid = FALSE;
+  self->caret_rect_valid = FALSE;
 }
 
 // Called when the input method configuration is changed.
@@ -320,30 +330,39 @@ static void set_editing_state(const gchar* text,
 static void clear_client(gpointer user_data) {
   FlTextInputHandler* self = FL_TEXT_INPUT_HANDLER(user_data);
   self->client_id = kClientIdUnset;
+  self->composing_rect_valid = FALSE;
+  self->caret_rect_valid = FALSE;
 }
 
 // Update the IM cursor position.
 //
-// As text is input by the user, the framework sends two streams of updates
-// over the text input channel: updates to the composing rect (cursor rect
-// when not in IME composing mode) and updates to the matrix transform from
-// local coordinates to Flutter root coordinates. This function is called
-// after each of these updates. It transforms the composing rect to GDK window
-// coordinates and notifies GTK of the updated cursor position.
+// As text is input by the user, the framework sends geometry updates for the
+// composing and caret rects plus matrix-transform updates from local
+// coordinates to Flutter root coordinates. This function is called after each
+// update. It transforms the current input rect to GDK window coordinates and
+// notifies GTK of the updated cursor position.
 static void update_im_cursor_position(FlTextInputHandler* self) {
-  // Skip update if not composing to avoid setting to position 0.
-  if (!self->text_model->composing()) {
+  const GdkRectangle* cursor_rect = nullptr;
+  if (self->text_model->composing() && self->composing_rect_valid) {
+    cursor_rect = &self->composing_rect;
+  } else if (self->caret_rect_valid) {
+    cursor_rect = &self->caret_rect;
+  } else if (self->composing_rect_valid) {
+    // TextInput.setMarkedTextRect carries the caret when there is no marked
+    // text, so it remains a valid fallback for older framework clients.
+    cursor_rect = &self->composing_rect;
+  } else {
     return;
   }
 
   // Transform the x, y positions of the cursor from local coordinates to
   // Flutter view coordinates.
-  gint x = self->composing_rect.x * self->editabletext_transform[0][0] +
-           self->composing_rect.y * self->editabletext_transform[1][0] +
-           self->editabletext_transform[3][0] + self->composing_rect.width;
-  gint y = self->composing_rect.x * self->editabletext_transform[0][1] +
-           self->composing_rect.y * self->editabletext_transform[1][1] +
-           self->editabletext_transform[3][1] + self->composing_rect.height;
+  gint x = cursor_rect->x * self->editabletext_transform[0][0] +
+           cursor_rect->y * self->editabletext_transform[1][0] +
+           self->editabletext_transform[3][0] + cursor_rect->width;
+  gint y = cursor_rect->x * self->editabletext_transform[0][1] +
+           cursor_rect->y * self->editabletext_transform[1][1] +
+           self->editabletext_transform[3][1] + cursor_rect->height;
 
   // Transform from Flutter view coordinates to GTK window coordinates.
   GdkRectangle preedit_rect = {};
@@ -389,6 +408,23 @@ static void set_marked_text_rect(double x,
   self->composing_rect.y = y;
   self->composing_rect.width = width;
   self->composing_rect.height = height;
+  self->composing_rect_valid = TRUE;
+  update_im_cursor_position(self);
+}
+
+// Handles updates to the caret rect from the framework.
+static void set_caret_rect(double x,
+                           double y,
+                           double width,
+                           double height,
+                           gpointer user_data) {
+  FlTextInputHandler* self = FL_TEXT_INPUT_HANDLER(user_data);
+
+  self->caret_rect.x = x;
+  self->caret_rect.y = y;
+  self->caret_rect.width = width;
+  self->caret_rect.height = height;
+  self->caret_rect_valid = TRUE;
   update_im_cursor_position(self);
 }
 
@@ -432,6 +468,7 @@ static FlTextInputChannelVTable text_input_vtable = {
     .clear_client = clear_client,
     .set_editable_size_and_transform = set_editable_size_and_transform,
     .set_marked_text_rect = set_marked_text_rect,
+    .set_caret_rect = set_caret_rect,
 };
 
 FlTextInputHandler* fl_text_input_handler_new(FlBinaryMessenger* messenger) {

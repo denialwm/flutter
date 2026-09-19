@@ -25,6 +25,7 @@ static constexpr char kPerformActionMethod[] = "TextInputClient.performAction";
 static constexpr char kSetEditableSizeAndTransform[] =
     "TextInput.setEditableSizeAndTransform";
 static constexpr char kSetMarkedTextRect[] = "TextInput.setMarkedTextRect";
+static constexpr char kSetCaretRect[] = "TextInput.setCaretRect";
 
 static constexpr char kInputActionKey[] = "inputAction";
 static constexpr char kTextInputTypeKey[] = "inputType";
@@ -260,6 +261,22 @@ static FlMethodResponse* set_marked_text_rect(FlTextInputChannel* self,
   return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
 }
 
+// Handles updates to the caret rect from the framework.
+//
+// The caret rect is published independently from the composing rect so an
+// input method can position UI before a preedit session has started.
+static FlMethodResponse* set_caret_rect(FlTextInputChannel* self,
+                                        FlValue* args) {
+  double x = fl_value_get_float(fl_value_lookup_string(args, "x"));
+  double y = fl_value_get_float(fl_value_lookup_string(args, "y"));
+  double width = fl_value_get_float(fl_value_lookup_string(args, "width"));
+  double height = fl_value_get_float(fl_value_lookup_string(args, "height"));
+
+  self->vtable->set_caret_rect(x, y, width, height, self->user_data);
+
+  return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+}
+
 // Called when a method call is received from Flutter.
 static void method_call_cb(FlMethodChannel* channel,
                            FlMethodCall* method_call,
@@ -284,6 +301,8 @@ static void method_call_cb(FlMethodChannel* channel,
     response = set_editable_size_and_transform(self, args);
   } else if (strcmp(method, kSetMarkedTextRect) == 0) {
     response = set_marked_text_rect(self, args);
+  } else if (strcmp(method, kSetCaretRect) == 0) {
+    response = set_caret_rect(self, args);
   } else if (strcmp(method, kUpdateConfigMethod) == 0) {
     response = update_config(self, args);
   } else {

@@ -61,6 +61,11 @@ typedef struct {
                                double width,
                                double height,
                                gpointer user_data);
+  void (*set_caret_rect)(double x,
+                         double y,
+                         double width,
+                         double height,
+                         gpointer user_data);
 } FlTextInputChannelVTable;
 
 /**
