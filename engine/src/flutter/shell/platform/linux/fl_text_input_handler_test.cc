@@ -680,6 +680,90 @@ TEST_F(FlTextInputHandlerTest, SetMarkedTextRect) {
   g_object_unref(window);
 }
 
+TEST_F(FlTextInputHandlerTest, SetCaretRectBeforeComposing) {
+  GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+  g_object_ref_sink(window);
+  fl_text_input_handler_set_widget(handler, window);
+
+  g_autoptr(FlValue) size_and_transform = build_map({
+      {
+          "transform",
+          build_list({
+              fl_value_new_float(1),
+              fl_value_new_float(2),
+              fl_value_new_float(3),
+              fl_value_new_float(4),
+              fl_value_new_float(5),
+              fl_value_new_float(6),
+              fl_value_new_float(7),
+              fl_value_new_float(8),
+              fl_value_new_float(9),
+              fl_value_new_float(10),
+              fl_value_new_float(11),
+              fl_value_new_float(12),
+              fl_value_new_float(13),
+              fl_value_new_float(14),
+              fl_value_new_float(15),
+              fl_value_new_float(16),
+          }),
+      },
+  });
+  gboolean called = FALSE;
+  fl_mock_binary_messenger_invoke_json_method(
+      messenger, "flutter/textinput", "TextInput.setEditableSizeAndTransform",
+      size_and_transform,
+      [](FlMockBinaryMessenger* messenger, FlMethodResponse* response,
+         gpointer user_data) {
+        gboolean* called = static_cast<gboolean*>(user_data);
+        *called = TRUE;
+
+        EXPECT_TRUE(FL_IS_METHOD_SUCCESS_RESPONSE(response));
+      },
+      &called);
+  EXPECT_TRUE(called);
+
+  EXPECT_CALL(mock_gtk, gtk_widget_translate_coordinates(
+                            ::testing::_, ::testing::_, ::testing::Eq(27),
+                            ::testing::Eq(32), ::testing::_, ::testing::_))
+      .WillOnce(::testing::DoAll(::testing::SetArgPointee<4>(123),
+                                 ::testing::SetArgPointee<5>(456),
+                                 ::testing::Return(true)));
+  EXPECT_CALL(mock_gtk, gtk_im_context_set_cursor_location(
+                            ::testing::_,
+                            ::testing::Pointee(::testing::AllOf(
+                                ::testing::Field(&GdkRectangle::x, 123),
+                                ::testing::Field(&GdkRectangle::y, 456),
+                                ::testing::Field(&GdkRectangle::width, 0),
+                                ::testing::Field(&GdkRectangle::height, 0)))));
+
+  g_autoptr(FlValue) rect = build_map({
+      {"x", fl_value_new_float(1)},
+      {"y", fl_value_new_float(2)},
+      {"width", fl_value_new_float(3)},
+      {"height", fl_value_new_float(4)},
+  });
+  called = FALSE;
+  fl_mock_binary_messenger_invoke_json_method(
+      messenger, "flutter/textinput", "TextInput.setCaretRect", rect,
+      [](FlMockBinaryMessenger* messenger, FlMethodResponse* response,
+         gpointer user_data) {
+        gboolean* called = static_cast<gboolean*>(user_data);
+        *called = TRUE;
+
+        EXPECT_TRUE(FL_IS_METHOD_SUCCESS_RESPONSE(response));
+
+        g_autoptr(FlValue) expected_result = fl_value_new_null();
+        EXPECT_TRUE(fl_value_equal(fl_method_success_response_get_result(
+                                       FL_METHOD_SUCCESS_RESPONSE(response)),
+                                   expected_result));
+      },
+      &called);
+  EXPECT_TRUE(called);
+
+  fl_text_input_handler_set_widget(handler, nullptr);
+  g_object_unref(window);
+}
+
 // Updating the marked text rect with no widget set (e.g. after the view is
 // disposed) must not crash. https://github.com/flutter/flutter/issues/188657
 TEST_F(FlTextInputHandlerTest, SetMarkedTextRectWithoutWidget) {
