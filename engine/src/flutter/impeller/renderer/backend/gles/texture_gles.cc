@@ -181,6 +181,7 @@ TextureGLES::TextureGLES(std::shared_ptr<ReactorGLES> reactor,
                      : UniqueHandleGLES::MakeUntracked(reactor_,
                                                        ToHandleType(type_)))),
       is_wrapped_(fbo.has_value() || external_handle.has_value()),
+      is_texture_backed_fbo_(fbo.has_value() && external_handle.has_value()),
       wrapped_fbo_(fbo) {
   // Ensure the texture descriptor itself is valid.
   if (!GetTextureDescriptor().IsValid()) {
@@ -206,6 +207,14 @@ void TextureGLES::Leak() {
 // |Texture|
 bool TextureGLES::IsValid() const {
   return is_valid_;
+}
+
+// |Texture|
+Scalar TextureGLES::GetYCoordScale() const {
+  // Offscreen GLES passes are stored top-down by the backend's vertex-stage
+  // flip. A borrowed FBO is deliberately excluded from that flip, and Denial
+  // exposes its borrowed color attachment for in-place backdrop reads.
+  return is_texture_backed_fbo_ ? -1.0f : 1.0f;
 }
 
 // |Texture|

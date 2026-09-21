@@ -22,6 +22,17 @@
 
 namespace impeller {
 
+namespace {
+
+Point RemapTextureCoordinate(Point coordinate, Scalar y_coord_scale) {
+  if (y_coord_scale < 0.0f) {
+    coordinate.y = 1.0f - coordinate.y;
+  }
+  return coordinate;
+}
+
+}  // namespace
+
 TextureContents::TextureContents() = default;
 
 TextureContents::~TextureContents() = default;
@@ -135,17 +146,22 @@ bool TextureContents::Render(const ContentContext& renderer,
 
   auto texture_coords =
       Rect::MakeSize(texture_->GetSize()).Project(source_rect_);
+  const Scalar y_coord_scale = texture_->GetYCoordScale();
   auto& data_host_buffer = renderer.GetTransientsDataBuffer();
 
   std::array<VS::PerVertexData, 4> vertices = {
-      VS::PerVertexData{destination_rect_.GetLeftTop(),
-                        texture_coords.GetLeftTop()},
-      VS::PerVertexData{destination_rect_.GetRightTop(),
-                        texture_coords.GetRightTop()},
+      VS::PerVertexData{
+          destination_rect_.GetLeftTop(),
+          RemapTextureCoordinate(texture_coords.GetLeftTop(), y_coord_scale)},
+      VS::PerVertexData{
+          destination_rect_.GetRightTop(),
+          RemapTextureCoordinate(texture_coords.GetRightTop(), y_coord_scale)},
       VS::PerVertexData{destination_rect_.GetLeftBottom(),
-                        texture_coords.GetLeftBottom()},
+                        RemapTextureCoordinate(texture_coords.GetLeftBottom(),
+                                               y_coord_scale)},
       VS::PerVertexData{destination_rect_.GetRightBottom(),
-                        texture_coords.GetRightBottom()},
+                        RemapTextureCoordinate(texture_coords.GetRightBottom(),
+                                               y_coord_scale)},
   };
   auto vertex_buffer = CreateVertexBuffer(vertices, data_host_buffer);
 
@@ -209,7 +225,14 @@ bool TextureContents::Render(const ContentContext& renderer,
         Rect::MakeSize(texture_->GetSize()).Project(source_rect_.Expand(-0.5));
 
     FSStrict::FragInfo frag_info;
-    frag_info.source_rect = Vector4(strict_texture_coords.GetLTRB());
+    if (y_coord_scale < 0.0f) {
+      frag_info.source_rect = Vector4(strict_texture_coords.GetLeft(),
+                                      1.0f - strict_texture_coords.GetBottom(),
+                                      strict_texture_coords.GetRight(),
+                                      1.0f - strict_texture_coords.GetTop());
+    } else {
+      frag_info.source_rect = Vector4(strict_texture_coords.GetLTRB());
+    }
     frag_info.alpha = GetOpacity();
     FSStrict::BindFragInfo(pass, data_host_buffer.EmplaceUniform((frag_info)));
     FSStrict::BindTextureSampler(

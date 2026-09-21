@@ -50,6 +50,12 @@ class Texture {
 
   const TextureDescriptor& GetTextureDescriptor() const;
 
+  /// Returns the scale needed to map Impeller's top-down UV convention to
+  /// this texture's storage. Impeller-owned render targets are normalized by
+  /// the backend and return 1. Borrowed render targets that remain in native
+  /// backend coordinates may override this value.
+  virtual Scalar GetYCoordScale() const;
+
   /// Returns true if mipmaps have never been generated.
   /// The contents of the mipmap may be out of date if the root texture has been
   /// modified and the mipmaps hasn't been regenerated.

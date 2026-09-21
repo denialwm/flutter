@@ -59,6 +59,21 @@ std::optional<Snapshot> CopyGlassScene(const ContentContext& renderer,
   };
 }
 
+Point RemapTextureCoordinate(Point coordinate, Scalar y_coord_scale) {
+  if (y_coord_scale < 0.0f) {
+    coordinate.y = 1.0f - coordinate.y;
+  }
+  return coordinate;
+}
+
+Quad RemapTextureCoordinates(const Quad& coordinates, Scalar y_coord_scale) {
+  Quad result = coordinates;
+  for (Point& coordinate : result) {
+    coordinate = RemapTextureCoordinate(coordinate, y_coord_scale);
+  }
+  return result;
+}
+
 Vector4 TextureUvBasis(const Quad& uvs, const Size& coverage_size) {
   const Point top_left = uvs[0];
   const Point top_right = uvs[1];
@@ -293,8 +308,10 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
       PhysicalCornerRadius(radii.bottom_right, scale_x, scale_y),
       PhysicalCornerRadius(radii.bottom_left, scale_x, scale_y));
 
-  const Quad scene_coordinates = scene_uvs.value();
-  const Quad blurred_coordinates = blurred_uvs.value();
+  const Quad scene_coordinates = RemapTextureCoordinates(
+      scene_uvs.value(), scene_snapshot->texture->GetYCoordScale());
+  const Quad blurred_coordinates = RemapTextureCoordinates(
+      blurred_uvs.value(), blurred_snapshot->texture->GetYCoordScale());
   const Vector4 blurred_uv_basis =
       TextureUvBasis(blurred_coordinates, draw_size);
 

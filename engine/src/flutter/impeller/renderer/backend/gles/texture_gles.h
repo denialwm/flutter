@@ -205,6 +205,7 @@ class TextureGLES final : public Texture,
   static constexpr size_t kMaxTrackedMipLevels = 16;
   std::array<std::bitset<kMaxTrackedMipLevels>, 6> slice_mip_initialized_ = {};
   const bool is_wrapped_;
+  const bool is_texture_backed_fbo_;
   const std::optional<GLuint> wrapped_fbo_;
   UniqueHandleGLES cached_fbo_;
   uint32_t cached_fbo_mip_level_ = 0;
@@ -234,6 +235,9 @@ class TextureGLES final : public Texture,
 
   // |Texture|
   ISize GetSize() const override;
+
+  // |Texture|
+  Scalar GetYCoordScale() const override;
 
   void InitializeContentsIfNecessary();
 

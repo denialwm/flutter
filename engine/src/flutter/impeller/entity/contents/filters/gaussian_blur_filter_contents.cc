@@ -195,6 +195,21 @@ Scalar FloorToDivisible(Scalar val, Scalar divisor) {
   return std::floor(val / divisor) * divisor;
 }
 
+Point RemapTextureCoordinate(Point coordinate, Scalar y_coord_scale) {
+  if (y_coord_scale < 0.0f) {
+    coordinate.y = 1.0f - coordinate.y;
+  }
+  return coordinate;
+}
+
+Quad RemapTextureCoordinates(const Quad& coordinates, Scalar y_coord_scale) {
+  Quad result = coordinates;
+  for (Point& coordinate : result) {
+    coordinate = RemapTextureCoordinate(coordinate, y_coord_scale);
+  }
+  return result;
+}
+
 // Precomputes the line equation parameters for a quadrilateral's bounds.
 //
 // This function takes an array of 4 vertices and returns an array of 4
@@ -435,7 +450,8 @@ fml::StatusOr<RenderTarget> MakeDownsampleSubpass(
           TextureFillFragmentShader::FragInfo frag_info;
           frag_info.alpha = 1.0;
 
-          const Quad& uvs = pass_args.uvs;
+          const Quad uvs = RemapTextureCoordinates(
+              pass_args.uvs, input_texture->GetYCoordScale());
           std::array<VS::PerVertexData, 4> vertices = {
               VS::PerVertexData{Point(0, 0), uvs[0]},
               VS::PerVertexData{Point(1, 0), uvs[1]},
@@ -486,8 +502,9 @@ fml::StatusOr<RenderTarget> MakeDownsampleSubpass(
                 renderer.GetDownsampleBoundedPipeline(pipeline_options));
 
             TextureDownsampleBoundedFragmentShader::BoundInfo bound_info;
-            bound_info.quad_line_params =
-                PrecomputeQuadLineParameters(pass_args.uv_bounds.value());
+            bound_info.quad_line_params = PrecomputeQuadLineParameters(
+                RemapTextureCoordinates(pass_args.uv_bounds.value(),
+                                        input_texture->GetYCoordScale()));
             TextureDownsampleBoundedFragmentShader::BindBoundInfo(
                 pass, data_host_buffer.EmplaceUniform(bound_info));
           } else {
@@ -516,7 +533,8 @@ fml::StatusOr<RenderTarget> MakeDownsampleSubpass(
           frag_info.ratio = ratio;
           frag_info.pixel_size = Vector2(1.0f / Size(input_texture->GetSize()));
 
-          const Quad& uvs = pass_args.uvs;
+          const Quad uvs = RemapTextureCoordinates(
+              pass_args.uvs, input_texture->GetYCoordScale());
           std::array<VS::PerVertexData, 4> vertices = {
               VS::PerVertexData{Point(0, 0), uvs[0]},
               VS::PerVertexData{Point(1, 0), uvs[1]},
@@ -579,11 +597,13 @@ fml::StatusOr<RenderTarget> MakeGaussianBlurSubpass(
         GaussianBlurFragmentShader::BindFragInfo(
             pass, data_host_buffer.EmplaceUniform(frag_info));
 
+        const Quad remapped_texture_uvs = RemapTextureCoordinates(
+            texture_uvs, input_texture->GetYCoordScale());
         std::array<VS::PerVertexData, 4> vertices = {
-            VS::PerVertexData{positions[0], texture_uvs[0]},
-            VS::PerVertexData{positions[1], texture_uvs[1]},
-            VS::PerVertexData{positions[2], texture_uvs[2]},
-            VS::PerVertexData{positions[3], texture_uvs[3]},
+            VS::PerVertexData{positions[0], remapped_texture_uvs[0]},
+            VS::PerVertexData{positions[1], remapped_texture_uvs[1]},
+            VS::PerVertexData{positions[2], remapped_texture_uvs[2]},
+            VS::PerVertexData{positions[3], remapped_texture_uvs[3]},
         };
         pass.SetVertexBuffer(CreateVertexBuffer(vertices, data_host_buffer));
 

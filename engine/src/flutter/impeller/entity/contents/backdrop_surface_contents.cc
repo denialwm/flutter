@@ -32,6 +32,13 @@ Point MapPoint(const Rect& destination,
   return normalized_source.GetOrigin() + unit * normalized_source.GetSize();
 }
 
+Point RemapTextureCoordinate(Point coordinate, Scalar y_coord_scale) {
+  if (y_coord_scale < 0.0f) {
+    coordinate.y = 1.0f - coordinate.y;
+  }
+  return coordinate;
+}
+
 #if defined(IMPELLER_ENABLE_OPENGLES) && !defined(FML_OS_EMSCRIPTEN)
 template <typename FragmentShader>
 void BindCompositeFragmentState(
@@ -195,6 +202,8 @@ bool BackdropSurfaceContents::Render(const ContentContext& renderer,
   const Matrix backdrop_inverse = backdrop_.transform.Invert();
   const Matrix scene_uv_transform =
       scene_.has_value() ? scene_->GetUVTransform().value() : Matrix();
+  const std::shared_ptr<Texture>& scene_texture =
+      scene_.has_value() ? scene_->texture : backdrop_.texture;
   const auto positions = destination.GetPoints();
 
   std::array<VS::PerVertexData, 4> vertices;
@@ -203,9 +212,15 @@ bool BackdropSurfaceContents::Render(const ContentContext& renderer,
     const Point backdrop_position = backdrop_inverse * pass_position;
     vertices[i] = VS::PerVertexData{
         positions[i],
-        MapPoint(surface_->GetDestinationRect(), surface_uvs, positions[i]),
-        MapPoint(backdrop_.destination_rect, backdrop_uvs, backdrop_position),
-        scene_.has_value() ? scene_uv_transform * pass_position : Point(),
+        RemapTextureCoordinate(
+            MapPoint(surface_->GetDestinationRect(), surface_uvs, positions[i]),
+            surface_texture->GetYCoordScale()),
+        RemapTextureCoordinate(MapPoint(backdrop_.destination_rect,
+                                        backdrop_uvs, backdrop_position),
+                               backdrop_.texture->GetYCoordScale()),
+        RemapTextureCoordinate(
+            scene_.has_value() ? scene_uv_transform * pass_position : Point(),
+            scene_texture->GetYCoordScale()),
     };
   }
 
@@ -231,8 +246,6 @@ bool BackdropSurfaceContents::Render(const ContentContext& renderer,
   VS::FrameInfo frame_info;
   frame_info.mvp = entity.GetShaderTransform(pass);
   frame_info.model = entity.GetTransform();
-  const std::shared_ptr<Texture>& scene_texture =
-      scene_.has_value() ? scene_->texture : backdrop_.texture;
   VS::BindFrameInfo(pass, data.EmplaceUniform(frame_info));
 
   SamplerDescriptor surface_sampler = surface_->GetSamplerDescriptor();

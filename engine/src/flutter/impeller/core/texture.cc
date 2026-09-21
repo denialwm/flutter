@@ -56,6 +56,10 @@ const TextureDescriptor& Texture::GetTextureDescriptor() const {
   return desc_;
 }
 
+Scalar Texture::GetYCoordScale() const {
+  return 1.0f;
+}
+
 bool Texture::IsSliceValid(size_t slice) const {
   switch (desc_.type) {
     case TextureType::kTexture2D:
