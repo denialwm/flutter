@@ -231,12 +231,8 @@ bool BackdropSurfaceContents::Render(const ContentContext& renderer,
   VS::FrameInfo frame_info;
   frame_info.mvp = entity.GetShaderTransform(pass);
   frame_info.model = entity.GetTransform();
-  frame_info.surface_sampler_y_coord_scale = surface_texture->GetYCoordScale();
-  frame_info.backdrop_sampler_y_coord_scale =
-      backdrop_.texture->GetYCoordScale();
   const std::shared_ptr<Texture>& scene_texture =
       scene_.has_value() ? scene_->texture : backdrop_.texture;
-  frame_info.scene_sampler_y_coord_scale = scene_texture->GetYCoordScale();
   VS::BindFrameInfo(pass, data.EmplaceUniform(frame_info));
 
   SamplerDescriptor surface_sampler = surface_->GetSamplerDescriptor();

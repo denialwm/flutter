@@ -2,13 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <impeller/conversions.glsl>
 #include <impeller/types.glsl>
 
 uniform FrameInfo {
   mat4 mvp;
-  float blurred_sampler_y_coord_scale;
-  float scene_sampler_y_coord_scale;
 }
 frame_info;
 
@@ -23,9 +20,7 @@ out highp vec2 v_material_position;
 
 void main() {
   gl_Position = frame_info.mvp * vec4(position, 0.0, 1.0);
-  v_blurred_texture_coords = IPRemapCoords(
-      blurred_texture_coords, frame_info.blurred_sampler_y_coord_scale);
-  v_scene_texture_coords = IPRemapCoords(
-      scene_texture_coords, frame_info.scene_sampler_y_coord_scale);
+  v_blurred_texture_coords = blurred_texture_coords;
+  v_scene_texture_coords = scene_texture_coords;
   v_material_position = material_position;
 }

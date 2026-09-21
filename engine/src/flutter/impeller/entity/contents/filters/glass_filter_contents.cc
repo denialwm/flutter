@@ -59,19 +59,10 @@ std::optional<Snapshot> CopyGlassScene(const ContentContext& renderer,
   };
 }
 
-Point RemapTextureCoordinate(Point coordinate, Scalar y_coord_scale) {
-  if (y_coord_scale < 0.0f) {
-    coordinate.y = 1.0f - coordinate.y;
-  }
-  return coordinate;
-}
-
-Vector4 TextureUvBasis(const Quad& uvs,
-                       const Size& coverage_size,
-                       Scalar y_coord_scale) {
-  const Point top_left = RemapTextureCoordinate(uvs[0], y_coord_scale);
-  const Point top_right = RemapTextureCoordinate(uvs[1], y_coord_scale);
-  const Point bottom_left = RemapTextureCoordinate(uvs[2], y_coord_scale);
+Vector4 TextureUvBasis(const Quad& uvs, const Size& coverage_size) {
+  const Point top_left = uvs[0];
+  const Point top_right = uvs[1];
+  const Point bottom_left = uvs[2];
   const Vector2 x_basis =
       (top_right - top_left) / std::max(coverage_size.width, 0.0001f);
   const Vector2 y_basis =
@@ -305,8 +296,7 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
   const Quad scene_coordinates = scene_uvs.value();
   const Quad blurred_coordinates = blurred_uvs.value();
   const Vector4 blurred_uv_basis =
-      TextureUvBasis(blurred_coordinates, draw_size,
-                     blurred_snapshot->texture->GetYCoordScale());
+      TextureUvBasis(blurred_coordinates, draw_size);
 
   Contents::RenderProc render_material =
       [scene_snapshot, scene_coordinates, blurred_snapshot, blurred_coordinates,
@@ -341,11 +331,6 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         // The allocation rounds up; keep geometry and optical coordinates at
         // their physical size instead of stretching them across that padding.
         frame_info.mvp = material_entity.GetShaderTransform(pass);
-        frame_info.blurred_sampler_y_coord_scale =
-            blurred_snapshot->texture->GetYCoordScale();
-
-        frame_info.scene_sampler_y_coord_scale =
-            scene_snapshot->texture->GetYCoordScale();
 
         FS::FragInfo frag_info;
         frag_info.normal_transform = normal_transform;
