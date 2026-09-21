@@ -56,12 +56,12 @@ void main() {
   vec4 composite = surface;
   bool threshold_enabled = frag_info.alpha_threshold >= 0.0;
   float final_surface_alpha = surface.a * coverage;
-  bool use_filtered_backdrop = !threshold_enabled ||
-                               final_surface_alpha > frag_info.alpha_threshold;
+  bool use_filtered_backdrop =
+      !threshold_enabled || final_surface_alpha > frag_info.alpha_threshold;
   if (use_filtered_backdrop && surface.a < 1.0 - 1.0 / 1024.0) {
-    vec4 backdrop = vec4(texture(backdrop_texture_sampler,
-                                 v_backdrop_texture_coords,
-                                 float16_t(kDefaultMipBias)));
+    vec4 backdrop =
+        vec4(texture(backdrop_texture_sampler, v_backdrop_texture_coords,
+                     float16_t(kDefaultMipBias)));
     backdrop *= frag_info.backdrop_opacity;
     composite += backdrop * (1.0 - surface.a);
   }

@@ -15,8 +15,8 @@ sk_sp<DlImageImpeller> DlImageImpeller::Make(std::shared_ptr<Texture> texture,
   if (!texture) {
     return nullptr;
   }
-  return sk_make_sp<DlImageImpellerTexture>(
-      std::move(texture), owning_context, is_external_texture);
+  return sk_make_sp<DlImageImpellerTexture>(std::move(texture), owning_context,
+                                            is_external_texture);
 }
 
 sk_sp<DlImageImpeller> DlImageImpeller::MakeFromYUVTextures(

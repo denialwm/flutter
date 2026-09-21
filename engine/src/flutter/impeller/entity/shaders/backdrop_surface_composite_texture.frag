@@ -10,8 +10,8 @@ precision highp float;
 uniform f16sampler2D surface_texture_sampler;
 
 vec4 sampleSurface(highp vec2 coords) {
-  return vec4(texture(surface_texture_sampler, coords,
-                      float16_t(kDefaultMipBias)));
+  return vec4(
+      texture(surface_texture_sampler, coords, float16_t(kDefaultMipBias)));
 }
 
 #include "backdrop_surface_composite.glsl"

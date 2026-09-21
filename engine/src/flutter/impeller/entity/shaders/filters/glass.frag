@@ -203,8 +203,9 @@ void main() {
                   normal_confidence);
 
   if (dot(outward_normal, outward_normal) > 0.0) {
-    outward_normal = normalize(frag_info.normal_transform.xy * outward_normal.x +
-                               frag_info.normal_transform.zw * outward_normal.y);
+    outward_normal =
+        normalize(frag_info.normal_transform.xy * outward_normal.x +
+                  frag_info.normal_transform.zw * outward_normal.y);
   }
 
   float thickness = max(frag_info.thickness, 0.0001);

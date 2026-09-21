@@ -112,8 +112,8 @@ std::shared_ptr<FilterContents> WrapInput(const ContentContext& renderer,
 
       auto matrix = matrix_filter->matrix();
       return FilterContents::MakeLocalMatrixFilter(
-          FilterInput::Make(WrapInput(renderer,
-                                      matrix_filter->image_filter().get(), input)),
+          FilterInput::Make(
+              WrapInput(renderer, matrix_filter->image_filter().get(), input)),
           matrix);
     }
     case flutter::DlImageFilterType::kColorFilter: {

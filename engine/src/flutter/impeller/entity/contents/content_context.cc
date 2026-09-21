@@ -725,7 +725,8 @@ ContentContext::ContentContext(
     pipelines_->gaussian_blur.CreateDefault(
         *context_, options_no_msaa_no_depth_stencil, {supports_decal});
     // Direct glass draws consume the parent's depth clip. Variants can strip
-    // attachments for offscreen filtering, but cannot recover stripped defaults.
+    // attachments for offscreen filtering, but cannot recover stripped
+    // defaults.
     pipelines_->glass.CreateDefault(*context_, options_trianglestrip);
     pipelines_->border_mask_blur.CreateDefault(*context_,
                                                options_trianglestrip);
