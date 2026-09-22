@@ -61,14 +61,15 @@ class EmbedderExternalTextureGL : public flutter::Texture {
                                 impeller::AiksContext* aiks_context,
                                 const SkISize& size);
 
+#if !SLIMPELLER
   sk_sp<DlImage> ResolveTextureSkia(int64_t texture_id,
                                     GrDirectContext* context,
                                     const SkISize& size);
+#endif  // !SLIMPELLER
 
   sk_sp<DlImage> ResolveTextureImpeller(int64_t texture_id,
                                         impeller::AiksContext* aiks_context,
                                         const SkISize& size);
-
   FML_DISALLOW_COPY_AND_ASSIGN(EmbedderExternalTextureGL);
 };
 

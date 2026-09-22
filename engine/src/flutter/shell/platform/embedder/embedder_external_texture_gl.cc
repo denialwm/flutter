@@ -153,12 +153,16 @@ sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTexture(
     const SkISize& size) {
   if (!!aiks_context) {
     return ResolveTextureImpeller(texture_id, aiks_context, size);
-  } else if (context) {
+  }
+#if !SLIMPELLER
+  if (context) {
     return ResolveTextureSkia(texture_id, context, size);
   }
+#endif  // !SLIMPELLER
   return nullptr;
 }
 
+#if !SLIMPELLER
 sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTextureSkia(
     int64_t texture_id,
     GrDirectContext* context,
@@ -218,6 +222,7 @@ sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTextureSkia(
   // This image should not escape local use by EmbedderExternalTextureGL
   return DlImageSkia::Make(std::move(image));
 }
+#endif  // !SLIMPELLER
 
 sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTextureImpeller(
     int64_t texture_id,

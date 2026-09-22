@@ -321,6 +321,7 @@ static std::optional<flutter::DlIRect> FlutterRectToDlIRect(
 #define GL_BGRA8_EXT 0x93A1
 #endif
 
+#if !SLIMPELLER
 static std::optional<SkColorType> FlutterFormatToSkColorType(uint32_t format) {
   switch (format) {
     case GL_BGRA8_EXT:
@@ -333,6 +334,7 @@ static std::optional<SkColorType> FlutterFormatToSkColorType(uint32_t format) {
       return std::nullopt;
   }
 }
+#endif  // !SLIMPELLER
 
 #endif
 
@@ -553,6 +555,7 @@ InferOpenGLPlatformViewCreationCallback(
               view_embedder             // external view embedder
           );
         }
+#if !SLIMPELLER
         return std::make_unique<flutter::PlatformViewEmbedder>(
             shell,                   // delegate
             shell.GetTaskRunners(),  // task runners
@@ -562,6 +565,10 @@ InferOpenGLPlatformViewCreationCallback(
             platform_dispatch_table,     // embedder platform dispatch table
             view_embedder                // external view embedder
         );
+#else
+        FML_LOG(FATAL) << "Impeller opt-out unavailable.";
+        return std::unique_ptr<flutter::PlatformViewEmbedder>();
+#endif  // !SLIMPELLER
       });
 #else   // SHELL_ENABLE_GL
   FML_LOG(ERROR) << "This Flutter Engine does not support OpenGL rendering.";
@@ -907,6 +914,7 @@ InferPlatformViewCreationCallback(
   return nullptr;
 }
 
+#if !SLIMPELLER
 static sk_sp<SkSurface> MakeSkSurfaceFromBackingStore(
     GrDirectContext* context,
     const FlutterBackingStoreConfig& config,
@@ -1047,6 +1055,8 @@ static sk_sp<SkSurface> MakeSkSurfaceFromBackingStore(
 #endif
 }
 
+#endif  // !SLIMPELLER
+
 static sk_sp<SkSurface> MakeSkSurfaceFromBackingStore(
     GrDirectContext* context,
     const FlutterBackingStoreConfig& config,
@@ -1136,6 +1146,7 @@ static sk_sp<SkSurface> MakeSkSurfaceFromBackingStore(
   return surface;
 }
 
+#if !SLIMPELLER
 static sk_sp<SkSurface> MakeSkSurfaceFromBackingStore(
     GrDirectContext* context,
     const FlutterBackingStoreConfig& config,
@@ -1181,6 +1192,7 @@ static sk_sp<SkSurface> MakeSkSurfaceFromBackingStore(
   return nullptr;
 #endif
 }
+#endif  // !SLIMPELLER
 
 #if defined(SHELL_ENABLE_GL) && defined(IMPELLER_SUPPORTS_RENDERING)
 static std::optional<impeller::PixelFormat> FlutterFormatToImpellerPixelFormat(
@@ -1407,6 +1419,7 @@ MakeRenderTargetFromBackingStoreImpeller(
 #endif
 }
 
+#if !SLIMPELLER
 static sk_sp<SkSurface> MakeSkSurfaceFromBackingStore(
     GrDirectContext* context,
     const FlutterBackingStoreConfig& config,
@@ -1457,6 +1470,7 @@ static sk_sp<SkSurface> MakeSkSurfaceFromBackingStore(
   return nullptr;
 #endif
 }
+#endif  // !SLIMPELLER
 
 static std::unique_ptr<flutter::EmbedderRenderTarget>
 MakeRenderTargetFromSkSurface(
@@ -1529,11 +1543,13 @@ CreateEmbedderRenderTarget(
     case kFlutterBackingStoreTypeOpenGL: {
       switch (backing_store.open_gl.type) {
         case kFlutterOpenGLTargetTypeTexture: {
+#if !SLIMPELLER
           auto skia_surface = MakeSkSurfaceFromBackingStore(
               context, config, &backing_store.open_gl.texture);
           render_target = MakeRenderTargetFromSkSurface(
               backing_store, std::move(skia_surface),
               collect_callback.Release());
+#endif  // !SLIMPELLER
           break;
         }
         case kFlutterOpenGLTargetTypeFramebuffer: {
@@ -1542,7 +1558,9 @@ CreateEmbedderRenderTarget(
                 backing_store, collect_callback.Release(), aiks_context, config,
                 &backing_store.open_gl.framebuffer);
             break;
-          } else {
+          }
+#if !SLIMPELLER
+          else {
             auto skia_surface = MakeSkSurfaceFromBackingStore(
                 context, config, &backing_store.open_gl.framebuffer);
             render_target = MakeRenderTargetFromSkSurface(
@@ -1550,9 +1568,14 @@ CreateEmbedderRenderTarget(
                 collect_callback.Release());
             break;
           }
+#else
+          FML_LOG(FATAL) << "Impeller opt-out unavailable.";
+          break;
+#endif  // !SLIMPELLER
         }
 
         case kFlutterOpenGLTargetTypeSurface: {
+#if !SLIMPELLER
           auto on_make_current =
               [callback = backing_store.open_gl.surface.make_current_callback,
                context = backing_store.open_gl.surface.user_data]()
@@ -1571,12 +1594,16 @@ CreateEmbedderRenderTarget(
             return {ok, invalidate_api_state};
           };
 
+#endif  // !SLIMPELLER
+
           if (enable_impeller) {
             // TODO(https://github.com/flutter/flutter/issues/151670): Implement
             //  GL Surface backing stores for Impeller.
             FML_LOG(ERROR) << "Unimplemented";
             break;
-          } else {
+          }
+#if !SLIMPELLER
+          else {
             auto skia_surface = MakeSkSurfaceFromBackingStore(
                 context, config, &backing_store.open_gl.surface);
 
@@ -1585,6 +1612,10 @@ CreateEmbedderRenderTarget(
                 collect_callback.Release(), on_make_current, on_clear_current);
             break;
           }
+#else
+          FML_LOG(FATAL) << "Impeller opt-out unavailable.";
+          break;
+#endif  // !SLIMPELLER
         }
       }
       break;
@@ -1609,25 +1640,31 @@ CreateEmbedderRenderTarget(
         render_target = MakeRenderTargetFromBackingStoreImpeller(
             backing_store, collect_callback.Release(), aiks_context, config,
             &backing_store.metal);
-      } else {
+      }
+#if !SLIMPELLER
+      else {
         auto skia_surface = MakeSkSurfaceFromBackingStore(context, config,
                                                           &backing_store.metal);
         render_target = MakeRenderTargetFromSkSurface(
             backing_store, std::move(skia_surface), collect_callback.Release());
       }
+#endif  // !SLIMPELLER
       break;
     }
     case kFlutterBackingStoreTypeVulkan: {
       if (enable_impeller) {
         FML_LOG(ERROR) << "Unimplemented";
         break;
-      } else {
+      }
+#if !SLIMPELLER
+      else {
         auto skia_surface = MakeSkSurfaceFromBackingStore(
             context, config, &backing_store.vulkan);
         render_target = MakeRenderTargetFromSkSurface(
             backing_store, std::move(skia_surface), collect_callback.Release());
         break;
       }
+#endif  // !SLIMPELLER
     }
   };
 
