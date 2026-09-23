@@ -2,7 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <map>
 #include <memory>
+#include <tuple>
 #include "flutter/testing/testing.h"  // IWYU pragma: keep
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -370,6 +372,16 @@ class RenderPassGLESCommandTest : public ::testing::Test {
             std::move(render_pass), std::move(pipeline)};
   }
 
+  static std::shared_ptr<PipelineGLES> CreateSharedProgramVariant(
+      const RenderPassGLESContext& ctx,
+      const PipelineDescriptor& descriptor) {
+    auto pipeline = std::shared_ptr<PipelineGLES>(
+        new PipelineGLES(ctx.reactor, std::weak_ptr<PipelineLibrary>(),
+                         descriptor, ctx.pipeline->GetSharedProgram()));
+    pipeline->buffer_bindings_ = std::make_unique<BufferBindingsGLES>();
+    return pipeline;
+  }
+
   static void SetYFlipLocation(const std::shared_ptr<PipelineGLES>& pipeline,
                                GLint location) {
     pipeline->y_flip_uniform_location_ = location;
@@ -390,6 +402,138 @@ class RenderPassGLESCommandTest : public ::testing::Test {
     return pipeline;
   }
 };
+
+TEST_F(RenderPassGLESCommandTest,
+       PipelineStateAndDynamicStateRemainIndependent) {
+  auto ctx = CreateRenderPassGLESContext(kMockResolverGLES, 101);
+  auto desc_a = ctx.pipeline->GetDescriptor();
+  ColorAttachmentDescriptor color;
+  color.format = PixelFormat::kR8G8B8A8UNormInt;
+  color.blending_enabled = true;
+  color.src_color_blend_factor = BlendFactor::kOne;
+  desc_a.SetColorAttachmentDescriptor(0, color);
+  desc_a.SetDepthStencilAttachmentDescriptor(
+      DepthAttachmentDescriptor{.depth_compare = CompareFunction::kLess});
+  StencilAttachmentDescriptor stencil;
+  stencil.stencil_compare = CompareFunction::kEqual;
+  desc_a.SetStencilAttachmentDescriptors(stencil);
+  desc_a.SetCullMode(CullMode::kBackFace);
+  desc_a.SetWindingOrder(WindingOrder::kCounterClockwise);
+  desc_a.SetPrimitiveType(PrimitiveType::kTriangleStrip);
+  auto a = CreateSharedProgramVariant(ctx, desc_a);
+
+  auto desc_b = desc_a;
+  color.src_color_blend_factor = BlendFactor::kSourceAlpha;
+  desc_b.SetColorAttachmentDescriptor(0, color);
+  desc_b.ClearDepthAttachment();
+  desc_b.ClearStencilAttachments();
+  desc_b.SetCullMode(CullMode::kFrontFace);
+  desc_b.SetWindingOrder(WindingOrder::kClockwise);
+  desc_b.SetPrimitiveType(PrimitiveType::kTriangle);
+  auto b = CreateSharedProgramVariant(ctx, desc_b);
+  auto next_pass =
+      ctx.command_buffer->CreateRenderPass(ctx.render_pass->GetRenderTarget());
+  const std::shared_ptr<PipelineGLES> pipelines[] = {a, a, b, a, a};
+  const uint32_t references[] = {1, 2, 7, 3, 3};
+  for (size_t i = 0; i < 5; i++) {
+    auto& pass = i == 4 ? next_pass : ctx.render_pass;
+    pass->SetPipeline(PipelineRef(pipelines[i]));
+    pass->SetStencilReference(references[i]);
+    pass->SetElementCount(3);
+    pass->SetIndexBuffer({}, IndexType::kNone);
+    if (i == 0) {
+      pass->SetViewport(Viewport{.rect = Rect::MakeXYWH(1, 2, 30, 40)});
+    }
+    ASSERT_TRUE(pass->Draw().ok());
+  }
+
+  std::map<GLenum, bool> enabled;
+  GLint depth_func = 0, cull_face = 0, winding = 0, source_blend = 0;
+  GLint reference = 0;
+  IRect32 viewport;
+  ON_CALL(ctx.mock_gl_impl_ref, Enable(_)).WillByDefault([&](GLenum cap) {
+    enabled[cap] = true;
+  });
+  ON_CALL(ctx.mock_gl_impl_ref, Disable(_)).WillByDefault([&](GLenum cap) {
+    enabled[cap] = false;
+  });
+  ON_CALL(ctx.mock_gl_impl_ref, DepthFunc(_)).WillByDefault([&](GLenum func) {
+    depth_func = func;
+  });
+  ON_CALL(ctx.mock_gl_impl_ref, CullFace(_)).WillByDefault([&](GLenum face) {
+    cull_face = face;
+  });
+  ON_CALL(ctx.mock_gl_impl_ref, FrontFace(_)).WillByDefault([&](GLenum value) {
+    winding = value;
+  });
+  ON_CALL(ctx.mock_gl_impl_ref, BlendFuncSeparate(_, _, _, _))
+      .WillByDefault(
+          [&](GLenum src, GLenum, GLenum, GLenum) { source_blend = src; });
+  EXPECT_CALL(ctx.mock_gl_impl_ref,
+              StencilFuncSeparate(GL_FRONT_AND_BACK, GL_EQUAL, _, _))
+      .Times(4)
+      .WillRepeatedly(
+          [&](GLenum, GLenum, GLint value, GLuint) { reference = value; });
+  ON_CALL(ctx.mock_gl_impl_ref, Viewport(_, _, _, _))
+      .WillByDefault([&](GLint x, GLint y, GLsizei width, GLsizei height) {
+        viewport = IRect32::MakeXYWH(x, y, width, height);
+      });
+  size_t draw = 0;
+  EXPECT_CALL(ctx.mock_gl_impl_ref, DrawArrays(_, _, _))
+      .Times(5)
+      .WillRepeatedly([&](GLenum mode, GLint, GLsizei) {
+        SCOPED_TRACE(draw);
+        const bool is_a = draw != 2;
+        EXPECT_TRUE(enabled[GL_BLEND]);
+        EXPECT_TRUE(enabled[GL_CULL_FACE]);
+        EXPECT_EQ(enabled[GL_DEPTH_TEST], is_a);
+        EXPECT_EQ(enabled[GL_STENCIL_TEST], is_a);
+        EXPECT_EQ(source_blend, is_a ? GL_ONE : GL_SRC_ALPHA);
+        EXPECT_EQ(cull_face, is_a ? GL_BACK : GL_FRONT);
+        EXPECT_EQ(winding, is_a ? GL_CW : GL_CCW);
+        EXPECT_EQ(mode,
+                  static_cast<GLenum>(is_a ? GL_TRIANGLE_STRIP : GL_TRIANGLES));
+        EXPECT_EQ(viewport, draw == 0 ? IRect32::MakeXYWH(1, 2, 30, 40)
+                                      : IRect32::MakeXYWH(0, 0, 100, 100));
+        if (is_a) {
+          EXPECT_EQ(depth_func, GL_LESS);
+          EXPECT_EQ(reference, static_cast<GLint>(references[draw]));
+        }
+        draw++;
+      });
+  ASSERT_TRUE(ctx.render_pass->EncodeCommands());
+  ASSERT_TRUE(next_pass->EncodeCommands());
+  ASSERT_TRUE(ctx.reactor->React());
+  EXPECT_EQ(draw, 5u);
+}
+
+TEST_F(RenderPassGLESCommandTest, QueuedPassOwnsItsSnapshotUntilExecution) {
+  auto ctx = CreateRenderPassGLESContext();
+  auto target = ctx.render_pass->GetRenderTarget();
+  auto color = target.GetColorAttachment(0);
+  color.clear_color = Color::Red();
+  target.SetColorAttachment(color, 0);
+  auto red = ctx.command_buffer->CreateRenderPass(target);
+  color.clear_color = Color::Blue();
+  target.SetColorAttachment(color, 0);
+  auto blue = ctx.command_buffer->CreateRenderPass(target);
+  std::weak_ptr<RenderPass> red_lifetime = red;
+  std::weak_ptr<RenderPass> blue_lifetime = blue;
+  ASSERT_TRUE(red->EncodeCommands());
+  ASSERT_TRUE(blue->EncodeCommands());
+  red.reset();
+  blue.reset();
+  EXPECT_FALSE(red_lifetime.expired());
+  EXPECT_FALSE(blue_lifetime.expired());
+  {
+    ::testing::InSequence sequence;
+    EXPECT_CALL(ctx.mock_gl_impl_ref, ClearColor(1, 0, 0, 1)).Times(1);
+    EXPECT_CALL(ctx.mock_gl_impl_ref, ClearColor(0, 0, 1, 1)).Times(1);
+  }
+  ASSERT_TRUE(ctx.reactor->React());
+  EXPECT_TRUE(red_lifetime.expired());
+  EXPECT_TRUE(blue_lifetime.expired());
+}
 
 TEST_F(RenderPassGLESCommandTest, ProgramAndYFlipTrackPipelineTransitions) {
   auto ctx = CreateRenderPassGLESContext(kMockResolverGLES, 101);

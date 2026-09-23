@@ -24,6 +24,21 @@ extern const ProcTableGLES::Resolver kMockResolverGLESWithoutInstancing;
 class IMockGLESImpl {
  public:
   virtual ~IMockGLESImpl() = default;
+  virtual void StencilFuncSeparate(GLenum face,
+                                   GLenum func,
+                                   GLint ref,
+                                   GLuint mask) {}
+  virtual void DepthFunc(GLenum func) {}
+  virtual void BlendFuncSeparate(GLenum src_rgb,
+                                 GLenum dst_rgb,
+                                 GLenum src_alpha,
+                                 GLenum dst_alpha) {}
+  virtual void CullFace(GLenum face) {}
+  virtual void FrontFace(GLenum winding) {}
+  virtual void ClearColor(GLfloat red,
+                          GLfloat green,
+                          GLfloat blue,
+                          GLfloat alpha) {}
   virtual void ActiveTexture(GLenum unit) {}
   virtual void Uniform1i(GLint location, GLint value) {}
   virtual void GenSamplers(GLsizei count, GLuint* names) {}
@@ -159,6 +174,22 @@ class IMockGLESImpl {
 
 class MockGLESImpl : public IMockGLESImpl {
  public:
+  MOCK_METHOD(void,
+              StencilFuncSeparate,
+              (GLenum face, GLenum func, GLint ref, GLuint mask),
+              (override));
+  MOCK_METHOD(void, DepthFunc, (GLenum func), (override));
+  MOCK_METHOD(
+      void,
+      BlendFuncSeparate,
+      (GLenum src_rgb, GLenum dst_rgb, GLenum src_alpha, GLenum dst_alpha),
+      (override));
+  MOCK_METHOD(void, CullFace, (GLenum face), (override));
+  MOCK_METHOD(void, FrontFace, (GLenum winding), (override));
+  MOCK_METHOD(void,
+              ClearColor,
+              (GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha),
+              (override));
   MOCK_METHOD(void,
               DeleteTextures,
               (GLsizei size, const GLuint* queries),

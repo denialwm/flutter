@@ -60,6 +60,46 @@ auto CallMockMethod(Func func, Args&&... args) {
 }
 }  // namespace
 
+void mockStencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask) {
+  CallMockMethod(&IMockGLESImpl::StencilFuncSeparate, face, func, ref, mask);
+}
+static_assert(CheckSameSignature<decltype(mockStencilFuncSeparate),
+                                 decltype(glStencilFuncSeparate)>::value);
+
+void mockDepthFunc(GLenum func) {
+  CallMockMethod(&IMockGLESImpl::DepthFunc, func);
+}
+static_assert(
+    CheckSameSignature<decltype(mockDepthFunc), decltype(glDepthFunc)>::value);
+
+void mockBlendFuncSeparate(GLenum src_rgb,
+                           GLenum dst_rgb,
+                           GLenum src_alpha,
+                           GLenum dst_alpha) {
+  CallMockMethod(&IMockGLESImpl::BlendFuncSeparate, src_rgb, dst_rgb, src_alpha,
+                 dst_alpha);
+}
+static_assert(CheckSameSignature<decltype(mockBlendFuncSeparate),
+                                 decltype(glBlendFuncSeparate)>::value);
+
+void mockCullFace(GLenum face) {
+  CallMockMethod(&IMockGLESImpl::CullFace, face);
+}
+static_assert(
+    CheckSameSignature<decltype(mockCullFace), decltype(glCullFace)>::value);
+
+void mockFrontFace(GLenum winding) {
+  CallMockMethod(&IMockGLESImpl::FrontFace, winding);
+}
+static_assert(
+    CheckSameSignature<decltype(mockFrontFace), decltype(glFrontFace)>::value);
+
+void mockClearColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) {
+  CallMockMethod(&IMockGLESImpl::ClearColor, red, green, blue, alpha);
+}
+static_assert(CheckSameSignature<decltype(mockClearColor),
+                                 decltype(glClearColor)>::value);
+
 const unsigned char* mockGetString(GLenum name) {
   switch (name) {
     case GL_VENDOR:
@@ -634,6 +674,25 @@ const ProcTableGLES::Resolver kMockResolverGLES = [](const char* name) {
   }
   if (strcmp(name, "glDeleteSync") == 0) {
     return reinterpret_cast<void*>(mockDeleteSync);
+  }
+
+  if (strcmp(name, "glStencilFuncSeparate") == 0) {
+    return reinterpret_cast<void*>(mockStencilFuncSeparate);
+  }
+  if (strcmp(name, "glDepthFunc") == 0) {
+    return reinterpret_cast<void*>(mockDepthFunc);
+  }
+  if (strcmp(name, "glBlendFuncSeparate") == 0) {
+    return reinterpret_cast<void*>(mockBlendFuncSeparate);
+  }
+  if (strcmp(name, "glCullFace") == 0) {
+    return reinterpret_cast<void*>(mockCullFace);
+  }
+  if (strcmp(name, "glFrontFace") == 0) {
+    return reinterpret_cast<void*>(mockFrontFace);
+  }
+  if (strcmp(name, "glClearColor") == 0) {
+    return reinterpret_cast<void*>(mockClearColor);
   }
 
   if (strcmp(name, "glPopDebugGroupKHR") == 0) {

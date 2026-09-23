@@ -402,6 +402,15 @@ static void EncodeViewport(const ProcTableGLES& gl,
   PassBindingsGLES* vertex_bindings =
       gl.GetCapabilities()->IsES() ? &bindings : nullptr;
   const ProgramGLES* current_program = nullptr;
+  const PipelineGLES* current_pipeline = nullptr;
+  GLenum mode = GL_TRIANGLES;
+  const bool supports_instancing =
+      (gl.DrawArraysInstanced.IsAvailable() ||
+       gl.DrawArraysInstancedEXT.IsAvailable()) &&
+      (gl.DrawElementsInstanced.IsAvailable() ||
+       gl.DrawElementsInstancedEXT.IsAvailable()) &&
+      (gl.VertexAttribDivisor.IsAvailable() ||
+       gl.VertexAttribDivisorEXT.IsAvailable());
   CullMode current_cull_mode = CullMode::kNone;
   WindingOrder current_winding_order = WindingOrder::kClockwise;
   // Inverted to keep front-facing consistent under the vertex y-flip.
@@ -419,47 +428,104 @@ static void EncodeViewport(const ProcTableGLES& gl,
 #endif  // IMPELLER_DEBUG
     const auto& pipeline = PipelineGLES::Cast(*command.pipeline);
     const auto& descriptor = pipeline.GetDescriptor();
+    // Descriptor state is immutable for a pipeline's lifetime. Adjacent draws
+    // need only update per-command state; on a transition the finer-grained
+    // caches below still avoid GL writes for equal descriptors.
+    const bool pipeline_changed = current_pipeline != &pipeline;
     impeller_context->GetPipelineLibrary()->LogPipelineUsage(descriptor);
-    const auto* color_attachment =
-        descriptor.GetLegacyCompatibleColorAttachment();
-    if (!color_attachment) {
-      VALIDATION_LOG
-          << "Color attachment is too complicated for a legacy renderer.";
-      return false;
-    }
+    if (pipeline_changed) {
+      const auto* color_attachment =
+          descriptor.GetLegacyCompatibleColorAttachment();
+      if (!color_attachment) {
+        VALIDATION_LOG
+            << "Color attachment is too complicated for a legacy renderer.";
+        return false;
+      }
 
-    //--------------------------------------------------------------------------
-    /// Configure blending.
-    ///
-    if (!current_color_attachment.has_value() ||
-        current_color_attachment.value() != *color_attachment) {
-      ConfigureBlending(gl, color_attachment);
-      current_color_attachment = *color_attachment;
+      //--------------------------------------------------------------------------
+      /// Configure blending.
+      ///
+      if (!current_color_attachment.has_value() ||
+          current_color_attachment.value() != *color_attachment) {
+        ConfigureBlending(gl, color_attachment);
+        current_color_attachment = *color_attachment;
+      }
+
+      // Configure depth.
+      const auto depth_attachment =
+          descriptor.GetDepthStencilAttachmentDescriptor();
+      if (current_depth_attachment != depth_attachment) {
+        ConfigureDepth(gl, depth_attachment);
+        current_depth_attachment = depth_attachment;
+      }
+
+      // Configure culling and winding.
+      CullMode pipeline_cull_mode = descriptor.GetCullMode();
+      if (current_cull_mode != pipeline_cull_mode) {
+        switch (pipeline_cull_mode) {
+          case CullMode::kNone:
+            gl.Disable(GL_CULL_FACE);
+            break;
+          case CullMode::kFrontFace:
+            gl.Enable(GL_CULL_FACE);
+            gl.CullFace(GL_FRONT);
+            break;
+          case CullMode::kBackFace:
+            gl.Enable(GL_CULL_FACE);
+            gl.CullFace(GL_BACK);
+            break;
+        }
+        current_cull_mode = pipeline_cull_mode;
+      }
+
+      //--------------------------------------------------------------------------
+      /// Setup winding order. The pipeline's winding is inverted when
+      /// `flip_y` is in effect (the vertex flip reverses the rasterizer's
+      /// view of winding).
+      WindingOrder pipeline_winding_order = descriptor.GetWindingOrder();
+      if (current_winding_order != pipeline_winding_order) {
+        switch (descriptor.GetWindingOrder()) {
+          case WindingOrder::kClockwise:
+            gl.FrontFace(flip_y ? GL_CCW : GL_CW);
+            break;
+          case WindingOrder::kCounterClockwise:
+            gl.FrontFace(flip_y ? GL_CW : GL_CCW);
+            break;
+        }
+        current_winding_order = pipeline_winding_order;
+      }
+
+      //--------------------------------------------------------------------------
+      /// Determine the primitive type.
+      ///
+      // GLES doesn't support setting the fill mode, so override the primitive
+      // with GL_LINE_STRIP to somewhat emulate PolygonMode::kLine. This isn't
+      // correct; full triangle outlines won't be drawn and disconnected
+      // geometry may appear connected. However this can still be useful for
+      // wireframe debug views.
+      mode = descriptor.GetPolygonMode() == PolygonMode::kLine
+                 ? GL_LINE_STRIP
+                 : ToMode(descriptor.GetPrimitiveType());
+      current_pipeline = &pipeline;
     }
 
     //--------------------------------------------------------------------------
     /// Setup stencil.
     ///
-    const auto front_stencil = descriptor.GetFrontStencilAttachmentDescriptor();
-    const auto back_stencil = descriptor.GetBackStencilAttachmentDescriptor();
-    if (current_front_stencil != front_stencil ||
-        current_back_stencil != back_stencil ||
-        ((front_stencil.has_value() || back_stencil.has_value()) &&
-         current_stencil_reference != command.stencil_reference)) {
-      ConfigureStencil(gl, descriptor, command.stencil_reference);
-      current_front_stencil = front_stencil;
-      current_back_stencil = back_stencil;
-      current_stencil_reference = command.stencil_reference;
-    }
-
-    //--------------------------------------------------------------------------
-    /// Configure depth.
-    ///
-    const auto depth_attachment =
-        descriptor.GetDepthStencilAttachmentDescriptor();
-    if (current_depth_attachment != depth_attachment) {
-      ConfigureDepth(gl, depth_attachment);
-      current_depth_attachment = depth_attachment;
+    if (pipeline_changed ||
+        current_stencil_reference != command.stencil_reference) {
+      const auto front_stencil =
+          descriptor.GetFrontStencilAttachmentDescriptor();
+      const auto back_stencil = descriptor.GetBackStencilAttachmentDescriptor();
+      if (current_front_stencil != front_stencil ||
+          current_back_stencil != back_stencil ||
+          ((front_stencil.has_value() || back_stencil.has_value()) &&
+           current_stencil_reference != command.stencil_reference)) {
+        ConfigureStencil(gl, descriptor, command.stencil_reference);
+        current_front_stencil = front_stencil;
+        current_back_stencil = back_stencil;
+        current_stencil_reference = command.stencil_reference;
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -490,44 +556,6 @@ static void EncodeViewport(const ProcTableGLES& gl,
       gl.Scissor(scissor.GetX(), scissor_y_gl, scissor.GetWidth(),
                  scissor.GetHeight());
       current_scissor = command.scissor;
-    }
-
-    //--------------------------------------------------------------------------
-    /// Setup culling.
-    ///
-    CullMode pipeline_cull_mode = descriptor.GetCullMode();
-    if (current_cull_mode != pipeline_cull_mode) {
-      switch (pipeline_cull_mode) {
-        case CullMode::kNone:
-          gl.Disable(GL_CULL_FACE);
-          break;
-        case CullMode::kFrontFace:
-          gl.Enable(GL_CULL_FACE);
-          gl.CullFace(GL_FRONT);
-          break;
-        case CullMode::kBackFace:
-          gl.Enable(GL_CULL_FACE);
-          gl.CullFace(GL_BACK);
-          break;
-      }
-      current_cull_mode = pipeline_cull_mode;
-    }
-
-    //--------------------------------------------------------------------------
-    /// Setup winding order. The pipeline's winding is inverted when
-    /// `flip_y` is in effect (the vertex flip reverses the rasterizer's
-    /// view of winding).
-    WindingOrder pipeline_winding_order = descriptor.GetWindingOrder();
-    if (current_winding_order != pipeline_winding_order) {
-      switch (descriptor.GetWindingOrder()) {
-        case WindingOrder::kClockwise:
-          gl.FrontFace(flip_y ? GL_CCW : GL_CW);
-          break;
-        case WindingOrder::kCounterClockwise:
-          gl.FrontFace(flip_y ? GL_CW : GL_CCW);
-          break;
-      }
-      current_winding_order = pipeline_winding_order;
     }
 
     BufferBindingsGLES* vertex_desc_gles = pipeline.GetBufferBindings();
@@ -583,18 +611,6 @@ static void EncodeViewport(const ProcTableGLES& gl,
     }
 
     //--------------------------------------------------------------------------
-    /// Determine the primitive type.
-    ///
-    // GLES doesn't support setting the fill mode, so override the primitive
-    // with GL_LINE_STRIP to somewhat emulate PolygonMode::kLine. This isn't
-    // correct; full triangle outlines won't be drawn and disconnected
-    // geometry may appear connected. However this can still be useful for
-    // wireframe debug views.
-    GLenum mode = descriptor.GetPolygonMode() == PolygonMode::kLine
-                      ? GL_LINE_STRIP
-                      : ToMode(descriptor.GetPrimitiveType());
-
-    //--------------------------------------------------------------------------
     /// Finally! Invoke the draw call.
     ///
     /// An instanced draw uses the hardware instanced entry points when the
@@ -604,14 +620,7 @@ static void EncodeViewport(const ProcTableGLES& gl,
     /// instance in between.
     ///
     const bool instanced = command.instance_count > 1u;
-    const bool hardware_instanced =
-        instanced &&
-        (gl.DrawArraysInstanced.IsAvailable() ||
-         gl.DrawArraysInstancedEXT.IsAvailable()) &&
-        (gl.DrawElementsInstanced.IsAvailable() ||
-         gl.DrawElementsInstancedEXT.IsAvailable()) &&
-        (gl.VertexAttribDivisor.IsAvailable() ||
-         gl.VertexAttribDivisorEXT.IsAvailable());
+    const bool hardware_instanced = instanced && supports_instancing;
     const bool emulate_instanced = instanced && !hardware_instanced;
     const GLsizei instance_count = static_cast<GLsizei>(command.instance_count);
 
@@ -625,7 +634,7 @@ static void EncodeViewport(const ProcTableGLES& gl,
     // Bind the index buffer once, before any (possibly repeated) draw.
     const GLvoid* index_offset = nullptr;
     if (is_indexed) {
-      auto index_buffer_view = command.index_buffer;
+      const auto& index_buffer_view = command.index_buffer;
       const DeviceBuffer* index_buffer = index_buffer_view.GetBuffer();
       const auto& index_buffer_gles = DeviceBufferGLES::Cast(*index_buffer);
       if (!index_buffer_gles.BindAndUploadDataIfNecessary(
@@ -906,20 +915,22 @@ bool RenderPassGLES::OnEncodeCommands(const Context& context) const {
   const std::optional<StencilAttachment>& stencil0 =
       render_target.GetStencilAttachment();
 
-  auto pass_data = std::make_shared<RenderPassData>();
-  pass_data->label = label_;
-  pass_data->viewport.rect = Rect::MakeSize(GetRenderTargetSize());
+  // The queued operation owns this snapshot directly, avoiding a separate
+  // allocation and shared control block for every encoded render pass.
+  RenderPassData pass_data;
+  pass_data.label = label_;
+  pass_data.viewport.rect = Rect::MakeSize(GetRenderTargetSize());
 
   //----------------------------------------------------------------------------
   /// Setup color data.
   ///
-  pass_data->color_attachment = color0.texture;
-  pass_data->resolve_attachment = color0.resolve_texture;
-  pass_data->color_mip_level = color0.mip_level;
-  pass_data->color_slice = color0.slice;
-  pass_data->clear_color = color0.clear_color;
-  pass_data->clear_color_attachment = CanClearAttachment(color0.load_action);
-  pass_data->discard_color_attachment =
+  pass_data.color_attachment = color0.texture;
+  pass_data.resolve_attachment = color0.resolve_texture;
+  pass_data.color_mip_level = color0.mip_level;
+  pass_data.color_slice = color0.slice;
+  pass_data.clear_color = color0.clear_color;
+  pass_data.clear_color_attachment = CanClearAttachment(color0.load_action);
+  pass_data.discard_color_attachment =
       CanDiscardAttachmentWhenDone(color0.store_action);
 
   // When we are using EXT_multisampled_render_to_texture, it is implicitly
@@ -928,8 +939,8 @@ bool RenderPassGLES::OnEncodeCommands(const Context& context) const {
   // EXT_multisampled_render_to_texture but still using MSAA we discard the
   // attachment as normal.
   if (color0.resolve_texture) {
-    pass_data->discard_color_attachment =
-        pass_data->discard_color_attachment &&
+    pass_data.discard_color_attachment =
+        pass_data.discard_color_attachment &&
         !context.GetCapabilities()->SupportsImplicitResolvingMSAA();
   }
 
@@ -937,12 +948,12 @@ bool RenderPassGLES::OnEncodeCommands(const Context& context) const {
   /// Setup depth data.
   ///
   if (depth0.has_value()) {
-    pass_data->depth_attachment = depth0->texture;
-    pass_data->depth_mip_level = depth0->mip_level;
-    pass_data->depth_slice = depth0->slice;
-    pass_data->clear_depth = depth0->clear_depth;
-    pass_data->clear_depth_attachment = CanClearAttachment(depth0->load_action);
-    pass_data->discard_depth_attachment =
+    pass_data.depth_attachment = depth0->texture;
+    pass_data.depth_mip_level = depth0->mip_level;
+    pass_data.depth_slice = depth0->slice;
+    pass_data.clear_depth = depth0->clear_depth;
+    pass_data.clear_depth_attachment = CanClearAttachment(depth0->load_action);
+    pass_data.discard_depth_attachment =
         CanDiscardAttachmentWhenDone(depth0->store_action);
   }
 
@@ -950,13 +961,13 @@ bool RenderPassGLES::OnEncodeCommands(const Context& context) const {
   /// Setup stencil data.
   ///
   if (stencil0.has_value()) {
-    pass_data->stencil_attachment = stencil0->texture;
-    pass_data->stencil_mip_level = stencil0->mip_level;
-    pass_data->stencil_slice = stencil0->slice;
-    pass_data->clear_stencil = stencil0->clear_stencil;
-    pass_data->clear_stencil_attachment =
+    pass_data.stencil_attachment = stencil0->texture;
+    pass_data.stencil_mip_level = stencil0->mip_level;
+    pass_data.stencil_slice = stencil0->slice;
+    pass_data.clear_stencil = stencil0->clear_stencil;
+    pass_data.clear_stencil_attachment =
         CanClearAttachment(stencil0->load_action);
-    pass_data->discard_stencil_attachment =
+    pass_data.discard_stencil_attachment =
         CanDiscardAttachmentWhenDone(stencil0->store_action);
   }
 
@@ -965,7 +976,7 @@ bool RenderPassGLES::OnEncodeCommands(const Context& context) const {
        tracer =
            ContextGLES::Cast(context).GetGPUTracer()](const auto& reactor) {
         auto result = EncodeCommandsInReactor(
-            /*pass_data=*/*pass_data,                         //
+            /*pass_data=*/pass_data,                          //
             /*reactor=*/reactor,                              //
             /*commands=*/render_pass->commands_,              //
             /*vertex_buffers=*/render_pass->vertex_buffers_,  //
