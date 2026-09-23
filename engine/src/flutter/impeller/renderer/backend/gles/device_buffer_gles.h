@@ -5,6 +5,7 @@
 #ifndef FLUTTER_IMPELLER_RENDERER_BACKEND_GLES_DEVICE_BUFFER_GLES_H_
 #define FLUTTER_IMPELLER_RENDERER_BACKEND_GLES_DEVICE_BUFFER_GLES_H_
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 
@@ -56,6 +57,9 @@ class DeviceBufferGLES final
   mutable Mutex dirty_range_mutex_;
   mutable std::optional<Range> dirty_range_
       IPLR_GUARDED_BY(dirty_range_mutex_) = std::nullopt;
+  // Published under dirty_range_mutex_. Clean bindings need only an acquire
+  // load; writers and the upload path still serialize changes to dirty_range_.
+  mutable std::atomic<bool> has_dirty_range_ = false;
   mutable bool initialized_ = false;
 
   // |DeviceBuffer|

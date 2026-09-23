@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <thread>
+#include <utility>
+#include <vector>
+
 #include "flutter/testing/testing.h"  // IWYU pragma: keep
 #include "gtest/gtest.h"
 #include "impeller/renderer/backend/gles/device_buffer_gles.h"
@@ -35,9 +39,13 @@ TEST(DeviceBufferGLESTest, FlushDuringUploadIsNotDiscarded) {
       .WillRepeatedly([&](GLenum target, GLintptr offset, GLsizeiptr size,
                           const void* data) {
         ++upload_count;
+        EXPECT_EQ(offset, upload_count == 1 ? 0 : 8);
+        EXPECT_EQ(size, 4);
         if (upload_count == 1) {
-          // Simulates a writer thread flushing new data during the upload.
-          device_buffer_ptr->Flush(Range{0, 4});
+          // Publish on a writer thread while the reactor is uploading. The
+          // consumer must not clear this publication when the upload returns.
+          std::thread writer([&] { device_buffer_ptr->Flush(Range{8, 4}); });
+          writer.join();
         }
       });
 
@@ -63,6 +71,53 @@ TEST(DeviceBufferGLESTest, FlushDuringUploadIsNotDiscarded) {
   EXPECT_TRUE(device_buffer.BindAndUploadDataIfNecessary(
       DeviceBufferGLES::BindingType::kArrayBuffer));
   EXPECT_EQ(upload_count, 2);
+}
+
+// Clean bindings must not upload again, and a later Flush must re-enable
+// uploads regardless of the target used for the next binding.
+TEST(DeviceBufferGLESTest, CleanBindingsAndMergedFlushes) {
+  auto mock_gles_impl = std::make_unique<MockGLESImpl>();
+  std::vector<std::pair<GLintptr, GLsizeiptr>> uploads;
+  EXPECT_CALL(*mock_gles_impl, BufferSubData(_, _, _, _))
+      .Times(3)
+      .WillRepeatedly([&](GLenum, GLintptr offset, GLsizeiptr size,
+                          const void*) { uploads.emplace_back(offset, size); });
+  auto mock_gles = MockGLES::Init(std::move(mock_gles_impl));
+  auto worker = std::make_shared<TestWorker>();
+  auto reactor = std::make_shared<ReactorGLES>(
+      std::make_unique<ProcTableGLES>(kMockResolverGLES));
+  reactor->AddWorker(worker);
+  auto backing_store = std::make_unique<Allocation>();
+  ASSERT_TRUE(backing_store->Truncate(Bytes{32}));
+  DeviceBufferGLES buffer(DeviceBufferDescriptor{.size = 32}, reactor,
+                          std::move(backing_store));
+  using Binding = DeviceBufferGLES::BindingType;
+  EXPECT_TRUE(buffer.BindAndUploadDataIfNecessary(Binding::kArrayBuffer));
+  EXPECT_TRUE(uploads.empty());
+
+  buffer.Flush(Range{4, 4});
+  buffer.Flush(Range{16, 8});
+  EXPECT_TRUE(buffer.BindAndUploadDataIfNecessary(Binding::kArrayBuffer));
+  ASSERT_EQ(uploads.size(), 1u);
+  EXPECT_EQ(uploads[0], (std::pair<GLintptr, GLsizeiptr>{4, 20}));
+  EXPECT_TRUE(buffer.BindAndUploadDataIfNecessary(Binding::kUniformBuffer));
+  EXPECT_TRUE(
+      buffer.BindAndUploadDataIfNecessary(Binding::kElementArrayBuffer));
+  EXPECT_EQ(uploads.size(), 1u);
+
+  std::thread writer([&] { buffer.Flush(Range{24, 4}); });
+  writer.join();
+  EXPECT_TRUE(buffer.BindAndUploadDataIfNecessary(Binding::kUniformBuffer));
+  ASSERT_EQ(uploads.size(), 2u);
+  EXPECT_EQ(uploads[1], (std::pair<GLintptr, GLsizeiptr>{24, 4}));
+
+  buffer.Flush();
+  EXPECT_TRUE(
+      buffer.BindAndUploadDataIfNecessary(Binding::kElementArrayBuffer));
+  ASSERT_EQ(uploads.size(), 3u);
+  EXPECT_EQ(uploads[2], (std::pair<GLintptr, GLsizeiptr>{0, 32}));
+  EXPECT_TRUE(buffer.BindAndUploadDataIfNecessary(Binding::kArrayBuffer));
+  EXPECT_EQ(uploads.size(), 3u);
 }
 
 TEST(DeviceBufferGLESTest, BindUniformData) {

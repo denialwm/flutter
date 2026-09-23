@@ -66,7 +66,7 @@ void ContainerLayer::DiffChildren(DiffContext* context,
 
   // old layers that don't match
   for (int i = old_children_top; i <= old_children_bottom; ++i) {
-    auto layer = prev_layers[i];
+    const auto& layer = prev_layers[i];
     context->AddDamage(context->GetOldLayerPaintRegion(layer.get()));
   }
 
@@ -74,8 +74,8 @@ void ContainerLayer::DiffChildren(DiffContext* context,
     if (i < new_children_top || i > new_children_bottom) {
       int i_prev =
           i < new_children_top ? i : prev_layers.size() - (layers_.size() - i);
-      auto layer = layers_[i];
-      auto prev_layer = prev_layers[i_prev];
+      const auto& layer = layers_[i];
+      const auto& prev_layer = prev_layers[i_prev];
       auto paint_region = context->GetOldLayerPaintRegion(prev_layer.get());
       if (layer == prev_layer && !paint_region.has_readback() &&
           !paint_region.has_texture()) {
@@ -110,7 +110,7 @@ void ContainerLayer::DiffChildren(DiffContext* context,
     } else {
       DiffContext::AutoSubtreeRestore subtree(context);
       context->MarkSubtreeDirty();
-      auto layer = layers_[i];
+      const auto& layer = layers_[i];
       layer->Diff(context, nullptr);
     }
   }

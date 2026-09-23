@@ -74,6 +74,7 @@ void DeviceBufferGLES::Flush(std::optional<Range> range) const {
       dirty_range_ = range.value();
     }
   }
+  has_dirty_range_.store(true, std::memory_order_release);
 }
 
 static GLenum ToTarget(DeviceBufferGLES::BindingType type) {
@@ -117,6 +118,13 @@ bool DeviceBufferGLES::BindAndUploadDataIfNecessary(BindingType type) const {
     initialized_ = true;
   }
 
+  // Buffers are commonly bound many times after their first upload. Keep GL
+  // binding and lazy initialization above unconditional, but avoid taking the
+  // dirty-range mutex again until a writer publishes another Flush().
+  if (!has_dirty_range_.load(std::memory_order_acquire)) {
+    return true;
+  }
+
   // Take and clear the dirty range BEFORE uploading. A Flush() from another
   // thread during the upload then merges into a fresh dirty range that the
   // next bind uploads, instead of being silently discarded by a clear that
@@ -125,6 +133,9 @@ bool DeviceBufferGLES::BindAndUploadDataIfNecessary(BindingType type) const {
   {
     Lock lock(dirty_range_mutex_);
     std::swap(dirty_range_, dirty);
+    // Clear while holding the writer's mutex, never after the upload: a Flush
+    // during BufferSubData must remain visible to the next bind.
+    has_dirty_range_.store(false, std::memory_order_relaxed);
   }
   if (dirty.has_value()) {
     gl.BufferSubData(target_type, dirty->offset, dirty->length,

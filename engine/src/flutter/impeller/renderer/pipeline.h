@@ -126,7 +126,9 @@ class GenericRenderPipelineHandle {
 
   virtual ~GenericRenderPipelineHandle() = default;
 
-  std::shared_ptr<Pipeline<PipelineDescriptor>> WaitAndGet(
+  // The handle owns the resolved pipeline. Callers that only borrow it need
+  // not acquire and release another shared reference on every draw.
+  const std::shared_ptr<Pipeline<PipelineDescriptor>>& WaitAndGet(
       PipelineCompileQueue* queue) {
     if (did_wait_) {
       return pipeline_;
