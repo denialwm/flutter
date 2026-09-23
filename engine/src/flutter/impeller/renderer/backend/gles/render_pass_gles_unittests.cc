@@ -441,6 +441,73 @@ TEST_F(RenderPassGLESCommandTest, ProgramAndYFlipTrackPipelineTransitions) {
   ASSERT_TRUE(ctx.reactor->React());
 }
 
+// Canvas only emits SetScissor when clip coverage changes. Draw() clears
+// pending command metadata, so a missing rectangle means keep the active clip.
+TEST_F(RenderPassGLESCommandTest, DrawsInheritScissorUntilThePassEnds) {
+  for (bool wrapped : {false, true}) {
+    auto ctx = CreateRenderPassGLESContext();
+    RenderTarget target = ctx.render_pass->GetRenderTarget();
+    if (wrapped) {
+      const TextureDescriptor desc{.format = PixelFormat::kR8G8B8A8UNormInt,
+                                   .size = {100, 100}};
+      ColorAttachment color;
+      color.texture = TextureGLES::WrapFBO(ctx.reactor, desc, 23);
+      color.store_action = StoreAction::kDontCare;
+      target.SetColorAttachment(color, 0);
+    }
+    auto pass = ctx.command_buffer->CreateRenderPass(target);
+    auto next_pass = ctx.command_buffer->CreateRenderPass(target);
+    const IRect32 damage = IRect32::MakeXYWH(10, 20, 30, 40);
+    const IRect32 full_target = IRect32::MakeXYWH(0, 0, 100, 100);
+    const std::optional<IRect32> updates[] = {
+        std::nullopt, damage, std::nullopt, damage, full_target, std::nullopt};
+    for (const auto& update : updates) {
+      pass->SetPipeline(PipelineRef(ctx.pipeline));
+      pass->SetElementCount(1);
+      pass->SetIndexBuffer({}, IndexType::kNone);
+      if (update) {
+        pass->SetScissor(*update);
+      }
+      ASSERT_TRUE(pass->Draw().ok());
+    }
+    next_pass->SetPipeline(PipelineRef(ctx.pipeline));
+    next_pass->SetElementCount(1);
+    next_pass->SetIndexBuffer({}, IndexType::kNone);
+    ASSERT_TRUE(next_pass->Draw().ok());
+
+    bool scissor_enabled = false;
+    IRect32 actual_rect;
+    ON_CALL(ctx.mock_gl_impl_ref, Enable(GL_SCISSOR_TEST))
+        .WillByDefault([&](GLenum) { scissor_enabled = true; });
+    ON_CALL(ctx.mock_gl_impl_ref, Disable(GL_SCISSOR_TEST))
+        .WillByDefault([&](GLenum) { scissor_enabled = false; });
+    ON_CALL(ctx.mock_gl_impl_ref, Scissor(_, _, _, _))
+        .WillByDefault([&](GLint x, GLint y, GLsizei width, GLsizei height) {
+          actual_rect = IRect32::MakeXYWH(x, y, width, height);
+        });
+    size_t draw_index = 0;
+    EXPECT_CALL(ctx.mock_gl_impl_ref, DrawArrays(_, _, _))
+        .Times(7)
+        .WillRepeatedly([&](GLenum, GLint, GLsizei) {
+          SCOPED_TRACE(draw_index);
+          const bool should_clip = draw_index > 0 && draw_index < 6;
+          EXPECT_EQ(scissor_enabled, should_clip);
+          if (should_clip) {
+            const auto expected =
+                draw_index < 4
+                    ? IRect32::MakeXYWH(10, wrapped ? 40 : 20, 30, 40)
+                    : full_target;
+            EXPECT_EQ(actual_rect, expected);
+          }
+          draw_index++;
+        });
+    ASSERT_TRUE(pass->EncodeCommands());
+    ASSERT_TRUE(ctx.reactor->React());
+    ASSERT_TRUE(next_pass->EncodeCommands());
+    ASSERT_TRUE(ctx.reactor->React());
+  }
+}
+
 TEST_F(RenderPassGLESCommandTest, ScissorTracksChangesAndResetsAtPassBoundary) {
   auto ctx = CreateRenderPassGLESContext();
   const IRect32 first = IRect32::MakeXYWH(10, 20, 30, 40);
@@ -467,9 +534,9 @@ TEST_F(RenderPassGLESCommandTest, ScissorTracksChangesAndResetsAtPassBoundary) {
 
   EXPECT_CALL(ctx.mock_gl_impl_ref, Enable(_)).Times(::testing::AnyNumber());
   EXPECT_CALL(ctx.mock_gl_impl_ref, Disable(_)).Times(::testing::AnyNumber());
-  EXPECT_CALL(ctx.mock_gl_impl_ref, Enable(GL_SCISSOR_TEST)).Times(3);
-  // One reset per pass, plus the command that drops the scissor.
-  EXPECT_CALL(ctx.mock_gl_impl_ref, Disable(GL_SCISSOR_TEST)).Times(3);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Enable(GL_SCISSOR_TEST)).Times(2);
+  // Only reset at pass boundaries; absent command metadata preserves the clip.
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Disable(GL_SCISSOR_TEST)).Times(2);
   EXPECT_CALL(ctx.mock_gl_impl_ref, Scissor(10, 20, 30, 40)).Times(3);
   EXPECT_CALL(ctx.mock_gl_impl_ref, Scissor(5, 6, 7, 8)).Times(1);
 

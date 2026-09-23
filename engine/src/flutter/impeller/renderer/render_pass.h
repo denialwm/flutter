@@ -80,7 +80,8 @@ class RenderPass : public ResourceBinder {
   //----------------------------------------------------------------------------
   /// The scissor rect to use for clipping writes to the render target. The
   /// scissor rect must lie entirely within the render target.
-  /// If unset, no scissor is applied.
+  /// The rectangle remains active for subsequent draws until another scissor
+  /// is set or the pass ends. If never set in this pass, no scissor is applied.
   ///
   virtual void SetScissor(IRect32 scissor);
 
