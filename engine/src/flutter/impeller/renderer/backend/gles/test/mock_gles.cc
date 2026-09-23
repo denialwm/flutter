@@ -359,6 +359,34 @@ void mockViewport(GLint x, GLint y, GLsizei width, GLsizei height) {
   return CallMockMethod(&IMockGLESImpl::Viewport, x, y, width, height);
 }
 
+void mockScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
+  CallMockMethod(&IMockGLESImpl::Scissor, x, y, width, height);
+}
+
+static_assert(CheckSameSignature<decltype(mockScissor),  //
+                                 decltype(glScissor)>::value);
+
+void mockEnable(GLenum cap) {
+  CallMockMethod(&IMockGLESImpl::Enable, cap);
+}
+
+static_assert(CheckSameSignature<decltype(mockEnable),  //
+                                 decltype(glEnable)>::value);
+
+void mockDisable(GLenum cap) {
+  CallMockMethod(&IMockGLESImpl::Disable, cap);
+}
+
+static_assert(CheckSameSignature<decltype(mockDisable),  //
+                                 decltype(glDisable)>::value);
+
+void mockUseProgram(GLuint program) {
+  CallMockMethod(&IMockGLESImpl::UseProgram, program);
+}
+
+static_assert(CheckSameSignature<decltype(mockUseProgram),  //
+                                 decltype(glUseProgram)>::value);
+
 static_assert(CheckSameSignature<decltype(mockDiscardFramebufferEXT),  //
                                  decltype(glDiscardFramebufferEXT)>::value);
 
@@ -535,6 +563,14 @@ const ProcTableGLES::Resolver kMockResolverGLES = [](const char* name) {
     return reinterpret_cast<void*>(mockInvalidateFramebuffer);
   } else if (strcmp(name, "glViewport") == 0) {
     return reinterpret_cast<void*>(mockViewport);
+  } else if (strcmp(name, "glScissor") == 0) {
+    return reinterpret_cast<void*>(mockScissor);
+  } else if (strcmp(name, "glEnable") == 0) {
+    return reinterpret_cast<void*>(mockEnable);
+  } else if (strcmp(name, "glDisable") == 0) {
+    return reinterpret_cast<void*>(mockDisable);
+  } else if (strcmp(name, "glUseProgram") == 0) {
+    return reinterpret_cast<void*>(mockUseProgram);
   } else if (strcmp(name, "glDrawArrays") == 0) {
     return reinterpret_cast<void*>(mockDrawArrays);
   } else if (strcmp(name, "glDrawElements") == 0) {

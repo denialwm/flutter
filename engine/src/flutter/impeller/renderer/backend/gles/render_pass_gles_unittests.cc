@@ -31,6 +31,7 @@ using ::testing::_;
 using ::testing::Args;
 using ::testing::ElementsAreArray;
 using ::testing::NiceMock;
+using ::testing::Pointee;
 using ::testing::Return;
 using ::testing::SetArgPointee;
 using ::testing::TestWithParam;
@@ -315,7 +316,8 @@ class RenderPassGLESCommandTest : public ::testing::Test {
   // see, which is how a caller selects the hardware or emulated instancing
   // path.
   static RenderPassGLESContext CreateRenderPassGLESContext(
-      ProcTableGLES::Resolver resolver = kMockResolverGLES) {
+      ProcTableGLES::Resolver resolver = kMockResolverGLES,
+      GLuint program_id = 0) {
     std::unique_ptr<NiceMock<MockGLESImpl>> mock_gl_impl =
         std::make_unique<NiceMock<MockGLESImpl>>();
     testing::NiceMock<MockGLESImpl>& mock_gl_impl_ref = *mock_gl_impl;
@@ -352,7 +354,8 @@ class RenderPassGLESCommandTest : public ::testing::Test {
     color0_desc.format = PixelFormat::kR8G8B8A8UNormInt;
     desc.SetColorAttachmentDescriptor(0, color0_desc);
 
-    HandleGLES pipeline_handle = reactor->CreateHandle(HandleType::kProgram);
+    HandleGLES pipeline_handle =
+        reactor->CreateHandle(HandleType::kProgram, program_id);
     std::shared_ptr<PipelineGLES> pipeline =
         std::shared_ptr<PipelineGLES>(new PipelineGLES(
             reactor, std::weak_ptr<PipelineLibrary>(), desc,
@@ -364,7 +367,117 @@ class RenderPassGLESCommandTest : public ::testing::Test {
             std::move(reactor),     std::move(command_buffer),
             std::move(render_pass), std::move(pipeline)};
   }
+
+  static void SetYFlipLocation(const std::shared_ptr<PipelineGLES>& pipeline,
+                               GLint location) {
+    pipeline->y_flip_uniform_location_ = location;
+  }
+
+  static std::shared_ptr<PipelineGLES> CreateSecondPipeline(
+      const RenderPassGLESContext& ctx,
+      GLint y_flip_location,
+      GLuint program_id) {
+    HandleGLES handle =
+        ctx.reactor->CreateHandle(HandleType::kProgram, program_id);
+    auto pipeline = std::shared_ptr<PipelineGLES>(new PipelineGLES(
+        ctx.reactor, std::weak_ptr<PipelineLibrary>(),
+        ctx.pipeline->GetDescriptor(),
+        std::make_shared<UniqueHandleGLES>(ctx.reactor, handle)));
+    pipeline->buffer_bindings_ = std::make_unique<BufferBindingsGLES>();
+    pipeline->y_flip_uniform_location_ = y_flip_location;
+    return pipeline;
+  }
 };
+
+TEST_F(RenderPassGLESCommandTest, ProgramAndYFlipTrackPipelineTransitions) {
+  auto ctx = CreateRenderPassGLESContext(kMockResolverGLES, 101);
+  SetYFlipLocation(ctx.pipeline, 7);
+  auto second_pipeline = CreateSecondPipeline(ctx, 8, 202);
+
+  for (const auto& pipeline :
+       {ctx.pipeline, ctx.pipeline, second_pipeline, ctx.pipeline}) {
+    ctx.render_pass->SetPipeline(PipelineRef(pipeline));
+    ctx.render_pass->SetElementCount(1);
+    ctx.render_pass->SetIndexBuffer({}, IndexType::kNone);
+    ASSERT_TRUE(ctx.render_pass->Draw().ok());
+  }
+
+  // A wrapped framebuffer uses the opposite y-flip value. A new pass must
+  // bind the program and upload its own value, even with the same pipeline.
+  const TextureDescriptor description{.format = PixelFormat::kR8G8B8A8UNormInt,
+                                      .size = {100, 100}};
+  RenderTarget wrapped_target;
+  ColorAttachment wrapped_color;
+  wrapped_color.texture = TextureGLES::WrapFBO(ctx.reactor, description, 23);
+  wrapped_color.store_action = StoreAction::kDontCare;
+  wrapped_target.SetColorAttachment(wrapped_color, 0);
+  auto wrapped_pass = ctx.command_buffer->CreateRenderPass(wrapped_target);
+  wrapped_pass->SetPipeline(PipelineRef(ctx.pipeline));
+  wrapped_pass->SetElementCount(1);
+  wrapped_pass->SetIndexBuffer({}, IndexType::kNone);
+  wrapped_pass->SetScissor(IRect32::MakeXYWH(10, 20, 30, 40));
+  ASSERT_TRUE(wrapped_pass->Draw().ok());
+
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Scissor(10, 40, 30, 40)).Times(1);
+
+  {
+    ::testing::InSequence sequence;
+    EXPECT_CALL(ctx.mock_gl_impl_ref, UseProgram(101)).Times(1);
+    EXPECT_CALL(ctx.mock_gl_impl_ref, Uniform1fv(7, 1, Pointee(-1.0f)))
+        .Times(1);
+    EXPECT_CALL(ctx.mock_gl_impl_ref, UseProgram(202)).Times(1);
+    EXPECT_CALL(ctx.mock_gl_impl_ref, Uniform1fv(8, 1, Pointee(-1.0f)))
+        .Times(1);
+    EXPECT_CALL(ctx.mock_gl_impl_ref, UseProgram(101)).Times(1);
+    EXPECT_CALL(ctx.mock_gl_impl_ref, Uniform1fv(7, 1, Pointee(-1.0f)))
+        .Times(1);
+    EXPECT_CALL(ctx.mock_gl_impl_ref, UseProgram(101)).Times(1);
+    EXPECT_CALL(ctx.mock_gl_impl_ref, Uniform1fv(7, 1, Pointee(1.0f))).Times(1);
+  }
+
+  ASSERT_TRUE(ctx.render_pass->EncodeCommands());
+  ASSERT_TRUE(ctx.reactor->React());
+  ASSERT_TRUE(wrapped_pass->EncodeCommands());
+  ASSERT_TRUE(ctx.reactor->React());
+}
+
+TEST_F(RenderPassGLESCommandTest, ScissorTracksChangesAndResetsAtPassBoundary) {
+  auto ctx = CreateRenderPassGLESContext();
+  const IRect32 first = IRect32::MakeXYWH(10, 20, 30, 40);
+  const IRect32 second = IRect32::MakeXYWH(5, 6, 7, 8);
+  const std::optional<IRect32> scissors[] = {first, first, second, std::nullopt,
+                                             first};
+  for (const auto& scissor : scissors) {
+    ctx.render_pass->SetPipeline(PipelineRef(ctx.pipeline));
+    ctx.render_pass->SetElementCount(1);
+    ctx.render_pass->SetIndexBuffer({}, IndexType::kNone);
+    if (scissor.has_value()) {
+      ctx.render_pass->SetScissor(*scissor);
+    }
+    ASSERT_TRUE(ctx.render_pass->Draw().ok());
+  }
+
+  auto next_pass =
+      ctx.command_buffer->CreateRenderPass(ctx.render_pass->GetRenderTarget());
+  next_pass->SetPipeline(PipelineRef(ctx.pipeline));
+  next_pass->SetElementCount(1);
+  next_pass->SetIndexBuffer({}, IndexType::kNone);
+  next_pass->SetScissor(first);
+  ASSERT_TRUE(next_pass->Draw().ok());
+
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Enable(_)).Times(::testing::AnyNumber());
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Disable(_)).Times(::testing::AnyNumber());
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Enable(GL_SCISSOR_TEST)).Times(3);
+  // One reset per pass, plus the command that drops the scissor.
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Disable(GL_SCISSOR_TEST)).Times(3);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Scissor(10, 20, 30, 40)).Times(3);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Scissor(5, 6, 7, 8)).Times(1);
+
+  ASSERT_TRUE(ctx.render_pass->EncodeCommands());
+  ASSERT_TRUE(ctx.reactor->React());
+  ASSERT_TRUE(next_pass->EncodeCommands());
+  ASSERT_TRUE(ctx.reactor->React());
+}
 
 TEST_F(RenderPassGLESCommandTest, ViewportCachedAcrossCommands) {
   auto ctx = CreateRenderPassGLESContext();

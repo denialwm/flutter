@@ -393,6 +393,8 @@ static void EncodeViewport(const ProcTableGLES& gl,
   std::optional<StencilAttachmentDescriptor> current_back_stencil;
   uint32_t current_stencil_reference = 0u;
   std::optional<Viewport> current_viewport;
+  std::optional<IRect32> current_scissor;
+  const PipelineGLES* current_pipeline = nullptr;
   CullMode current_cull_mode = CullMode::kNone;
   WindingOrder current_winding_order = WindingOrder::kClockwise;
   // Inverted to keep front-facing consistent under the vertex y-flip.
@@ -467,16 +469,23 @@ static void EncodeViewport(const ProcTableGLES& gl,
     //--------------------------------------------------------------------------
     /// Setup the scissor rect.
     ///
-    if (command.scissor.has_value()) {
-      const auto& scissor = command.scissor.value();
-      gl.Enable(GL_SCISSOR_TEST);
-      // Same flip handling as the viewport above.
-      const auto scissor_y_gl =
-          flip_y ? scissor.GetY()
-                 : target_size.height - scissor.GetY() - scissor.GetHeight();
-      gl.Scissor(scissor.GetX(),  // x
-                 scissor_y_gl,    // y
-                 scissor.GetWidth(), scissor.GetHeight());
+    if (command.scissor != current_scissor) {
+      if (command.scissor.has_value()) {
+        const auto& scissor = command.scissor.value();
+        if (!current_scissor.has_value()) {
+          gl.Enable(GL_SCISSOR_TEST);
+        }
+        // Same flip handling as the viewport above.
+        const auto scissor_y_gl =
+            flip_y ? scissor.GetY()
+                   : target_size.height - scissor.GetY() - scissor.GetHeight();
+        gl.Scissor(scissor.GetX(),  // x
+                   scissor_y_gl,    // y
+                   scissor.GetWidth(), scissor.GetHeight());
+      } else {
+        gl.Disable(GL_SCISSOR_TEST);
+      }
+      current_scissor = command.scissor;
     }
 
     //--------------------------------------------------------------------------
@@ -537,15 +546,18 @@ static void EncodeViewport(const ProcTableGLES& gl,
     //--------------------------------------------------------------------------
     /// Bind the pipeline program.
     ///
-    if (!pipeline.BindProgram()) {
-      return false;
-    }
+    if (current_pipeline != &pipeline) {
+      if (!pipeline.BindProgram()) {
+        return false;
+      }
+      current_pipeline = &pipeline;
 
-    //--------------------------------------------------------------------------
-    /// Bind the y-flip uniform if the vertex shader declares it.
-    const GLint y_flip_loc = pipeline.GetYFlipUniformLocation();
-    if (y_flip_loc >= 0) {
-      gl.Uniform1fv(y_flip_loc, 1, &y_flip_value);
+      // The pass's flip value is unchanged across adjacent draws with the
+      // same program. Set it on each program transition.
+      const GLint y_flip_loc = pipeline.GetYFlipUniformLocation();
+      if (y_flip_loc >= 0) {
+        gl.Uniform1fv(y_flip_loc, 1, &y_flip_value);
+      }
     }
 
     //--------------------------------------------------------------------------

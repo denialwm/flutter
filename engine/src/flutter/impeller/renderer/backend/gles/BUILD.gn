@@ -42,6 +42,24 @@ impeller_component("gles_unittests") {
   ]
 }
 
+# A small release-mode test target for GLES pass state. The umbrella Impeller
+# test target also builds display-list tests that are unavailable in Slimpeller.
+impeller_component("gles_render_pass_unittests") {
+  target_type = "executable"
+  testonly = true
+  sources = [
+    "render_pass_gles_unittests.cc",
+    "test/mock_gles.cc",
+    "test/mock_gles.h",
+  ]
+  deps = [
+    ":gles",
+    "//flutter/impeller/entity",
+    "//flutter/testing:testing_lib",
+    "//flutter/third_party/googletest:gtest_main",
+  ]
+}
+
 impeller_component("gles") {
   public_configs = []
 
