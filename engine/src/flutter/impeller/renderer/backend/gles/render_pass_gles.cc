@@ -6,6 +6,8 @@
 
 #include <cstdint>
 
+#include "impeller/renderer/backend/gles/pass_bindings_gles.h"
+
 #include "flutter/fml/trace_event.h"
 #include "fml/closure.h"
 #include "fml/logging.h"
@@ -170,7 +172,8 @@ static bool BindVertexBuffer(const ProcTableGLES& gl,
                              BufferBindingsGLES* vertex_desc_gles,
                              const BufferView& vertex_buffer_view,
                              size_t buffer_index,
-                             size_t instance = 0) {
+                             size_t instance = 0,
+                             PassBindingsGLES* pass = nullptr) {
   if (!vertex_buffer_view) {
     return false;
   }
@@ -191,7 +194,8 @@ static bool BindVertexBuffer(const ProcTableGLES& gl,
   /// Bind the vertex attributes associated with vertex buffer.
   ///
   if (!vertex_desc_gles->BindVertexAttributes(
-          gl, buffer_index, vertex_buffer_view.GetRange().offset, instance)) {
+          gl, buffer_index, vertex_buffer_view.GetRange().offset, instance,
+          pass)) {
     return false;
   }
 
@@ -394,7 +398,10 @@ static void EncodeViewport(const ProcTableGLES& gl,
   uint32_t current_stencil_reference = 0u;
   std::optional<Viewport> current_viewport;
   std::optional<IRect32> current_scissor;
-  const PipelineGLES* current_pipeline = nullptr;
+  PassBindingsGLES bindings(gl);
+  PassBindingsGLES* vertex_bindings =
+      gl.GetCapabilities()->IsES() ? &bindings : nullptr;
+  const ProgramGLES* current_program = nullptr;
   CullMode current_cull_mode = CullMode::kNone;
   WindingOrder current_winding_order = WindingOrder::kClockwise;
   // Inverted to keep front-facing consistent under the vertex y-flip.
@@ -524,6 +531,7 @@ static void EncodeViewport(const ProcTableGLES& gl,
     }
 
     BufferBindingsGLES* vertex_desc_gles = pipeline.GetBufferBindings();
+    bindings.BeginDraw();
 
     //--------------------------------------------------------------------------
     /// Bind vertex buffers.
@@ -535,19 +543,21 @@ static void EncodeViewport(const ProcTableGLES& gl,
     for (size_t i = 0; i < command.vertex_buffers.length; i++) {
       if (!BindVertexBuffer(gl, vertex_desc_gles,
                             vertex_buffers[i + command.vertex_buffers.offset],
-                            i)) {
+                            i, 0, vertex_bindings)) {
         return false;
       }
     }
 
+    bindings.EndVertexSetup();
+
     //--------------------------------------------------------------------------
     /// Bind the pipeline program.
     ///
-    if (current_pipeline != &pipeline) {
+    if (current_program != pipeline.GetSharedProgram().get()) {
       if (!pipeline.BindProgram()) {
         return false;
       }
-      current_pipeline = &pipeline;
+      current_program = pipeline.GetSharedProgram().get();
 
       // The pass's flip value is unchanged across adjacent draws with the
       // same program. Set it on each program transition.
@@ -565,7 +575,9 @@ static void EncodeViewport(const ProcTableGLES& gl,
             bound_textures,                            //
             bound_buffers,                             //
             /*texture_range=*/command.bound_textures,  //
-            /*buffer_range=*/command.bound_buffers     //
+            /*buffer_range=*/command.bound_buffers,    //
+            pipeline.GetSharedProgram().get(),         //
+            &bindings                                  //
             )) {
       return false;
     }
@@ -712,7 +724,7 @@ static void EncodeViewport(const ProcTableGLES& gl,
             if (!BindVertexBuffer(
                     gl, vertex_desc_gles,
                     vertex_buffers[i + command.vertex_buffers.offset], i,
-                    instance)) {
+                    instance, vertex_bindings)) {
               denial_gpu_audit.End(gl, command_audit_token);
               return false;
             }
@@ -743,9 +755,10 @@ static void EncodeViewport(const ProcTableGLES& gl,
     denial_gpu_audit.End(gl, command_audit_token);
 
     //--------------------------------------------------------------------------
-    /// Unbind vertex attribs.
+    /// Desktop GL owns a VAO per draw. GLES attributes are retained until
+    /// the next incompatible draw or pass cleanup, including error exits.
     ///
-    if (!vertex_desc_gles->UnbindVertexAttributes(gl)) {
+    if (!vertex_bindings && !vertex_desc_gles->UnbindVertexAttributes(gl)) {
       return false;
     }
   }

@@ -9,7 +9,7 @@ namespace impeller {
 PipelineGLES::PipelineGLES(std::shared_ptr<ReactorGLES> reactor,
                            std::weak_ptr<PipelineLibrary> library,
                            const PipelineDescriptor& desc,
-                           std::shared_ptr<UniqueHandleGLES> handle)
+                           std::shared_ptr<ProgramGLES> handle)
     : Pipeline(std::move(library), desc),
       reactor_(std::move(reactor)),
       handle_(std::move(handle)),
@@ -31,7 +31,7 @@ const HandleGLES& PipelineGLES::GetProgramHandle() const {
   return handle_->Get();
 }
 
-const std::shared_ptr<UniqueHandleGLES> PipelineGLES::GetSharedHandle() const {
+const std::shared_ptr<ProgramGLES>& PipelineGLES::GetSharedProgram() const {
   return handle_;
 }
 

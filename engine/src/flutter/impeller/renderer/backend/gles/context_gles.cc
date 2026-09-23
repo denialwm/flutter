@@ -72,7 +72,7 @@ ContextGLES::ContextGLES(
   {
     sampler_library_ =
         std::shared_ptr<SamplerLibraryGLES>(new SamplerLibraryGLES(
-            device_capabilities_->SupportsDecalSamplerAddressMode()));
+            device_capabilities_->SupportsDecalSamplerAddressMode(), reactor_));
   }
   gpu_tracer_ = std::make_shared<GPUTracerGLES>(GetReactor()->GetProcTable(),
                                                 enable_gpu_tracing);

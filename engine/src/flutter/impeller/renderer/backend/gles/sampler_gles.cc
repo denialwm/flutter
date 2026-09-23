@@ -14,7 +14,15 @@
 
 namespace impeller {
 
-SamplerGLES::SamplerGLES(const SamplerDescriptor& desc) : Sampler(desc) {}
+SamplerGLES::SamplerGLES(const SamplerDescriptor& desc,
+                         std::shared_ptr<ReactorGLES> reactor)
+    : Sampler(desc),
+      reactor_(std::move(reactor)),
+      supports_native_sampler_(
+          reactor_ && reactor_->GetProcTable().SupportsSamplerObjects() &&
+          desc.max_anisotropy <= 1 &&
+          desc.width_address_mode != SamplerAddressMode::kDecal &&
+          desc.height_address_mode != SamplerAddressMode::kDecal) {}
 
 SamplerGLES::~SamplerGLES() = default;
 
@@ -67,6 +75,36 @@ static GLint ToAddressMode(SamplerAddressMode mode,
       }
   }
   FML_UNREACHABLE();
+}
+
+GLuint SamplerGLES::GetNativeSampler(const TextureGLES& texture) const {
+  if (!supports_native_sampler_ ||
+      texture.GetTextureDescriptor().type != TextureType::kTexture2D) {
+    return 0;
+  }
+  const auto& gl = reactor_->GetProcTable();
+  const auto& desc = GetDescriptor();
+  const bool mip_filter = texture.GetTextureDescriptor().mip_count > 1 &&
+                          desc.mip_filter != MipFilter::kBase;
+  auto& sampler = native_samplers_[mip_filter ? 1 : 0];
+  if (!sampler.IsValid()) {
+    sampler = UniqueHandleGLES::MakeUntracked(reactor_, HandleType::kSampler);
+    auto name = reactor_->GetGLHandle(sampler.Get());
+    if (!name.has_value() || name.value() == 0) {
+      sampler.Reset();
+      return 0;
+    }
+    gl.SamplerParameteri(*name, GL_TEXTURE_MIN_FILTER,
+                         mip_filter ? ToParam(desc.min_filter, desc.mip_filter)
+                                    : ToParam(desc.min_filter));
+    gl.SamplerParameteri(*name, GL_TEXTURE_MAG_FILTER,
+                         ToParam(desc.mag_filter));
+    gl.SamplerParameteri(*name, GL_TEXTURE_WRAP_S,
+                         ToAddressMode(desc.width_address_mode, false));
+    gl.SamplerParameteri(*name, GL_TEXTURE_WRAP_T,
+                         ToAddressMode(desc.height_address_mode, false));
+  }
+  return reactor_->GetGLHandle(sampler.Get()).value_or(0);
 }
 
 bool SamplerGLES::ConfigureBoundTexture(const TextureGLES& texture,

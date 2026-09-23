@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "impeller/renderer/backend/gles/buffer_bindings_gles.h"
+#include "impeller/renderer/backend/gles/pass_bindings_gles.h"
+#include "impeller/renderer/backend/gles/program_gles.h"
 
 #include <cstdint>
 #include <cstring>
@@ -197,7 +199,8 @@ bool BufferBindingsGLES::ReadUniformsBindingsV2(const ProcTableGLES& gl,
 bool BufferBindingsGLES::BindVertexAttributes(const ProcTableGLES& gl,
                                               size_t binding,
                                               size_t vertex_offset,
-                                              size_t instance) {
+                                              size_t instance,
+                                              PassBindingsGLES* pass) {
   if (binding >= vertex_attrib_arrays_.size()) {
     return false;
   }
@@ -225,7 +228,11 @@ bool BufferBindingsGLES::BindVertexAttributes(const ProcTableGLES& gl,
   }
 
   for (const auto& array : vertex_attrib_arrays_[binding]) {
-    gl.EnableVertexAttribArray(array.index);
+    if (pass) {
+      pass->EnableVertexAttribute(array.index, array.vertex_attrib_divisor);
+    } else {
+      gl.EnableVertexAttribArray(array.index);
+    }
     // For an emulated instanced draw, an instance-rate attribute is
     // re-pointed at instance `instance`, since there is no hardware divisor
     // to advance it. A non-instanced or hardware-instanced draw passes
@@ -248,9 +255,9 @@ bool BufferBindingsGLES::BindVertexAttributes(const ProcTableGLES& gl,
     // which is the default. Setting it for every attribute (including
     // divisor 0) also clears any stale divisor left by a prior pipeline,
     // which matters on ES, where there is no vertex array object.
-    if (gl.VertexAttribDivisor.IsAvailable()) {
+    if (!pass && gl.VertexAttribDivisor.IsAvailable()) {
       gl.VertexAttribDivisor(array.index, array.vertex_attrib_divisor);
-    } else if (gl.VertexAttribDivisorEXT.IsAvailable()) {
+    } else if (!pass && gl.VertexAttribDivisorEXT.IsAvailable()) {
       gl.VertexAttribDivisorEXT(array.index, array.vertex_attrib_divisor);
     }
   }
@@ -263,19 +270,22 @@ bool BufferBindingsGLES::BindUniformData(
     const std::vector<TextureAndSampler>& bound_textures,
     const std::vector<BufferResource>& bound_buffers,
     Range texture_range,
-    Range buffer_range) {
+    Range buffer_range,
+    ProgramGLES* program,
+    PassBindingsGLES* pass) {
   for (auto i = 0u; i < buffer_range.length; i++) {
     if (!BindUniformBuffer(gl, bound_buffers[buffer_range.offset + i])) {
       return false;
     }
   }
   std::optional<size_t> next_unit_index =
-      BindTextures(gl, bound_textures, texture_range, ShaderStage::kVertex);
+      BindTextures(gl, bound_textures, texture_range, ShaderStage::kVertex, 0,
+                   program, pass);
   if (!next_unit_index.has_value()) {
     return false;
   }
   if (!BindTextures(gl, bound_textures, texture_range, ShaderStage::kFragment,
-                    *next_unit_index)
+                    *next_unit_index, program, pass)
            .has_value()) {
     return false;
   }
@@ -481,7 +491,9 @@ std::optional<size_t> BufferBindingsGLES::BindTextures(
     const std::vector<TextureAndSampler>& bound_textures,
     Range texture_range,
     ShaderStage stage,
-    size_t unit_start_index) {
+    size_t unit_start_index,
+    ProgramGLES* program,
+    PassBindingsGLES* pass) {
   size_t active_index = unit_start_index;
   for (auto i = 0u; i < texture_range.length; i++) {
     const TextureAndSampler& data = bound_textures[texture_range.offset + i];
@@ -508,7 +520,11 @@ std::optional<size_t> BufferBindingsGLES::BindTextures(
                         "this shader stage.";
       return std::nullopt;
     }
-    gl.ActiveTexture(GL_TEXTURE0 + active_index);
+    if (pass) {
+      pass->ActiveTexture(active_index);
+    } else {
+      gl.ActiveTexture(GL_TEXTURE0 + active_index);
+    }
 
     //--------------------------------------------------------------------------
     /// Bind the texture.
@@ -528,14 +544,28 @@ std::optional<size_t> BufferBindingsGLES::BindTextures(
     /// bound texture using that sampler.
     ///
     const auto& sampler_gles = SamplerGLES::Cast(*data.sampler);
-    if (!sampler_gles.ConfigureBoundTexture(texture_gles, gl)) {
+    const GLuint native_sampler =
+        pass ? sampler_gles.GetNativeSampler(texture_gles) : 0;
+    if (pass) {
+      pass->BindSampler(active_index, native_sampler);
+    }
+    if (native_sampler != 0) {
+      // Mip bounds belong to the texture, not the sampler. Always establish
+      // them: borrowed texture wrappers may alias externally owned GL objects.
+      gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,
+                       texture_gles.GetTextureDescriptor().mip_count - 1);
+    } else if (!sampler_gles.ConfigureBoundTexture(texture_gles, gl)) {
       return std::nullopt;
     }
 
     //--------------------------------------------------------------------------
     /// Set the texture uniform location.
     ///
-    gl.Uniform1i(location, active_index);
+    if (program) {
+      program->SetSamplerUnit(gl, location, active_index);
+    } else {
+      gl.Uniform1i(location, active_index);
+    }
 
     //--------------------------------------------------------------------------
     /// Bump up the active index at binding.

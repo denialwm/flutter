@@ -210,15 +210,14 @@ std::shared_ptr<PipelineGLES> PipelineLibraryGLES::CreatePipeline(
 
   const auto has_cached_program = !!cached_program;
 
-  std::shared_ptr<UniqueHandleGLES> program_handle = nullptr;
+  std::shared_ptr<ProgramGLES> program_handle = nullptr;
   if (has_cached_program) {
     program_handle = std::move(cached_program);
   } else {
-    program_handle = threadsafe ? std::make_shared<UniqueHandleGLES>(
-                                      reactor, HandleType::kProgram)
-                                : std::make_shared<UniqueHandleGLES>(
-                                      UniqueHandleGLES::MakeUntracked(
-                                          reactor, HandleType::kProgram));
+    program_handle = std::make_shared<ProgramGLES>(
+        threadsafe
+            ? UniqueHandleGLES(reactor, HandleType::kProgram)
+            : UniqueHandleGLES::MakeUntracked(reactor, HandleType::kProgram));
   }
 
   auto pipeline = std::shared_ptr<PipelineGLES>(
@@ -258,7 +257,7 @@ std::shared_ptr<PipelineGLES> PipelineLibraryGLES::CreatePipeline(
   }
 
   if (!has_cached_program) {
-    library.SetProgramForKey(program_key, pipeline->GetSharedHandle());
+    library.SetProgramForKey(program_key, pipeline->GetSharedProgram());
   }
 
   return pipeline;
@@ -356,7 +355,7 @@ const std::shared_ptr<ReactorGLES>& PipelineLibraryGLES::GetReactor() const {
   return reactor_;
 }
 
-std::shared_ptr<UniqueHandleGLES> PipelineLibraryGLES::GetProgramForKey(
+std::shared_ptr<ProgramGLES> PipelineLibraryGLES::GetProgramForKey(
     const ProgramKey& key) {
   Lock lock(programs_mutex_);
   auto found = programs_.find(key);
@@ -368,7 +367,7 @@ std::shared_ptr<UniqueHandleGLES> PipelineLibraryGLES::GetProgramForKey(
 
 void PipelineLibraryGLES::SetProgramForKey(
     const ProgramKey& key,
-    std::shared_ptr<UniqueHandleGLES> program) {
+    std::shared_ptr<ProgramGLES> program) {
   Lock lock(programs_mutex_);
   programs_[key] = std::move(program);
 }

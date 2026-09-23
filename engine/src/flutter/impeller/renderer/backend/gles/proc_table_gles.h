@@ -279,6 +279,11 @@ void(glDepthRange)(GLdouble n, GLdouble f);
   PROC(DepthRange);
 
 #define FOR_EACH_IMPELLER_GLES3_PROC(PROC) \
+  PROC(GenSamplers);                       \
+  PROC(DeleteSamplers);                    \
+  PROC(BindSampler);                       \
+  PROC(SamplerParameteri);                 \
+  PROC(IsSampler);                         \
   PROC(FenceSync);                         \
   PROC(DeleteSync);                        \
   PROC(GetActiveUniformBlockiv);           \
@@ -323,6 +328,7 @@ enum class DebugResourceType {
   kRenderBuffer,
   kFrameBuffer,
   kFence,
+  kSampler,
 };
 
 class ProcTableGLES {
@@ -371,6 +377,9 @@ class ProcTableGLES {
   bool IsCurrentFramebufferComplete() const;
 
   bool SupportsDebugLabels() const;
+
+  // Native sampler reuse is currently enabled only for the GLES 3 path.
+  bool SupportsSamplerObjects() const;
 
   bool SetDebugLabel(DebugResourceType type,
                      GLint name,

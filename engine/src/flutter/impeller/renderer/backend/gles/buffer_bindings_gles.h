@@ -16,7 +16,11 @@
 
 namespace impeller {
 
+class PassBindingsGLES;
+class ProgramGLES;
+
 namespace testing {
+class GLESStateCacheTest;
 FML_TEST_CLASS(BufferBindingsGLESTest, BindUniformData);
 FML_TEST_CLASS(BufferBindingsGLESTest, BindArrayData);
 FML_TEST_CLASS(BufferBindingsGLESTest, BindUniformDataVerticesAndMatrices);
@@ -49,17 +53,21 @@ class BufferBindingsGLES {
   bool BindVertexAttributes(const ProcTableGLES& gl,
                             size_t binding,
                             size_t vertex_offset,
-                            size_t instance = 0);
+                            size_t instance = 0,
+                            PassBindingsGLES* pass = nullptr);
 
   bool BindUniformData(const ProcTableGLES& gl,
                        const std::vector<TextureAndSampler>& bound_textures,
                        const std::vector<BufferResource>& bound_buffers,
                        Range texture_range,
-                       Range buffer_range);
+                       Range buffer_range,
+                       ProgramGLES* program = nullptr,
+                       PassBindingsGLES* pass = nullptr);
 
   bool UnbindVertexAttributes(const ProcTableGLES& gl);
 
  private:
+  friend class testing::GLESStateCacheTest;
   FML_FRIEND_TEST(testing::BufferBindingsGLESTest, BindUniformData);
   FML_FRIEND_TEST(testing::BufferBindingsGLESTest, BindArrayData);
   FML_FRIEND_TEST(testing::BufferBindingsGLESTest,
@@ -116,7 +124,9 @@ class BufferBindingsGLES {
       const std::vector<TextureAndSampler>& bound_textures,
       Range texture_range,
       ShaderStage stage,
-      size_t unit_start_index = 0);
+      size_t unit_start_index,
+      ProgramGLES* program,
+      PassBindingsGLES* pass);
 
   BufferBindingsGLES(const BufferBindingsGLES&) = delete;
 

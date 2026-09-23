@@ -14,7 +14,8 @@ namespace impeller {
 
 class SamplerLibraryGLES final : public SamplerLibrary {
  public:
-  explicit SamplerLibraryGLES(bool supports_decal_sampler_address_mode);
+  explicit SamplerLibraryGLES(bool supports_decal_sampler_address_mode,
+                              std::shared_ptr<ReactorGLES> reactor = nullptr);
   // |SamplerLibrary|
   ~SamplerLibraryGLES() override;
 
@@ -30,6 +31,7 @@ class SamplerLibraryGLES final : public SamplerLibrary {
       const SamplerDescriptor& descriptor) override;
 
   bool supports_decal_sampler_address_mode_ = false;
+  std::shared_ptr<ReactorGLES> reactor_;
 
   SamplerLibraryGLES(const SamplerLibraryGLES&) = delete;
 

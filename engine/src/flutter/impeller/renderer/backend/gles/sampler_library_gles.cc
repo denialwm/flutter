@@ -12,9 +12,10 @@
 
 namespace impeller {
 
-SamplerLibraryGLES::SamplerLibraryGLES(bool supports_decal_sampler_address_mode)
-    : supports_decal_sampler_address_mode_(
-          supports_decal_sampler_address_mode) {}
+SamplerLibraryGLES::SamplerLibraryGLES(bool supports_decal_sampler_address_mode,
+                                       std::shared_ptr<ReactorGLES> reactor)
+    : supports_decal_sampler_address_mode_(supports_decal_sampler_address_mode),
+      reactor_(std::move(reactor)) {}
 
 // |SamplerLibrary|
 SamplerLibraryGLES::~SamplerLibraryGLES() = default;
@@ -38,7 +39,8 @@ raw_ptr<const Sampler> SamplerLibraryGLES::GetSampler(
   }
 
   // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-  auto sampler = std::unique_ptr<SamplerGLES>(new SamplerGLES(descriptor));
+  auto sampler =
+      std::unique_ptr<SamplerGLES>(new SamplerGLES(descriptor, reactor_));
   samplers_.push_back(std::make_pair(p_key, std::move(sampler)));
 
   return raw_ptr(samplers_.back().second);

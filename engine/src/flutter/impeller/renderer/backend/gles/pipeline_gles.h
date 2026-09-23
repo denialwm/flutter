@@ -7,8 +7,8 @@
 
 #include "impeller/base/backend_cast.h"
 #include "impeller/renderer/backend/gles/buffer_bindings_gles.h"
+#include "impeller/renderer/backend/gles/program_gles.h"
 #include "impeller/renderer/backend/gles/reactor_gles.h"
-#include "impeller/renderer/backend/gles/unique_handle_gles.h"
 #include "impeller/renderer/pipeline.h"
 
 namespace impeller {
@@ -28,7 +28,7 @@ class PipelineGLES final
 
   const HandleGLES& GetProgramHandle() const;
 
-  const std::shared_ptr<UniqueHandleGLES> GetSharedHandle() const;
+  const std::shared_ptr<ProgramGLES>& GetSharedProgram() const;
 
   [[nodiscard]] bool BindProgram() const;
 
@@ -48,7 +48,7 @@ class PipelineGLES final
   friend class testing::RenderPassGLESCommandTest;
 
   std::shared_ptr<ReactorGLES> reactor_;
-  std::shared_ptr<UniqueHandleGLES> handle_;
+  std::shared_ptr<ProgramGLES> handle_;
   std::unique_ptr<BufferBindingsGLES> buffer_bindings_;
   GLint y_flip_uniform_location_ = -1;
   bool is_valid_ = false;
@@ -59,7 +59,7 @@ class PipelineGLES final
   PipelineGLES(std::shared_ptr<ReactorGLES> reactor,
                std::weak_ptr<PipelineLibrary> library,
                const PipelineDescriptor& desc,
-               std::shared_ptr<UniqueHandleGLES> handle);
+               std::shared_ptr<ProgramGLES> handle);
 
   PipelineGLES(const PipelineGLES&) = delete;
 

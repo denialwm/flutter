@@ -30,6 +30,9 @@ std::optional<ReactorGLES::GLStorage> ReactorGLES::CreateGLHandle(
     case HandleType::kBuffer:
       gl.GenBuffers(1u, &handle.handle);
       return handle;
+    case HandleType::kSampler:
+      gl.GenSamplers(1u, &handle.handle);
+      return handle;
     case HandleType::kProgram:
       return GLStorage{.handle = gl.CreateProgram()};
     case HandleType::kRenderBuffer:
@@ -58,6 +61,9 @@ bool ReactorGLES::CollectGLHandle(const ProcTableGLES& gl,
       return true;
     case HandleType::kBuffer:
       gl.DeleteBuffers(1u, &handle.handle);
+      return true;
+    case HandleType::kSampler:
+      gl.DeleteSamplers(1u, &handle.handle);
       return true;
     case HandleType::kProgram:
       gl.DeleteProgram(handle.handle);
@@ -309,6 +315,8 @@ static DebugResourceType ToDebugResourceType(HandleType type) {
       return DebugResourceType::kTexture;
     case HandleType::kBuffer:
       return DebugResourceType::kBuffer;
+    case HandleType::kSampler:
+      return DebugResourceType::kSampler;
     case HandleType::kProgram:
       return DebugResourceType::kProgram;
     case HandleType::kRenderBuffer:

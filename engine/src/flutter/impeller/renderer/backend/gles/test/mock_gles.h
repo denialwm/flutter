@@ -24,6 +24,31 @@ extern const ProcTableGLES::Resolver kMockResolverGLESWithoutInstancing;
 class IMockGLESImpl {
  public:
   virtual ~IMockGLESImpl() = default;
+  virtual void ActiveTexture(GLenum unit) {}
+  virtual void Uniform1i(GLint location, GLint value) {}
+  virtual void GenSamplers(GLsizei count, GLuint* names) {}
+  virtual void DeleteSamplers(GLsizei count, const GLuint* names) {}
+  virtual void BindSampler(GLuint unit, GLuint sampler) {}
+  virtual void SamplerParameteri(GLuint sampler,
+                                 GLenum parameter,
+                                 GLint value) {}
+  virtual GLboolean IsSampler(GLuint sampler) { return {}; }
+  virtual void TexParameteri(GLenum target, GLenum parameter, GLint value) {}
+  virtual void TexParameterfv(GLenum target,
+                              GLenum parameter,
+                              const GLfloat* value) {}
+  virtual void EnableVertexAttribArray(GLuint index) {}
+  virtual void DisableVertexAttribArray(GLuint index) {}
+  virtual void VertexAttribPointer(GLuint index,
+                                   GLint size,
+                                   GLenum type,
+                                   GLboolean normalized,
+                                   GLsizei stride,
+                                   const void* pointer) {}
+  virtual GLsync FenceSync(GLenum condition, GLbitfield flags) { return {}; }
+  virtual void WaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) {}
+  virtual void DeleteSync(GLsync sync) {}
+
   virtual void DeleteTextures(GLsizei size, const GLuint* queries) {}
   virtual void GenTextures(GLsizei n, GLuint* textures) {}
   virtual void BindTexture(GLenum target, GLuint texture) {}

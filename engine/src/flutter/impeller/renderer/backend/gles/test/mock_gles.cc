@@ -490,7 +490,152 @@ std::shared_ptr<MockGLES> MockGLES::Init(
   return mock_gles;
 }
 
+void mockActiveTexture(GLenum unit) {
+  return CallMockMethod(&IMockGLESImpl::ActiveTexture, unit);
+}
+static_assert(CheckSameSignature<decltype(mockActiveTexture),
+                                 decltype(glActiveTexture)>::value);
+
+void mockUniform1i(GLint location, GLint value) {
+  return CallMockMethod(&IMockGLESImpl::Uniform1i, location, value);
+}
+static_assert(
+    CheckSameSignature<decltype(mockUniform1i), decltype(glUniform1i)>::value);
+
+void mockGenSamplers(GLsizei count, GLuint* names) {
+  return CallMockMethod(&IMockGLESImpl::GenSamplers, count, names);
+}
+static_assert(CheckSameSignature<decltype(mockGenSamplers),
+                                 decltype(glGenSamplers)>::value);
+
+void mockDeleteSamplers(GLsizei count, const GLuint* names) {
+  return CallMockMethod(&IMockGLESImpl::DeleteSamplers, count, names);
+}
+static_assert(CheckSameSignature<decltype(mockDeleteSamplers),
+                                 decltype(glDeleteSamplers)>::value);
+
+void mockBindSampler(GLuint unit, GLuint sampler) {
+  return CallMockMethod(&IMockGLESImpl::BindSampler, unit, sampler);
+}
+static_assert(CheckSameSignature<decltype(mockBindSampler),
+                                 decltype(glBindSampler)>::value);
+
+void mockSamplerParameteri(GLuint sampler, GLenum parameter, GLint value) {
+  return CallMockMethod(&IMockGLESImpl::SamplerParameteri, sampler, parameter,
+                        value);
+}
+static_assert(CheckSameSignature<decltype(mockSamplerParameteri),
+                                 decltype(glSamplerParameteri)>::value);
+
+GLboolean mockIsSampler(GLuint sampler) {
+  return CallMockMethod(&IMockGLESImpl::IsSampler, sampler);
+}
+static_assert(
+    CheckSameSignature<decltype(mockIsSampler), decltype(glIsSampler)>::value);
+
+void mockTexParameteri(GLenum target, GLenum parameter, GLint value) {
+  return CallMockMethod(&IMockGLESImpl::TexParameteri, target, parameter,
+                        value);
+}
+static_assert(CheckSameSignature<decltype(mockTexParameteri),
+                                 decltype(glTexParameteri)>::value);
+
+void mockTexParameterfv(GLenum target, GLenum parameter, const GLfloat* value) {
+  return CallMockMethod(&IMockGLESImpl::TexParameterfv, target, parameter,
+                        value);
+}
+static_assert(CheckSameSignature<decltype(mockTexParameterfv),
+                                 decltype(glTexParameterfv)>::value);
+
+void mockEnableVertexAttribArray(GLuint index) {
+  return CallMockMethod(&IMockGLESImpl::EnableVertexAttribArray, index);
+}
+static_assert(CheckSameSignature<decltype(mockEnableVertexAttribArray),
+                                 decltype(glEnableVertexAttribArray)>::value);
+
+void mockDisableVertexAttribArray(GLuint index) {
+  return CallMockMethod(&IMockGLESImpl::DisableVertexAttribArray, index);
+}
+static_assert(CheckSameSignature<decltype(mockDisableVertexAttribArray),
+                                 decltype(glDisableVertexAttribArray)>::value);
+
+void mockVertexAttribPointer(GLuint index,
+                             GLint size,
+                             GLenum type,
+                             GLboolean normalized,
+                             GLsizei stride,
+                             const void* pointer) {
+  return CallMockMethod(&IMockGLESImpl::VertexAttribPointer, index, size, type,
+                        normalized, stride, pointer);
+}
+static_assert(CheckSameSignature<decltype(mockVertexAttribPointer),
+                                 decltype(glVertexAttribPointer)>::value);
+
+GLsync mockFenceSync(GLenum condition, GLbitfield flags) {
+  return CallMockMethod(&IMockGLESImpl::FenceSync, condition, flags);
+}
+static_assert(
+    CheckSameSignature<decltype(mockFenceSync), decltype(glFenceSync)>::value);
+
+void mockWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) {
+  return CallMockMethod(&IMockGLESImpl::WaitSync, sync, flags, timeout);
+}
+static_assert(
+    CheckSameSignature<decltype(mockWaitSync), decltype(glWaitSync)>::value);
+
+void mockDeleteSync(GLsync sync) {
+  return CallMockMethod(&IMockGLESImpl::DeleteSync, sync);
+}
+static_assert(CheckSameSignature<decltype(mockDeleteSync),
+                                 decltype(glDeleteSync)>::value);
+
 const ProcTableGLES::Resolver kMockResolverGLES = [](const char* name) {
+  if (strcmp(name, "glActiveTexture") == 0) {
+    return reinterpret_cast<void*>(mockActiveTexture);
+  }
+  if (strcmp(name, "glUniform1i") == 0) {
+    return reinterpret_cast<void*>(mockUniform1i);
+  }
+  if (strcmp(name, "glGenSamplers") == 0) {
+    return reinterpret_cast<void*>(mockGenSamplers);
+  }
+  if (strcmp(name, "glDeleteSamplers") == 0) {
+    return reinterpret_cast<void*>(mockDeleteSamplers);
+  }
+  if (strcmp(name, "glBindSampler") == 0) {
+    return reinterpret_cast<void*>(mockBindSampler);
+  }
+  if (strcmp(name, "glSamplerParameteri") == 0) {
+    return reinterpret_cast<void*>(mockSamplerParameteri);
+  }
+  if (strcmp(name, "glIsSampler") == 0) {
+    return reinterpret_cast<void*>(mockIsSampler);
+  }
+  if (strcmp(name, "glTexParameteri") == 0) {
+    return reinterpret_cast<void*>(mockTexParameteri);
+  }
+  if (strcmp(name, "glTexParameterfv") == 0) {
+    return reinterpret_cast<void*>(mockTexParameterfv);
+  }
+  if (strcmp(name, "glEnableVertexAttribArray") == 0) {
+    return reinterpret_cast<void*>(mockEnableVertexAttribArray);
+  }
+  if (strcmp(name, "glDisableVertexAttribArray") == 0) {
+    return reinterpret_cast<void*>(mockDisableVertexAttribArray);
+  }
+  if (strcmp(name, "glVertexAttribPointer") == 0) {
+    return reinterpret_cast<void*>(mockVertexAttribPointer);
+  }
+  if (strcmp(name, "glFenceSync") == 0) {
+    return reinterpret_cast<void*>(mockFenceSync);
+  }
+  if (strcmp(name, "glWaitSync") == 0) {
+    return reinterpret_cast<void*>(mockWaitSync);
+  }
+  if (strcmp(name, "glDeleteSync") == 0) {
+    return reinterpret_cast<void*>(mockDeleteSync);
+  }
+
   if (strcmp(name, "glPopDebugGroupKHR") == 0) {
     return reinterpret_cast<void*>(&mockPopDebugGroupKHR);
   } else if (strcmp(name, "glPushDebugGroupKHR") == 0) {

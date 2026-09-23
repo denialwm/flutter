@@ -25,6 +25,7 @@ enum class HandleType {
   kRenderBuffer,
   kFrameBuffer,
   kFence,
+  kSampler,
 };
 
 std::string HandleTypeToString(HandleType type);

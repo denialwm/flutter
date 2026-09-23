@@ -156,6 +156,8 @@ TEST(RenderPassGLESTest, DirectGlassPipelineRetainsDepthClipping) {
   EXPECT_NE(descriptor.GetDepthPixelFormat(), PixelFormat::kUnknown);
   EXPECT_NE(descriptor.GetStencilPixelFormat(), PixelFormat::kUnknown);
   EXPECT_EQ(renderer.GetGlassPipeline(options), direct);
+  EXPECT_EQ(PipelineGLES::Cast(*offscreen).GetSharedProgram(),
+            PipelineGLES::Cast(*direct).GetSharedProgram());
 }
 
 TEST_P(RenderPassGLESWithDiscardFrameBufferExtTest, DiscardFramebufferExt) {
@@ -356,10 +358,10 @@ class RenderPassGLESCommandTest : public ::testing::Test {
 
     HandleGLES pipeline_handle =
         reactor->CreateHandle(HandleType::kProgram, program_id);
-    std::shared_ptr<PipelineGLES> pipeline =
-        std::shared_ptr<PipelineGLES>(new PipelineGLES(
-            reactor, std::weak_ptr<PipelineLibrary>(), desc,
-            std::make_shared<UniqueHandleGLES>(reactor, pipeline_handle)));
+    std::shared_ptr<PipelineGLES> pipeline = std::shared_ptr<PipelineGLES>(
+        new PipelineGLES(reactor, std::weak_ptr<PipelineLibrary>(), desc,
+                         std::make_shared<ProgramGLES>(
+                             UniqueHandleGLES(reactor, pipeline_handle))));
     pipeline->buffer_bindings_ = std::make_unique<BufferBindingsGLES>();
 
     return {std::move(mock_gl),     mock_gl_impl_ref,
@@ -382,7 +384,7 @@ class RenderPassGLESCommandTest : public ::testing::Test {
     auto pipeline = std::shared_ptr<PipelineGLES>(new PipelineGLES(
         ctx.reactor, std::weak_ptr<PipelineLibrary>(),
         ctx.pipeline->GetDescriptor(),
-        std::make_shared<UniqueHandleGLES>(ctx.reactor, handle)));
+        std::make_shared<ProgramGLES>(UniqueHandleGLES(ctx.reactor, handle))));
     pipeline->buffer_bindings_ = std::make_unique<BufferBindingsGLES>();
     pipeline->y_flip_uniform_location_ = y_flip_location;
     return pipeline;

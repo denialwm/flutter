@@ -363,6 +363,8 @@ static std::optional<GLenum> ToDebugIdentifier(DebugResourceType type) {
       return GL_TEXTURE;
     case DebugResourceType::kBuffer:
       return GL_BUFFER_KHR;
+    case DebugResourceType::kSampler:
+      return GL_SAMPLER;
     case DebugResourceType::kProgram:
       return GL_PROGRAM_KHR;
     case DebugResourceType::kShader:
@@ -385,6 +387,8 @@ static bool ResourceIsLive(const ProcTableGLES& gl,
       return gl.IsTexture(name);
     case DebugResourceType::kBuffer:
       return gl.IsBuffer(name);
+    case DebugResourceType::kSampler:
+      return gl.IsSampler(name);
     case DebugResourceType::kProgram:
       return gl.IsProgram(name);
     case DebugResourceType::kShader:
@@ -397,6 +401,12 @@ static bool ResourceIsLive(const ProcTableGLES& gl,
       return true;
   }
   FML_UNREACHABLE();
+}
+
+bool ProcTableGLES::SupportsSamplerObjects() const {
+  return description_->IsES() && GenSamplers.IsAvailable() &&
+         DeleteSamplers.IsAvailable() && BindSampler.IsAvailable() &&
+         SamplerParameteri.IsAvailable();
 }
 
 bool ProcTableGLES::SupportsDebugLabels() const {
