@@ -69,12 +69,15 @@ size_t MotionRetentionBytes(const Context& context,
 }  // namespace
 
 RenderTargetCache::RenderTargetCache(std::shared_ptr<Allocator> allocator,
-                                     uint32_t keep_alive_frame_count)
+                                     uint32_t keep_alive_frame_count,
+                                     size_t max_idle_bytes)
     : RenderTargetAllocator(std::move(allocator)),
+      max_idle_bytes_(max_idle_bytes),
       keep_alive_frame_count_(keep_alive_frame_count) {}
 
 void RenderTargetCache::Start() {
   cache_disabled_count_ = 0;
+  frame_number_++;
   for (auto& td : render_target_data_) {
     td.used_this_frame = false;
   }
@@ -82,8 +85,10 @@ void RenderTargetCache::Start() {
 
 void RenderTargetCache::End() {
   cache_disabled_count_ = 0;
-  std::vector<RenderTargetData> retain;
-  std::vector<RenderTargetData*> motion_idle;
+  idle_candidates_.clear();
+  constexpr size_t kMaxIdleTargets = 128u;
+  size_t available_idle_bytes = max_idle_bytes_;
+  bool idle_budget_fits = true;
   int64_t now_us = 0;
   auto now = [&] {
     if (now_us == 0) {
@@ -94,41 +99,67 @@ void RenderTargetCache::End() {
     return now_us;
   };
 
-  for (RenderTargetData& td : render_target_data_) {
+  for (size_t i = 0; i < render_target_data_.size(); i++) {
+    auto& td = render_target_data_[i];
+    td.pending_eviction = false;
     if (td.used_this_frame) {
+      td.last_used_frame = frame_number_;
       if (td.motion_retained_bytes > 0) {
         td.motion_last_used_us = now();
       }
-      retain.push_back(td);
     } else if (td.keep_alive_frame_count > 0) {
       td.keep_alive_frame_count--;
-      retain.push_back(td);
-    } else if (td.motion_retained_bytes > 0 &&
-               (IsGlassTargetRetentionByBudgetRequested() ||
-                now() - td.motion_last_used_us <= 2500000)) {
-      motion_idle.push_back(&td);
+    } else {
+      idle_candidates_.push_back(i);
+      if (td.byte_size <= available_idle_bytes) {
+        available_idle_bytes -= td.byte_size;
+      } else {
+        idle_budget_fits = false;
+      }
     }
   }
-  // A moving clipped layer revisits a small set of padded sizes. Keeping
-  // these GL objects across the return path avoids relying on a driver's
-  // whole-second BO cache expiry. Limit extra retention independently of the
-  // existing active/four-frame cache, and prefer the most recently used sizes.
-  // Budget-only retention also avoids timed destruction after glass leaves
-  // the scene. The same byte cap still evicts old entries when space is needed;
-  // unused glass targets alone do not need a clock read in that mode.
-  std::sort(motion_idle.begin(), motion_idle.end(),
-            [](const auto* a, const auto* b) {
-              return a->motion_last_used_us > b->motion_last_used_us;
+
+  // The stable working set needs no sorting or compaction while it fits.
+  if (idle_candidates_.empty() ||
+      (max_idle_bytes_ > 0 && idle_budget_fits &&
+       idle_candidates_.size() <= kMaxIdleTargets)) {
+    return;
+  }
+
+  // Frame-count expiry alone makes occasional effects and slower outputs
+  // repeatedly allocate the same targets at high submission rates. Retain
+  // the most recently used idle targets within a fixed storage budget.
+  std::sort(idle_candidates_.begin(), idle_candidates_.end(),
+            [&](size_t a, size_t b) {
+              return render_target_data_[a].last_used_frame >
+                     render_target_data_[b].last_used_frame;
             });
   constexpr size_t kMotionIdleBudget = 256u * 1024u * 1024u;
-  size_t retained_bytes = 0;
-  for (const auto* td : motion_idle) {
-    if (td->motion_retained_bytes <= kMotionIdleBudget - retained_bytes) {
-      retained_bytes += td->motion_retained_bytes;
-      retain.push_back(*td);
+  size_t idle_bytes = 0;
+  size_t idle_count = 0;
+  size_t motion_bytes = 0;
+  for (size_t index : idle_candidates_) {
+    auto& td = render_target_data_[index];
+    td.pending_eviction = true;
+    if (td.motion_retained_bytes > 0 &&
+        (IsGlassTargetRetentionByBudgetRequested() ||
+         now() - td.motion_last_used_us <= 2500000) &&
+        td.motion_retained_bytes <= kMotionIdleBudget - motion_bytes) {
+      // Preserve the explicitly enabled glass-retention experiment's budget.
+      motion_bytes += td.motion_retained_bytes;
+      td.pending_eviction = false;
+    } else if (max_idle_bytes_ > 0 && idle_count < kMaxIdleTargets &&
+               td.byte_size <= max_idle_bytes_ - idle_bytes) {
+      idle_bytes += td.byte_size;
+      idle_count++;
+      td.pending_eviction = false;
     }
   }
-  render_target_data_.swap(retain);
+
+  // Retained targets stay in place unless an earlier entry was evicted. This
+  // avoids rebuilding a vector and copying all attachment references per frame.
+  std::erase_if(render_target_data_,
+                [](const auto& td) { return td.pending_eviction; });
 }
 
 void RenderTargetCache::DisableCache() {
@@ -174,10 +205,15 @@ RenderTarget RenderTargetCache::CreateOffscreen(
               : StorageMode::kDeviceTransient,
   };
 
+  const ColorConfig color_config{
+      target_pixel_format.value_or(
+          context.GetCapabilities()->GetDefaultColorFormat()),
+      color_attachment_config.storage_mode, StorageMode::kDeviceTransient};
   if (CacheEnabled()) {
     for (RenderTargetData& render_target_data : render_target_data_) {
       const RenderTargetConfig other_config = render_target_data.config;
-      if (!render_target_data.used_this_frame && other_config == config) {
+      if (!render_target_data.used_this_frame && other_config == config &&
+          render_target_data.color_config == color_config) {
         render_target_data.used_this_frame = true;
         render_target_data.keep_alive_frame_count = keep_alive_frame_count_;
         ColorAttachment color0 =
@@ -204,6 +240,8 @@ RenderTarget RenderTargetCache::CreateOffscreen(
         .keep_alive_frame_count = keep_alive_frame_count_,  //
         .config = config,                                   //
         .render_target = created_target,                    //
+        .color_config = color_config,
+        .byte_size = AttachmentBytes(created_target),
         .motion_retained_bytes =
             MotionRetentionBytes(context, label, created_target),
     });
@@ -239,10 +277,16 @@ RenderTarget RenderTargetCache::CreateOffscreenMSAA(
               ? stencil_attachment_config->storage_mode
               : StorageMode::kDeviceTransient,
   };
+  const ColorConfig color_config{
+      target_pixel_format.value_or(
+          context.GetCapabilities()->GetDefaultColorFormat()),
+      color_attachment_config.storage_mode,
+      color_attachment_config.resolve_storage_mode};
   if (CacheEnabled()) {
     for (RenderTargetData& render_target_data : render_target_data_) {
       const RenderTargetConfig other_config = render_target_data.config;
-      if (!render_target_data.used_this_frame && other_config == config) {
+      if (!render_target_data.used_this_frame && other_config == config &&
+          render_target_data.color_config == color_config) {
         render_target_data.used_this_frame = true;
         render_target_data.keep_alive_frame_count = keep_alive_frame_count_;
         ColorAttachment color0 =
@@ -270,6 +314,8 @@ RenderTarget RenderTargetCache::CreateOffscreenMSAA(
         .keep_alive_frame_count = keep_alive_frame_count_,  //
         .config = config,                                   //
         .render_target = created_target,                    //
+        .color_config = color_config,
+        .byte_size = AttachmentBytes(created_target),
         .motion_retained_bytes =
             MotionRetentionBytes(context, label, created_target),
     });

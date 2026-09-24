@@ -14,12 +14,14 @@ namespace impeller {
 /// @brief An implementation of the [RenderTargetAllocator] that caches all
 ///        allocated texture data for at least one frame.
 ///
-///        Any textures unused after [keep_alive_frame_count] frames are
-///        discarded.
+///        Unused targets survive brief gaps in rendering in a bounded idle
+///        pool. The frame count protects the recent working set before targets
+///        compete for that pool. A zero idle budget restores frame-only expiry.
 class RenderTargetCache : public RenderTargetAllocator {
  public:
   explicit RenderTargetCache(std::shared_ptr<Allocator> allocator,
-                             uint32_t keep_alive_frame_count = 4);
+                             uint32_t keep_alive_frame_count = 4,
+                             size_t max_idle_bytes = 32u * 1024u * 1024u);
 
   ~RenderTargetCache() = default;
 
@@ -66,13 +68,24 @@ class RenderTargetCache : public RenderTargetAllocator {
   size_t CachedTextureCount() const;
 
  private:
+  struct ColorConfig {
+    PixelFormat format;
+    StorageMode storage_mode;
+    StorageMode resolve_storage_mode;
+
+    bool operator==(const ColorConfig&) const = default;
+  };
+
   struct RenderTargetData {
     bool used_this_frame;
     uint32_t keep_alive_frame_count;
     RenderTargetConfig config;
     RenderTarget render_target;
-    // Optional short-lived retention of padded glass targets. The normal
-    // per-frame cache still owns all other targets exactly as before.
+    ColorConfig color_config;
+    size_t byte_size = 0;
+    uint64_t last_used_frame = 0;
+    bool pending_eviction = false;
+    // Optional glass experiment with a separate idle retention budget.
     size_t motion_retained_bytes = 0;
     int64_t motion_last_used_us = 0;
   };
@@ -80,6 +93,11 @@ class RenderTargetCache : public RenderTargetAllocator {
   bool CacheEnabled() const;
 
   std::vector<RenderTargetData> render_target_data_;
+  // Indices remain valid until End finishes selection and compacts the cache.
+  // Keep scratch capacity so a steady workload does not allocate every frame.
+  std::vector<size_t> idle_candidates_;
+  uint64_t frame_number_ = 0;
+  const size_t max_idle_bytes_;
   uint32_t keep_alive_frame_count_;
   uint32_t cache_disabled_count_ = 0;
 

@@ -51,8 +51,9 @@ class TestAllocator : public Allocator {
 };
 
 TEST_P(RenderTargetCacheTest, CachesUsedTexturesAcrossFrames) {
-  auto render_target_cache = RenderTargetCache(
-      GetContext()->GetResourceAllocator(), /*keep_alive_frame_count=*/0);
+  auto render_target_cache =
+      RenderTargetCache(GetContext()->GetResourceAllocator(),
+                        /*keep_alive_frame_count=*/0, /*max_idle_bytes=*/0);
 
   render_target_cache.Start();
   // Create two render targets of the same exact size/shape. Both should be
@@ -75,8 +76,9 @@ TEST_P(RenderTargetCacheTest, CachesUsedTexturesAcrossFrames) {
 }
 
 TEST_P(RenderTargetCacheTest, CachesUsedTexturesAcrossFramesWithKeepAlive) {
-  auto render_target_cache = RenderTargetCache(
-      GetContext()->GetResourceAllocator(), /*keep_alive_frame_count=*/3);
+  auto render_target_cache =
+      RenderTargetCache(GetContext()->GetResourceAllocator(),
+                        /*keep_alive_frame_count=*/3, /*max_idle_bytes=*/0);
 
   render_target_cache.Start();
   // Create two render targets of the same exact size/shape. Both should be

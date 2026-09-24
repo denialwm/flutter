@@ -20,6 +20,7 @@ impeller_component("gles_unittests") {
     "denial_gpu_audit_gles_unittests.cc",
     "device_buffer_gles_unittests.cc",
     "render_pass_gles_unittests.cc",
+    "render_target_cache_gles_unittests.cc",
     "state_cache_gles_unittests.cc",
     "test/capabilities_unittests.cc",
     "test/formats_gles_unittests.cc",
@@ -38,6 +39,7 @@ impeller_component("gles_unittests") {
   deps = [
     ":gles",
     "//flutter/impeller/entity",
+    "//flutter/impeller/renderer/testing:mocks",
     "//flutter/impeller/playground:playground_test",
     "//flutter/testing:testing_lib",
   ]
@@ -52,6 +54,7 @@ impeller_component("gles_render_pass_unittests") {
     "buffer_bindings_gles_unittests.cc",
     "device_buffer_gles_unittests.cc",
     "render_pass_gles_unittests.cc",
+    "render_target_cache_gles_unittests.cc",
     "state_cache_gles_unittests.cc",
     "test/mock_gles.cc",
     "test/mock_gles.h",
@@ -59,6 +62,7 @@ impeller_component("gles_render_pass_unittests") {
   deps = [
     ":gles",
     "//flutter/impeller/entity",
+    "//flutter/impeller/renderer/testing:mocks",
     "//flutter/testing:testing_lib",
     "//flutter/third_party/googletest:gtest_main",
   ]
