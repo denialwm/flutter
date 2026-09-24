@@ -8,6 +8,7 @@
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <utility>
 
@@ -30,6 +31,7 @@
 
 namespace impeller {
 class BackdropSnapshotPins;
+class ExternalTextureDrawCache;
 
 /// Pipeline state configuration.
 ///
@@ -324,6 +326,20 @@ class ContentContext {
   /// allocate their own device buffers.
   HostBuffer& GetTransientsDataBuffer() const { return *data_host_buffer_; }
 
+  struct CachedExternalTextureDrawData {
+    BufferView vertices;
+    BufferView frame_info;
+    BufferView frag_info;
+  };
+
+  // Returns persistent, owned buffer views after the same external texture
+  // draw data is observed twice. A miss leaves the caller on the transient
+  // host-buffer path, so changing window geometry does not create GL buffers.
+  std::optional<CachedExternalTextureDrawData> GetCachedExternalTextureDrawData(
+      std::span<const std::byte> vertices,
+      std::span<const std::byte> frame_info,
+      std::span<const std::byte> frag_info) const;
+
   /// @brief Resets the transients buffers held onto by the content context.
   void ResetTransientsBuffers();
 
@@ -400,6 +416,8 @@ class ContentContext {
   std::shared_ptr<RenderTargetAllocator> render_target_cache_;
   std::shared_ptr<HostBuffer> data_host_buffer_;
   std::shared_ptr<HostBuffer> indexes_host_buffer_;
+  mutable std::unique_ptr<ExternalTextureDrawCache>
+      external_texture_draw_cache_;
   std::shared_ptr<Texture> empty_texture_;
   std::unique_ptr<TextShadowCache> text_shadow_cache_;
 

@@ -199,6 +199,90 @@ TEST_P(RenderPassGLESWithDiscardFrameBufferExtTest, DiscardFramebufferExt) {
   ASSERT_TRUE(reactor->React());
 }
 
+TEST(RenderPassGLESTest, ExternalTextureDrawCacheRetainsOwnedAlignedData) {
+  const ProcTableGLES::Resolver resolver = [](const char* name) -> void* {
+    if (strcmp(name, "glCreateShader") == 0) {
+      return reinterpret_cast<void*>(+[](GLenum) -> GLuint { return 1; });
+    }
+    if (strcmp(name, "glCreateProgram") == 0) {
+      return reinterpret_cast<void*>(+[]() -> GLuint { return 1; });
+    }
+    if (strcmp(name, "glIsProgram") == 0) {
+      return reinterpret_cast<void*>(
+          +[](GLuint) -> GLboolean { return GL_TRUE; });
+    }
+    if (strcmp(name, "glGetShaderiv") == 0) {
+      return reinterpret_cast<void*>(+[](GLuint, GLenum query, GLint* value) {
+        *value = query == GL_COMPILE_STATUS ? GL_TRUE : 0;
+      });
+    }
+    if (strcmp(name, "glGetProgramiv") == 0) {
+      return reinterpret_cast<void*>(+[](GLuint, GLenum query, GLint* value) {
+        *value = query == GL_LINK_STATUS ? GL_TRUE : 0;
+      });
+    }
+    return kMockResolverGLES(name);
+  };
+  auto mock_gl = MockGLES::Init(std::nullopt, "OpenGL ES 3.0", resolver);
+  auto context =
+      ContextGLES::Create(Flags{}, std::make_unique<ProcTableGLES>(resolver),
+                          {std::make_shared<fml::NonOwnedMapping>(
+                               impeller_entity_shaders_gles_data,
+                               impeller_entity_shaders_gles_length),
+                           std::make_shared<fml::NonOwnedMapping>(
+                               impeller_modern_shaders_gles_data,
+                               impeller_modern_shaders_gles_length),
+                           std::make_shared<fml::NonOwnedMapping>(
+                               impeller_framebuffer_blend_shaders_gles_data,
+                               impeller_framebuffer_blend_shaders_gles_length)},
+                          false);
+  ASSERT_TRUE(context);
+  auto worker = std::make_shared<MockWorker>();
+  context->AddReactorWorker(worker);
+  ContentContext renderer(context, nullptr);
+  ASSERT_TRUE(renderer.IsValid());
+
+  std::array<std::byte, 64> vertices{};
+  std::array<std::byte, 64> frame{};
+  std::array<std::byte, 4> fragment{};
+  vertices[0] = std::byte{12};
+  frame[0] = std::byte{34};
+  fragment[0] = std::byte{56};
+  auto lookup = [&]() {
+    return renderer.GetCachedExternalTextureDrawData(
+        std::span(vertices), std::span(frame), std::span(fragment));
+  };
+  EXPECT_FALSE(lookup().has_value());
+  auto cached = lookup();
+  ASSERT_TRUE(cached.has_value());
+  const DeviceBuffer* original = cached->vertices.GetBuffer();
+  ASSERT_NE(original, nullptr);
+  EXPECT_EQ(cached->frame_info.GetBuffer(), original);
+  EXPECT_EQ(cached->frag_info.GetBuffer(), original);
+  EXPECT_EQ(cached->frame_info.GetRange().offset %
+                renderer.GetDeviceCapabilities().GetMinimumUniformAlignment(),
+            0u);
+  EXPECT_EQ(cached->frag_info.GetRange().offset %
+                renderer.GetDeviceCapabilities().GetMinimumUniformAlignment(),
+            0u);
+  EXPECT_EQ(original->OnGetContents()[0], 12);
+  EXPECT_EQ(original->OnGetContents()[cached->frame_info.GetRange().offset],
+            34);
+  EXPECT_EQ(original->OnGetContents()[cached->frag_info.GetRange().offset], 56);
+  ASSERT_TRUE(lookup().has_value());
+  EXPECT_EQ(lookup()->vertices.GetBuffer(), original);
+
+  // Changing the geometry leaves already-recorded draws intact, and a moving
+  // texture does not allocate a new persistent buffer on its first sighting.
+  for (uint8_t i = 0; i < 25; i++) {
+    vertices[0] = std::byte{static_cast<uint8_t>(100 + i)};
+    EXPECT_FALSE(lookup().has_value());
+    ASSERT_TRUE(lookup().has_value());
+  }
+  EXPECT_EQ(cached->vertices.GetBuffer(), original);
+  EXPECT_EQ(original->OnGetContents()[0], 12);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     FrameBufferObject,
     RenderPassGLESWithDiscardFrameBufferExtTest,

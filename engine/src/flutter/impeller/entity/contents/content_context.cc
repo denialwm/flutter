@@ -4,14 +4,19 @@
 
 #include "impeller/entity/contents/content_context.h"
 
+#include <algorithm>
+#include <array>
+#include <cstring>
 #include <format>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "flutter/common/backdrop_filter_cache_key.h"
 #include "flutter/display_list/image/dl_image.h"
 #include "fml/trace_event.h"
 #include "impeller/base/validation.h"
+#include "impeller/core/device_buffer.h"
 #include "impeller/core/formats.h"
 #include "impeller/core/texture_descriptor.h"
 #include "impeller/entity/contents/framebuffer_blend_contents.h"
@@ -29,6 +34,147 @@
 #include "impeller/typographer/typographer_context.h"
 
 namespace impeller {
+
+class ExternalTextureDrawCache {
+ public:
+  using Result = ContentContext::CachedExternalTextureDrawData;
+
+  std::optional<Result> Get(const std::shared_ptr<Allocator>& allocator,
+                            size_t uniform_alignment,
+                            std::span<const std::byte> vertices,
+                            std::span<const std::byte> frame_info,
+                            std::span<const std::byte> frag_info) {
+    if (vertices.size() != kVertexBytes || frame_info.size() != kFrameBytes ||
+        frag_info.size() != kFragmentBytes) {
+      return std::nullopt;
+    }
+
+    const uint64_t access = ++access_;
+    for (auto& entry : entries_) {
+      if (entry.buffer && entry.key.Matches(vertices, frame_info, frag_info)) {
+        entry.last_access = access;
+        return Views(entry);
+      }
+    }
+
+    for (auto& candidate : candidates_) {
+      if (!candidate.valid ||
+          !candidate.key.Matches(vertices, frame_info, frag_info)) {
+        continue;
+      }
+      candidate.valid = false;
+      const size_t alignment = std::max<size_t>(1, uniform_alignment);
+      const size_t frame_offset = Align(kVertexBytes, alignment);
+      const size_t fragment_offset =
+          Align(frame_offset + kFrameBytes, alignment);
+      std::vector<uint8_t> packed(fragment_offset + kFragmentBytes);
+      std::memcpy(packed.data(), vertices.data(), kVertexBytes);
+      std::memcpy(packed.data() + frame_offset, frame_info.data(), kFrameBytes);
+      std::memcpy(packed.data() + fragment_offset, frag_info.data(),
+                  kFragmentBytes);
+      auto buffer =
+          allocator->CreateBufferWithCopy(packed.data(), packed.size());
+      if (!buffer) {
+        return std::nullopt;
+      }
+
+      Entry* replacement = &entries_.front();
+      for (auto& entry : entries_) {
+        if (!entry.buffer) {
+          replacement = &entry;
+          break;
+        }
+        if (entry.last_access < replacement->last_access) {
+          replacement = &entry;
+        }
+      }
+      replacement->key = candidate.key;
+      replacement->buffer = std::move(buffer);
+      replacement->frame_offset = frame_offset;
+      replacement->fragment_offset = fragment_offset;
+      replacement->last_access = access;
+      return Views(*replacement);
+    }
+
+    Candidate* replacement = &candidates_.front();
+    for (auto& candidate : candidates_) {
+      if (!candidate.valid) {
+        replacement = &candidate;
+        break;
+      }
+      if (candidate.last_access < replacement->last_access) {
+        replacement = &candidate;
+      }
+    }
+    replacement->key.Set(vertices, frame_info, frag_info);
+    replacement->last_access = access;
+    replacement->valid = true;
+    return std::nullopt;
+  }
+
+ private:
+  static constexpr size_t kVertexBytes = 64;
+  static constexpr size_t kFrameBytes = 64;
+  static constexpr size_t kFragmentBytes = 4;
+  static constexpr size_t kSlots = 24;
+
+  static size_t Align(size_t value, size_t alignment) {
+    return ((value + alignment - 1) / alignment) * alignment;
+  }
+
+  struct Key {
+    std::array<std::byte, kVertexBytes> vertices;
+    std::array<std::byte, kFrameBytes> frame_info;
+    std::array<std::byte, kFragmentBytes> frag_info;
+
+    bool Matches(std::span<const std::byte> vertex_data,
+                 std::span<const std::byte> frame_data,
+                 std::span<const std::byte> fragment_data) const {
+      return std::memcmp(vertices.data(), vertex_data.data(), kVertexBytes) ==
+                 0 &&
+             std::memcmp(frame_info.data(), frame_data.data(), kFrameBytes) ==
+                 0 &&
+             std::memcmp(frag_info.data(), fragment_data.data(),
+                         kFragmentBytes) == 0;
+    }
+
+    void Set(std::span<const std::byte> vertex_data,
+             std::span<const std::byte> frame_data,
+             std::span<const std::byte> fragment_data) {
+      std::memcpy(vertices.data(), vertex_data.data(), kVertexBytes);
+      std::memcpy(frame_info.data(), frame_data.data(), kFrameBytes);
+      std::memcpy(frag_info.data(), fragment_data.data(), kFragmentBytes);
+    }
+  };
+
+  struct Entry {
+    Key key;
+    std::shared_ptr<const DeviceBuffer> buffer;
+    size_t frame_offset = 0;
+    size_t fragment_offset = 0;
+    uint64_t last_access = 0;
+  };
+
+  struct Candidate {
+    Key key;
+    uint64_t last_access = 0;
+    bool valid = false;
+  };
+
+  static Result Views(const Entry& entry) {
+    return Result{
+        .vertices = BufferView(entry.buffer, Range{0, kVertexBytes}),
+        .frame_info =
+            BufferView(entry.buffer, Range{entry.frame_offset, kFrameBytes}),
+        .frag_info = BufferView(entry.buffer,
+                                Range{entry.fragment_offset, kFragmentBytes}),
+    };
+  }
+
+  std::array<Entry, kSlots> entries_;
+  std::array<Candidate, kSlots> candidates_;
+  uint64_t access_ = 0;
+};
 
 namespace {
 
@@ -987,6 +1133,20 @@ Tessellator& ContentContext::GetTessellator() const {
 
 std::shared_ptr<Context> ContentContext::GetContext() const {
   return context_;
+}
+
+std::optional<ContentContext::CachedExternalTextureDrawData>
+ContentContext::GetCachedExternalTextureDrawData(
+    std::span<const std::byte> vertices,
+    std::span<const std::byte> frame_info,
+    std::span<const std::byte> frag_info) const {
+  if (!external_texture_draw_cache_) {
+    external_texture_draw_cache_ = std::make_unique<ExternalTextureDrawCache>();
+  }
+  return external_texture_draw_cache_->Get(
+      context_->GetResourceAllocator(),
+      context_->GetCapabilities()->GetMinimumUniformAlignment(), vertices,
+      frame_info, frag_info);
 }
 
 const Capabilities& ContentContext::GetDeviceCapabilities() const {

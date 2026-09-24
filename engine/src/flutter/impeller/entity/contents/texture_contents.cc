@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 
 #include "fml/logging.h"
@@ -163,10 +164,31 @@ bool TextureContents::Render(const ContentContext& renderer,
                         RemapTextureCoordinate(texture_coords.GetRightBottom(),
                                                y_coord_scale)},
   };
-  auto vertex_buffer = CreateVertexBuffer(vertices, data_host_buffer);
-
-  VS::FrameInfo frame_info;
+  VS::FrameInfo frame_info{};
   frame_info.mvp = entity.GetShaderTransform(pass);
+  FS::FragInfo normal_frag_info{};
+  normal_frag_info.alpha = GetOpacity();
+
+  std::optional<ContentContext::CachedExternalTextureDrawData> cached_draw;
+#if defined(IMPELLER_ENABLE_OPENGLES) && !defined(FML_OS_EMSCRIPTEN)
+  if (is_external_texture_ && !is_external_texture &&
+      !strict_source_rect_enabled_ &&
+      renderer.GetContext()->GetBackendType() ==
+          Context::BackendType::kOpenGLES) {
+    static_assert(sizeof(vertices) == 64);
+    static_assert(sizeof(frame_info) == 64);
+    static_assert(sizeof(normal_frag_info) == 4);
+    cached_draw = renderer.GetCachedExternalTextureDrawData(
+        std::as_bytes(std::span(vertices)),
+        std::as_bytes(std::span{&frame_info, 1}),
+        std::as_bytes(std::span{&normal_frag_info, 1}));
+  }
+#endif
+  auto vertex_buffer =
+      cached_draw ? VertexBuffer{.vertex_buffer = cached_draw->vertices,
+                                 .vertex_count = vertices.size(),
+                                 .index_type = IndexType::kNone}
+                  : CreateVertexBuffer(vertices, data_host_buffer);
 
 #ifdef IMPELLER_DEBUG
   if (label_.empty()) {
@@ -215,7 +237,9 @@ bool TextureContents::Render(const ContentContext& renderer,
 #endif  // IMPELLER_ENABLE_OPENGLES
 
   pass.SetVertexBuffer(vertex_buffer);
-  VS::BindFrameInfo(pass, data_host_buffer.EmplaceUniform(frame_info));
+  VS::BindFrameInfo(pass, cached_draw
+                              ? cached_draw->frame_info
+                              : data_host_buffer.EmplaceUniform(frame_info));
 
   if (strict_source_rect_enabled_) {
     // For a strict source rect, shrink the texture coordinate range by half a
@@ -264,9 +288,9 @@ bool TextureContents::Render(const ContentContext& renderer,
         renderer.GetContext()->GetSamplerLibrary()->GetSampler(sampler_desc));
 #endif  //  IMPELLER_ENABLE_OPENGLES
   } else {
-    FS::FragInfo frag_info;
-    frag_info.alpha = GetOpacity();
-    FS::BindFragInfo(pass, data_host_buffer.EmplaceUniform((frag_info)));
+    FS::BindFragInfo(
+        pass, cached_draw ? cached_draw->frag_info
+                          : data_host_buffer.EmplaceUniform(normal_frag_info));
     FS::BindTextureSampler(
         pass, texture_,
         renderer.GetContext()->GetSamplerLibrary()->GetSampler(
