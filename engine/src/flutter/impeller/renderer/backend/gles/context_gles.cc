@@ -110,6 +110,7 @@ bool ContextGLES::IsValid() const {
 }
 
 void ContextGLES::Shutdown() {
+  pass_storage_pool_.Shutdown();
   if (!is_valid_) {
     return;
   }

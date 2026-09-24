@@ -4,6 +4,7 @@
 
 #include <map>
 #include <memory>
+#include <thread>
 #include <tuple>
 #include "flutter/testing/testing.h"  // IWYU pragma: keep
 #include "gmock/gmock.h"
@@ -19,6 +20,7 @@
 #include "impeller/renderer/backend/gles/pipeline_gles.h"
 #include "impeller/renderer/backend/gles/proc_table_gles.h"
 #include "impeller/renderer/backend/gles/reactor_gles.h"
+#include "impeller/renderer/backend/gles/render_pass_storage_gles.h"
 #include "impeller/renderer/backend/gles/test/mock_gles.h"
 #include "impeller/renderer/backend/gles/texture_gles.h"
 #include "impeller/renderer/backend/gles/unique_handle_gles.h"
@@ -617,6 +619,236 @@ TEST_F(RenderPassGLESCommandTest, QueuedPassOwnsItsSnapshotUntilExecution) {
   ASSERT_TRUE(ctx.reactor->React());
   EXPECT_TRUE(red_lifetime.expired());
   EXPECT_TRUE(blue_lifetime.expired());
+}
+
+TEST_F(RenderPassGLESCommandTest, ReusesStorageOnlyAfterDeferredPassDies) {
+  auto ctx = CreateRenderPassGLESContext();
+  auto& pool = ctx.context->GetRenderPassStoragePool();
+  auto target = ctx.render_pass->GetRenderTarget();
+  auto first = ctx.command_buffer->CreateRenderPass(target);
+  first->SetPipeline(PipelineRef(ctx.pipeline));
+  first->SetElementCount(3);
+  ASSERT_TRUE(first->Draw().ok());
+  const size_t capacity = first->GetCommands().capacity();
+  ASSERT_GT(capacity, 0u);
+  std::weak_ptr<RenderPass> lifetime = first;
+  ASSERT_TRUE(first->EncodeCommands());
+  first.reset();
+
+  // The reactor owns the pass until it runs the queued callback.
+  EXPECT_FALSE(lifetime.expired());
+  EXPECT_EQ(pool.RetainedEntries(), 0u);
+  auto concurrent = ctx.command_buffer->CreateRenderPass(target);
+  EXPECT_EQ(concurrent->GetCommands().capacity(), 0u);
+  ASSERT_TRUE(ctx.reactor->React());
+  EXPECT_TRUE(lifetime.expired());
+  EXPECT_EQ(pool.RetainedEntries(), 1u);
+
+  auto reused = ctx.command_buffer->CreateRenderPass(target);
+  EXPECT_EQ(reused->GetCommands().capacity(), capacity);
+  EXPECT_TRUE(reused->GetCommands().empty());
+  EXPECT_EQ(pool.RetainedEntries(), 0u);
+  // Only vector storage moved. The fresh pass has no pending pipeline.
+  reused->SetElementCount(3);
+  EXPECT_FALSE(reused->Draw().ok());
+}
+
+TEST_F(RenderPassGLESCommandTest, ReusedStorageHasFreshBindingOffsets) {
+  auto ctx = CreateRenderPassGLESContext();
+  auto target = ctx.render_pass->GetRenderTarget();
+  DeviceBufferDescriptor descriptor;
+  descriptor.size = 16;
+  descriptor.storage_mode = StorageMode::kHostVisible;
+  auto buffer = std::static_pointer_cast<Context>(ctx.context)
+                    ->GetResourceAllocator()
+                    ->CreateBuffer(descriptor);
+  ASSERT_TRUE(buffer);
+  auto view = DeviceBuffer::AsBufferView(buffer);
+  const ShaderUniformSlot slot{.name = "uniform", .ext_res_0 = 1};
+  auto record = [&](const std::shared_ptr<RenderPass>& pass) {
+    pass->SetPipeline(PipelineRef(ctx.pipeline));
+    pass->SetElementCount(3);
+    EXPECT_TRUE(pass->SetVertexBuffer(view));
+    EXPECT_TRUE(pass->BindDynamicResource(
+        ShaderStage::kVertex, DescriptorType::kUniformBuffer, slot,
+        std::make_unique<ShaderMetadata>(), view));
+    EXPECT_TRUE(pass->Draw().ok());
+  };
+  auto first = ctx.command_buffer->CreateRenderPass(target);
+  record(first);
+  first.reset();
+  EXPECT_EQ(ctx.context->GetRenderPassStoragePool().RetainedEntries(), 1u);
+
+  auto reused = ctx.command_buffer->CreateRenderPass(target);
+  EXPECT_TRUE(reused->GetCommands().empty());
+  record(reused);
+  ASSERT_EQ(reused->GetCommands().size(), 1u);
+  const auto& command = reused->GetCommands().front();
+  EXPECT_EQ(command.vertex_buffers.offset, 0u);
+  EXPECT_EQ(command.vertex_buffers.length, 1u);
+  EXPECT_EQ(command.bound_buffers.offset, 0u);
+  EXPECT_EQ(command.bound_buffers.length, 1u);
+  EXPECT_EQ(command.bound_textures.offset, 0u);
+  EXPECT_EQ(command.bound_textures.length, 0u);
+}
+
+TEST(RenderPassGLESStorageTest, ClearsResourcesAndBoundsRetainedStorage) {
+  RenderPassStoragePoolGLES pool;
+  auto mock_gl = MockGLES::Init(std::make_unique<NiceMock<MockGLESImpl>>());
+  auto context = CreateFakeGLESContext();
+  auto reactor = context->GetReactor();
+  TextureDescriptor descriptor;
+  descriptor.size = {1, 1};
+  descriptor.format = PixelFormat::kR8G8B8A8UNormInt;
+  auto texture = std::make_shared<TextureGLES>(reactor, descriptor, false);
+  std::weak_ptr<TextureGLES> lifetime = texture;
+  DeviceBufferDescriptor buffer_descriptor;
+  buffer_descriptor.size = 16;
+  buffer_descriptor.storage_mode = StorageMode::kHostVisible;
+  auto buffer = std::static_pointer_cast<Context>(context)
+                    ->GetResourceAllocator()
+                    ->CreateBuffer(buffer_descriptor);
+  ASSERT_TRUE(buffer);
+  std::weak_ptr<DeviceBuffer> buffer_lifetime = buffer;
+  auto view = DeviceBuffer::AsBufferView(buffer);
+  RenderPassStorageGLES storage;
+  storage.commands.reserve(2);
+  storage.vertex_buffers.reserve(2);
+  storage.bound_buffers.reserve(2);
+  storage.bound_textures.reserve(2);
+  storage.commands.emplace_back();
+  storage.commands.back().index_buffer = view;
+  storage.vertex_buffers.push_back(view);
+  storage.bound_buffers.push_back(
+      BufferResource::MakeDynamic(std::make_unique<ShaderMetadata>(), view));
+  storage.bound_textures.emplace_back();
+  storage.bound_textures.back().texture =
+      TextureResource::MakeDynamic(std::make_unique<ShaderMetadata>(), texture);
+  view = {};
+  buffer.reset();
+  texture.reset();
+  EXPECT_FALSE(lifetime.expired());
+  EXPECT_FALSE(buffer_lifetime.expired());
+  pool.Put(std::move(storage));
+  EXPECT_TRUE(lifetime.expired());
+  EXPECT_TRUE(buffer_lifetime.expired());
+  EXPECT_EQ(pool.RetainedEntries(), 1u);
+  auto reused = pool.Take();
+  EXPECT_TRUE(reused.commands.empty());
+  EXPECT_TRUE(reused.vertex_buffers.empty());
+  EXPECT_TRUE(reused.bound_buffers.empty());
+  EXPECT_TRUE(reused.bound_textures.empty());
+  EXPECT_GE(reused.commands.capacity(), 2u);
+  EXPECT_GE(reused.vertex_buffers.capacity(), 2u);
+  EXPECT_GE(reused.bound_buffers.capacity(), 2u);
+  EXPECT_GE(reused.bound_textures.capacity(), 2u);
+  pool.Put(std::move(reused));
+
+  for (size_t i = 0; i < RenderPassStoragePoolGLES::kMaxEntries + 2; i++) {
+    RenderPassStorageGLES extra;
+    extra.commands.reserve(1);
+    pool.Put(std::move(extra));
+  }
+  EXPECT_EQ(pool.RetainedEntries(), RenderPassStoragePoolGLES::kMaxEntries);
+  EXPECT_LE(pool.RetainedBytes(), RenderPassStoragePoolGLES::kMaxBytes);
+
+  pool.Shutdown();
+  EXPECT_EQ(pool.RetainedEntries(), 0u);
+  EXPECT_EQ(pool.RetainedBytes(), 0u);
+  RenderPassStorageGLES after_shutdown;
+  after_shutdown.commands.reserve(1);
+  pool.Put(std::move(after_shutdown));
+  EXPECT_EQ(pool.RetainedEntries(), 0u);
+}
+
+TEST(RenderPassGLESStorageTest, ByteBudgetRejectsAndRecovers) {
+  RenderPassStoragePoolGLES pool;
+  auto large_storage = [] {
+    RenderPassStorageGLES storage;
+    storage.commands.reserve(3 * RenderPassStoragePoolGLES::kMaxBytes /
+                             (4 * sizeof(Command)));
+    return storage;
+  };
+  auto first = large_storage();
+  const size_t bytes = first.CapacityInBytes();
+  ASSERT_GT(bytes, RenderPassStoragePoolGLES::kMaxBytes / 2);
+  ASSERT_LT(bytes, RenderPassStoragePoolGLES::kMaxBytes);
+  pool.Put(std::move(first));
+  EXPECT_EQ(pool.RetainedEntries(), 1u);
+  EXPECT_EQ(pool.RetainedBytes(), bytes);
+  pool.Put(large_storage());
+  EXPECT_EQ(pool.RetainedEntries(), 1u);
+  EXPECT_EQ(pool.RetainedBytes(), bytes);
+  auto taken = pool.Take();
+  EXPECT_EQ(pool.RetainedEntries(), 0u);
+  EXPECT_EQ(pool.RetainedBytes(), 0u);
+  pool.Put(large_storage());
+  EXPECT_EQ(pool.RetainedEntries(), 1u);
+  EXPECT_EQ(pool.RetainedBytes(), bytes);
+}
+
+TEST(RenderPassGLESStorageTest, OversizedEntryIsRejected) {
+  RenderPassStoragePoolGLES pool;
+  RenderPassStorageGLES oversized;
+  oversized.commands.reserve(
+      RenderPassStoragePoolGLES::kMaxBytes / sizeof(Command) + 1);
+  ASSERT_GT(oversized.CapacityInBytes(), RenderPassStoragePoolGLES::kMaxBytes);
+  pool.Put(std::move(oversized));
+  EXPECT_EQ(pool.RetainedEntries(), 0u);
+  EXPECT_EQ(pool.RetainedBytes(), 0u);
+}
+
+TEST_F(RenderPassGLESCommandTest, DiscardedReactorOperationReleasesPass) {
+  auto ctx = CreateRenderPassGLESContext();
+  auto& pool = ctx.context->GetRenderPassStoragePool();
+  auto pass =
+      ctx.command_buffer->CreateRenderPass(ctx.render_pass->GetRenderTarget());
+  pass->SetPipeline(PipelineRef(ctx.pipeline));
+  pass->SetElementCount(3);
+  ASSERT_TRUE(pass->Draw().ok());
+  ASSERT_TRUE(pass->EncodeCommands());
+  std::weak_ptr<RenderPass> lifetime = pass;
+  pass.reset();
+  EXPECT_FALSE(lifetime.expired());
+  EXPECT_EQ(pool.RetainedEntries(), 0u);
+  ASSERT_TRUE(ctx.reactor->Shutdown());
+  EXPECT_TRUE(lifetime.expired());
+  EXPECT_EQ(pool.RetainedEntries(), 1u);
+}
+
+TEST_F(RenderPassGLESCommandTest,
+       LatePassDestructionDoesNotRefillShutdownPool) {
+  auto ctx = CreateRenderPassGLESContext();
+  auto& pool = ctx.context->GetRenderPassStoragePool();
+  auto pass =
+      ctx.command_buffer->CreateRenderPass(ctx.render_pass->GetRenderTarget());
+  pass->SetPipeline(PipelineRef(ctx.pipeline));
+  pass->SetElementCount(3);
+  ASSERT_TRUE(pass->Draw().ok());
+  std::static_pointer_cast<Context>(ctx.context)->Shutdown();
+  pass.reset();
+  EXPECT_EQ(pool.RetainedEntries(), 0u);
+  EXPECT_EQ(pool.RetainedBytes(), 0u);
+}
+
+TEST(RenderPassGLESStorageTest, ConcurrentHandoffStaysBounded) {
+  RenderPassStoragePoolGLES pool;
+  std::vector<std::thread> workers;
+  for (int i = 0; i < 4; i++) {
+    workers.emplace_back([&pool] {
+      for (int n = 0; n < 1000; n++) {
+        auto storage = pool.Take();
+        storage.commands.emplace_back();
+        pool.Put(std::move(storage));
+      }
+    });
+  }
+  for (auto& worker : workers) {
+    worker.join();
+  }
+  EXPECT_LE(pool.RetainedEntries(), RenderPassStoragePoolGLES::kMaxEntries);
+  EXPECT_LE(pool.RetainedBytes(), RenderPassStoragePoolGLES::kMaxBytes);
+  EXPECT_GT(pool.RetainedEntries(), 0u);
 }
 
 TEST_F(RenderPassGLESCommandTest, ProgramAndYFlipTrackPipelineTransitions) {

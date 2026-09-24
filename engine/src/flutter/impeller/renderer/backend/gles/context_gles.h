@@ -12,6 +12,7 @@
 #include "impeller/renderer/backend/gles/gpu_tracer_gles.h"
 #include "impeller/renderer/backend/gles/pipeline_library_gles.h"
 #include "impeller/renderer/backend/gles/reactor_gles.h"
+#include "impeller/renderer/backend/gles/render_pass_storage_gles.h"
 #include "impeller/renderer/backend/gles/sampler_library_gles.h"
 #include "impeller/renderer/backend/gles/shader_library_gles.h"
 #include "impeller/renderer/capabilities.h"
@@ -45,6 +46,12 @@ class ContextGLES final : public Context,
 
   std::shared_ptr<GPUTracerGLES> GetGPUTracer() const { return gpu_tracer_; }
 
+  // Storage is context-scoped so passes from successive command buffers can
+  // reuse allocations without retaining any GPU resources in the pool.
+  RenderPassStoragePoolGLES& GetRenderPassStoragePool() const {
+    return pass_storage_pool_;
+  }
+
  private:
   std::shared_ptr<ReactorGLES> reactor_;
   std::shared_ptr<ShaderLibraryGLES> shader_library_;
@@ -53,6 +60,7 @@ class ContextGLES final : public Context,
   std::shared_ptr<AllocatorGLES> resource_allocator_;
   std::shared_ptr<CommandQueue> command_queue_;
   std::shared_ptr<GPUTracerGLES> gpu_tracer_;
+  mutable RenderPassStoragePoolGLES pass_storage_pool_;
 
   // Note: This is stored separately from the ProcTableGLES CapabilitiesGLES
   // in order to satisfy the Context::GetCapabilities signature which returns

@@ -109,6 +109,8 @@ impeller_component("gles") {
     "reactor_gles.h",
     "render_pass_gles.cc",
     "render_pass_gles.h",
+    "render_pass_storage_gles.cc",
+    "render_pass_storage_gles.h",
     "sampler_gles.cc",
     "sampler_gles.h",
     "sampler_library_gles.cc",

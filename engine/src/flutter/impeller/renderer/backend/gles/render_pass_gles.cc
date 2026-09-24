@@ -31,10 +31,26 @@ RenderPassGLES::RenderPassGLES(std::shared_ptr<const Context> context,
                                std::shared_ptr<ReactorGLES> reactor)
     : RenderPass(std::move(context), target),
       reactor_(std::move(reactor)),
-      is_valid_(reactor_ && reactor_->IsValid()) {}
+      is_valid_(reactor_ && reactor_->IsValid()) {
+  auto storage = ContextGLES::Cast(*context_).GetRenderPassStoragePool().Take();
+  commands_.swap(storage.commands);
+  vertex_buffers_.swap(storage.vertex_buffers);
+  bound_buffers_.swap(storage.bound_buffers);
+  bound_textures_.swap(storage.bound_textures);
+}
 
 // |RenderPass|
-RenderPassGLES::~RenderPassGLES() = default;
+RenderPassGLES::~RenderPassGLES() {
+  // Deferred encoding owns this pass through shared_from_this(). At destruction
+  // no queued operation can read the vectors, and the base still owns context_.
+  RenderPassStorageGLES storage;
+  commands_.swap(storage.commands);
+  vertex_buffers_.swap(storage.vertex_buffers);
+  bound_buffers_.swap(storage.bound_buffers);
+  bound_textures_.swap(storage.bound_textures);
+  ContextGLES::Cast(*context_).GetRenderPassStoragePool().Put(
+      std::move(storage));
+}
 
 // |RenderPass|
 bool RenderPassGLES::IsValid() const {
