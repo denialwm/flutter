@@ -39,8 +39,8 @@ impeller_component("gles_unittests") {
   deps = [
     ":gles",
     "//flutter/impeller/entity",
-    "//flutter/impeller/renderer/testing:mocks",
     "//flutter/impeller/playground:playground_test",
+    "//flutter/impeller/renderer/testing:mocks",
     "//flutter/testing:testing_lib",
   ]
 }

@@ -226,10 +226,10 @@ impeller_component("glass_canvas_unittests") {
   target_type = "executable"
   testonly = true
   sources = [
-    "glass_canvas_unittests.cc",
     "../entity/contents/filters/glass_filter_contents_unittests.cc",
     "../entity/contents/filters/glass_frost_cache_unittests.cc",
     "../renderer/backend/gles/test/mock_gles.cc",
+    "glass_canvas_unittests.cc",
   ]
   deps = [
     ":display_list",
@@ -238,7 +238,7 @@ impeller_component("glass_canvas_unittests") {
     "//flutter/impeller/entity:framebuffer_blend_entity_shaders",
     "//flutter/impeller/entity:modern_entity_shaders",
     "//flutter/impeller/geometry:geometry_asserts",
-    "//flutter/impeller/renderer/backend/gles:gles",
+    "//flutter/impeller/renderer/backend/gles",
     "//flutter/impeller/renderer/testing:mocks",
     "//flutter/testing:testing_lib",
     "//flutter/third_party/googletest:gtest_main",
