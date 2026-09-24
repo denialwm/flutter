@@ -1786,7 +1786,7 @@ void DisplayListBuilder::DrawDisplayList(const sk_sp<DisplayList> display_list,
   } else if (!rtree_data_.has_value() || !(rtree = display_list->rtree())) {
     accumulated = AccumulateOpBounds(bounds, kDrawDisplayListFlags);
   } else {
-    std::list<DlRect> rects =
+    std::vector<DlRect> rects =
         rtree->searchAndConsolidateRects(GetLocalClipCoverage(), false);
     accumulated = false;
     for (const DlRect& rect : rects) {

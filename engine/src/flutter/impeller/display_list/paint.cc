@@ -44,6 +44,11 @@ void Paint::ConvertStops(const flutter::DlGradientColorSourceBase* gradient,
 
   auto* dl_colors = gradient->colors();
   auto* dl_stops = gradient->stops();
+  const size_t converted_count = static_cast<size_t>(gradient->stop_count()) +
+                                 (dl_stops[0] != 0.0f) +
+                                 (dl_stops[gradient->stop_count() - 1] != 1.0f);
+  colors.reserve(converted_count);
+  stops.reserve(converted_count);
   if (dl_stops[0] != 0.0) {
     colors.emplace_back(skia_conversions::ToColor(dl_colors[0]));
     stops.emplace_back(0);

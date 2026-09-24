@@ -459,6 +459,8 @@ class LayerStateStack {
   friend class DlCanvasDelegate;
   friend class PrerollDelegate;
 
+  // A null entry represents a plain save. It has no state to own, but still
+  // participates in delegate replay and matching restore operations.
   std::vector<std::unique_ptr<StateEntry>> state_stack_;
   friend class MutatorContext;
 

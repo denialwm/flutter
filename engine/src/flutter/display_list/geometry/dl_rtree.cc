@@ -160,11 +160,15 @@ void DlRTree::search(const DlRect& query, std::vector<int>* results) const {
   }
 }
 
-std::list<DlRect> DlRTree::searchAndConsolidateRects(const DlRect& query,
-                                                     bool deband) const {
+std::vector<DlRect> DlRTree::searchAndConsolidateRects(const DlRect& query,
+                                                       bool deband) const {
   // Get the indexes for the operations that intersect with the query rect.
   std::vector<int> intermediary_results;
   search(query, &intermediary_results);
+
+  if (intermediary_results.size() == 1u) {
+    return {DlRect::Make(DlIRect::RoundOut(bounds(intermediary_results[0])))};
+  }
 
   std::vector<DlIRect> rects;
   rects.reserve(intermediary_results.size());
@@ -175,7 +179,8 @@ std::list<DlRect> DlRTree::searchAndConsolidateRects(const DlRect& query,
   DlRegion region(rects);
 
   auto non_overlapping_rects = region.getRects(deband);
-  std::list<DlRect> final_results;
+  std::vector<DlRect> final_results;
+  final_results.reserve(non_overlapping_rects.size());
   for (const auto& rect : non_overlapping_rects) {
     final_results.push_back(DlRect::Make(rect));
   }

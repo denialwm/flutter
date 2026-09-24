@@ -4,6 +4,10 @@
 
 #include "flutter/display_list/geometry/dl_region.h"
 
+#include <cstdlib>
+#include <cstring>
+#include <utility>
+
 #include "flutter/fml/logging.h"
 
 namespace flutter {
@@ -12,47 +16,66 @@ namespace flutter {
 // search.
 const int kBinarySearchThreshold = 10;
 
-DlRegion::SpanBuffer::SpanBuffer(DlRegion::SpanBuffer&& m)
-    : capacity_(m.capacity_), size_(m.size_), spans_(m.spans_) {
-  m.size_ = 0;
-  m.capacity_ = 0;
-  m.spans_ = nullptr;
-};
+DlRegion::SpanBuffer::SpanBuffer(DlRegion::SpanBuffer&& m) : SpanBuffer() {
+  *this = std::move(m);
+}
 
-DlRegion::SpanBuffer::SpanBuffer(const DlRegion::SpanBuffer& m)
-    : capacity_(m.capacity_), size_(m.size_) {
-  if (m.spans_ == nullptr) {
-    spans_ = nullptr;
-  } else {
-    spans_ = static_cast<Span*>(std::malloc(capacity_ * sizeof(Span)));
-    memcpy(spans_, m.spans_, size_ * sizeof(Span));
-  }
-};
+DlRegion::SpanBuffer::SpanBuffer(const DlRegion::SpanBuffer& m) : SpanBuffer() {
+  *this = m;
+}
 
 DlRegion::SpanBuffer& DlRegion::SpanBuffer::operator=(
     const DlRegion::SpanBuffer& buffer) {
-  SpanBuffer copy(buffer);
-  std::swap(*this, copy);
+  if (this == &buffer) {
+    return *this;
+  }
+  reserve(buffer.size_);
+  size_ = buffer.size_;
+  std::memcpy(spans_, buffer.spans_, size_ * sizeof(Span));
   return *this;
 }
 
 DlRegion::SpanBuffer& DlRegion::SpanBuffer::operator=(
     DlRegion::SpanBuffer&& buffer) {
-  std::swap(capacity_, buffer.capacity_);
-  std::swap(size_, buffer.size_);
-  std::swap(spans_, buffer.spans_);
+  if (this == &buffer) {
+    return *this;
+  }
+  if (!usesInlineStorage()) {
+    std::free(spans_);
+  }
+  size_ = buffer.size_;
+  if (buffer.usesInlineStorage()) {
+    capacity_ = kInlineSpanCount;
+    spans_ = inline_spans_;
+    std::memcpy(spans_, buffer.spans_, size_ * sizeof(Span));
+  } else {
+    capacity_ = buffer.capacity_;
+    spans_ = buffer.spans_;
+  }
+  buffer.capacity_ = kInlineSpanCount;
+  buffer.size_ = 0;
+  buffer.spans_ = buffer.inline_spans_;
   return *this;
 }
 
 DlRegion::SpanBuffer::~SpanBuffer() {
-  free(spans_);
+  if (!usesInlineStorage()) {
+    std::free(spans_);
+  }
 }
 
 void DlRegion::SpanBuffer::reserve(size_t capacity) {
-  if (capacity_ < capacity) {
-    spans_ = static_cast<Span*>(std::realloc(spans_, capacity * sizeof(Span)));
-    capacity_ = capacity;
+  if (capacity_ >= capacity) {
+    return;
   }
+  if (usesInlineStorage()) {
+    auto* heap_spans = static_cast<Span*>(std::malloc(capacity * sizeof(Span)));
+    std::memcpy(heap_spans, spans_, size_ * sizeof(Span));
+    spans_ = heap_spans;
+  } else {
+    spans_ = static_cast<Span*>(std::realloc(spans_, capacity * sizeof(Span)));
+  }
+  capacity_ = capacity;
 }
 
 DlRegion::SpanChunkHandle DlRegion::SpanBuffer::storeChunk(const Span* begin,
@@ -99,6 +122,10 @@ DlRegion::DlRegion(const std::vector<DlIRect>& rects) {
 }
 
 DlRegion::DlRegion(const DlIRect& rect) {
+  setRect(rect);
+}
+
+void DlRegion::setRect(const DlIRect& rect) {
   if (rect.IsEmpty()) {
     return;
   }
@@ -137,14 +164,14 @@ DlRegion::SpanLine DlRegion::makeLine(int32_t top,
 
 // Returns number of valid spans in res. For performance reasons res is never
 // downsized.
-size_t DlRegion::unionLineSpans(std::vector<Span>& res,
+size_t DlRegion::unionLineSpans(SpanVec& res,
                                 const SpanBuffer& a_buffer,
                                 SpanChunkHandle a_handle,
                                 const SpanBuffer& b_buffer,
                                 SpanChunkHandle b_handle) {
   class OrderedSpanAccumulator {
    public:
-    explicit OrderedSpanAccumulator(std::vector<Span>& res) : res(res) {}
+    explicit OrderedSpanAccumulator(SpanVec& res) : res(res) {}
 
     void accumulate(const Span& span) {
       if (span.left > last_ || len == 0) {
@@ -158,7 +185,7 @@ size_t DlRegion::unionLineSpans(std::vector<Span>& res,
     }
 
     size_t len = 0;
-    std::vector<Span>& res;
+    SpanVec& res;
 
    private:
     int32_t last_ = std::numeric_limits<int32_t>::min();
@@ -207,7 +234,7 @@ size_t DlRegion::unionLineSpans(std::vector<Span>& res,
   return accumulator.len;
 }
 
-size_t DlRegion::intersectLineSpans(std::vector<Span>& res,
+size_t DlRegion::intersectLineSpans(SpanVec& res,
                                     const SpanBuffer& a_buffer,
                                     SpanChunkHandle a_handle,
                                     const SpanBuffer& b_buffer,
@@ -255,6 +282,11 @@ size_t DlRegion::intersectLineSpans(std::vector<Span>& res,
 void DlRegion::setRects(const std::vector<DlIRect>& unsorted_rects) {
   // setRects can only be called on empty regions.
   FML_DCHECK(lines_.empty());
+
+  if (unsorted_rects.size() == 1u) {
+    setRect(unsorted_rects.front());
+    return;
+  }
 
   std::vector<const DlIRect*> rects;
   rects.reserve(unsorted_rects.size());
@@ -419,11 +451,18 @@ DlRegion DlRegion::MakeUnion(const DlRegion& a, const DlRegion& b) {
 
   DlRegion res;
   res.bounds_ = a.bounds_.Union(b.bounds_);
-  res.span_buffer_.reserve(a.span_buffer_.capacity() +
-                           b.span_buffer_.capacity());
+  if (!a.span_buffer_.usesInlineStorage() ||
+      !b.span_buffer_.usesInlineStorage()) {
+    res.span_buffer_.reserve(a.span_buffer_.capacity() +
+                             b.span_buffer_.capacity());
+  }
 
   auto& lines = res.lines_;
-  lines.reserve(a.lines_.size() + b.lines_.size());
+  // The inputs may consolidate into a single line. Delay the allocation for
+  // the common pair of simple regions until a second line is actually needed.
+  if (a.lines_.size() + b.lines_.size() > 2u) {
+    lines.reserve(a.lines_.size() + b.lines_.size());
+  }
 
   auto a_it = a.lines_.begin();
   auto b_it = b.lines_.begin();
@@ -435,7 +474,7 @@ DlRegion DlRegion::MakeUnion(const DlRegion& a, const DlRegion& b) {
   auto& a_buffer = a.span_buffer_;
   auto& b_buffer = b.span_buffer_;
 
-  std::vector<Span> tmp;
+  SpanVec tmp;
 
   int32_t cur_top = std::numeric_limits<int32_t>::min();
 
@@ -511,13 +550,16 @@ DlRegion DlRegion::MakeIntersection(const DlRegion& a, const DlRegion& b) {
   }
 
   DlRegion res;
-  res.span_buffer_.reserve(
-      std::max(a.span_buffer_.capacity(), b.span_buffer_.capacity()));
+  if (!a.span_buffer_.usesInlineStorage() ||
+      !b.span_buffer_.usesInlineStorage()) {
+    res.span_buffer_.reserve(
+        std::max(a.span_buffer_.capacity(), b.span_buffer_.capacity()));
+  }
 
   auto& lines = res.lines_;
   lines.reserve(std::min(a.lines_.size(), b.lines_.size()));
 
-  std::vector<SpanLine>::const_iterator a_it, b_it;
+  SpanLines::const_iterator a_it, b_it;
   getIntersectionIterators(a.lines_, b.lines_, a_it, b_it);
 
   auto a_end = a.lines_.end();
@@ -526,7 +568,7 @@ DlRegion DlRegion::MakeIntersection(const DlRegion& a, const DlRegion& b) {
   auto& a_buffer = a.span_buffer_;
   auto& b_buffer = b.span_buffer_;
 
-  std::vector<Span> tmp;
+  SpanVec tmp;
 
   int32_t cur_top = std::numeric_limits<int32_t>::min();
 
@@ -677,11 +719,10 @@ bool DlRegion::spansIntersect(const Span* begin1,
   return false;
 }
 
-void DlRegion::getIntersectionIterators(
-    const std::vector<SpanLine>& a_lines,
-    const std::vector<SpanLine>& b_lines,
-    std::vector<SpanLine>::const_iterator& a_it,
-    std::vector<SpanLine>::const_iterator& b_it) {
+void DlRegion::getIntersectionIterators(const SpanLines& a_lines,
+                                        const SpanLines& b_lines,
+                                        SpanLines::const_iterator& a_it,
+                                        SpanLines::const_iterator& b_it) {
   a_it = a_lines.begin();
   auto a_end = a_lines.end();
   b_it = b_lines.begin();
@@ -730,7 +771,7 @@ bool DlRegion::intersects(const DlRegion& region) const {
     return intersects(region.bounds_);
   }
 
-  std::vector<SpanLine>::const_iterator ours, theirs;
+  SpanLines::const_iterator ours, theirs;
   getIntersectionIterators(lines_, region.lines_, ours, theirs);
   auto ours_end = lines_.end();
   auto theirs_end = region.lines_.end();

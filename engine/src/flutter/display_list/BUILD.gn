@@ -155,6 +155,7 @@ source_set("display_list") {
     ":dl_path",
     "//flutter/fml",
     "//flutter/skia",
+    "//third_party/abseil-cpp/absl/container:inlined_vector",
   ]
 
   if (!defined(defines)) {

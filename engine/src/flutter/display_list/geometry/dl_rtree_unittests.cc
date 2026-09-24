@@ -221,10 +221,10 @@ TEST(DisplayListRTree, Grid) {
 
       auto list = tree.searchAndConsolidateRects(query);
       EXPECT_EQ(list.size(), 4u);
-      list.remove(rects[i - COLS - 1]);
-      list.remove(rects[i - COLS]);
-      list.remove(rects[i - 1]);
-      list.remove(rects[i]);
+      std::erase(list, rects[i - COLS - 1]);
+      std::erase(list, rects[i - COLS]);
+      std::erase(list, rects[i - 1]);
+      std::erase(list, rects[i]);
       EXPECT_EQ(list.size(), 0u);
     }
   }

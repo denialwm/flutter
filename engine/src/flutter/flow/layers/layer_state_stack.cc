@@ -204,20 +204,6 @@ class PrerollDelegate : public LayerStateStack::Delegate {
 // StateEntry subclasses
 // ==============================================================
 
-class SaveEntry : public LayerStateStack::StateEntry {
- public:
-  SaveEntry() = default;
-
-  void apply(LayerStateStack* stack) const override {
-    stack->delegate_->save();
-  }
-  void restore(LayerStateStack* stack) const override {
-    stack->delegate_->restore();
-  }
-
-  FML_DISALLOW_COPY_ASSIGN_AND_MOVE(SaveEntry);
-};
-
 class SaveLayerEntry : public LayerStateStack::StateEntry {
  public:
   SaveLayerEntry(const DlRect& bounds,
@@ -662,20 +648,30 @@ void LayerStateStack::reapply_all() {
   RenderingAttributes attributes = outstanding_;
   outstanding_ = {};
   for (auto& state : state_stack_) {
-    state->reapply(this);
+    if (state) {
+      state->reapply(this);
+    } else {
+      delegate_->save();
+    }
   }
   FML_DCHECK(attributes == outstanding_);
 }
 
 void LayerStateStack::fill(MutatorsStack* mutators) {
   for (auto& state : state_stack_) {
-    state->update_mutators(mutators);
+    if (state) {
+      state->update_mutators(mutators);
+    }
   }
 }
 
 void LayerStateStack::restore_to_count(size_t restore_count) {
   while (state_stack_.size() > restore_count) {
-    state_stack_.back()->restore(this);
+    if (state_stack_.back()) {
+      state_stack_.back()->restore(this);
+    } else {
+      delegate_->restore();
+    }
     state_stack_.pop_back();
   }
 }
@@ -769,8 +765,8 @@ bool LayerStateStack::needs_save_layer(int flags) const {
 }
 
 void LayerStateStack::do_save() {
-  state_stack_.emplace_back(std::make_unique<SaveEntry>());
-  apply_last_entry();
+  state_stack_.emplace_back(nullptr);
+  delegate_->save();
 }
 
 void LayerStateStack::save_layer(const DlRect& bounds) {

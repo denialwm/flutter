@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "flutter/display_list/geometry/dl_geometry_types.h"
+#include "third_party/abseil-cpp/absl/container/inlined_vector.h"
 
 namespace flutter {
 
@@ -84,7 +85,7 @@ class DlRegion {
   /// performance measurably.
   class SpanBuffer {
    public:
-    SpanBuffer() = default;
+    SpanBuffer() : spans_(inline_spans_) {}
     SpanBuffer(const SpanBuffer&);
     SpanBuffer(SpanBuffer&& m);
     SpanBuffer& operator=(const SpanBuffer&);
@@ -92,6 +93,7 @@ class DlRegion {
 
     void reserve(size_t capacity);
     size_t capacity() const { return capacity_; }
+    bool usesInlineStorage() const { return spans_ == inline_spans_; }
 
     SpanChunkHandle storeChunk(const Span* begin, const Span* end);
     size_t getChunkSize(SpanChunkHandle handle) const;
@@ -102,14 +104,18 @@ class DlRegion {
     ~SpanBuffer();
 
    private:
+    // One chunk with one span needs two entries. Four entries also cover two
+    // simple scanlines without making every region much larger.
+    static constexpr size_t kInlineSpanCount = 4;
     void setChunkSize(SpanChunkHandle handle, size_t size);
 
-    size_t capacity_ = 0;
+    size_t capacity_ = kInlineSpanCount;
     size_t size_ = 0;
 
     // Spans for the region chunks. First span in each chunk contains the
     // chunk size.
-    Span* spans_ = nullptr;
+    Span inline_spans_[kInlineSpanCount];
+    Span* spans_;
   };
 
   struct SpanLine {
@@ -118,6 +124,9 @@ class DlRegion {
     SpanChunkHandle chunk_handle;
   };
 
+  using SpanLines = absl::InlinedVector<SpanLine, 1>;
+
+  void setRect(const DlIRect& rect);
   void setRects(const std::vector<DlIRect>& rects);
 
   void appendLine(int32_t top,
@@ -133,18 +142,18 @@ class DlRegion {
     appendLine(top, bottom, begin, end);
   }
 
-  typedef std::vector<Span> SpanVec;
+  using SpanVec = absl::InlinedVector<Span, 4>;
   SpanLine makeLine(int32_t top, int32_t bottom, const SpanVec&);
   SpanLine makeLine(int32_t top,
                     int32_t bottom,
                     const Span* begin,
                     const Span* end);
-  static size_t unionLineSpans(std::vector<Span>& res,
+  static size_t unionLineSpans(SpanVec& res,
                                const SpanBuffer& a_buffer,
                                SpanChunkHandle a_handle,
                                const SpanBuffer& b_buffer,
                                SpanChunkHandle b_handle);
-  static size_t intersectLineSpans(std::vector<Span>& res,
+  static size_t intersectLineSpans(SpanVec& res,
                                    const SpanBuffer& a_buffer,
                                    SpanChunkHandle a_handle,
                                    const SpanBuffer& b_buffer,
@@ -157,13 +166,12 @@ class DlRegion {
                              const Span* begin2,
                              const Span* end2);
 
-  static void getIntersectionIterators(
-      const std::vector<SpanLine>& a_lines,
-      const std::vector<SpanLine>& b_lines,
-      std::vector<SpanLine>::const_iterator& a_it,
-      std::vector<SpanLine>::const_iterator& b_it);
+  static void getIntersectionIterators(const SpanLines& a_lines,
+                                       const SpanLines& b_lines,
+                                       SpanLines::const_iterator& a_it,
+                                       SpanLines::const_iterator& b_it);
 
-  std::vector<SpanLine> lines_;
+  SpanLines lines_;
   DlIRect bounds_;
   SpanBuffer span_buffer_;
 };

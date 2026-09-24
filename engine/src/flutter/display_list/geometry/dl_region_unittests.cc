@@ -10,6 +10,7 @@
 #include "third_party/skia/include/core/SkRegion.h"
 
 #include <random>
+#include <utility>
 
 namespace flutter {
 namespace testing {
@@ -49,6 +50,35 @@ TEST(DisplayListRegion, SingleRectangle) {
   auto rects = region.getRects();
   ASSERT_EQ(rects.size(), 1u);
   EXPECT_EQ(rects.front(), DlIRect::MakeLTRB(10, 10, 50, 50));
+}
+
+TEST(DisplayListRegion, SmallAndLargeRegionsSurviveCopyAndMove) {
+  const DlIRect rect = DlIRect::MakeLTRB(10, 10, 50, 50);
+  DlRegion small(rect);
+  DlRegion small_copy(small);
+  DlRegion small_move(std::move(small));
+  EXPECT_EQ(small_copy.getRects(), std::vector<DlIRect>{rect});
+  EXPECT_EQ(small_move.getRects(), std::vector<DlIRect>{rect});
+
+  std::vector<DlIRect> rects;
+  for (int i = 0; i < 12; ++i) {
+    rects.push_back(DlIRect::MakeXYWH(i * 20, i * 20, 10, 10));
+  }
+  DlRegion large(rects);
+  DlRegion large_copy(large);
+  DlRegion large_move(std::move(large));
+  EXPECT_EQ(large_copy.getRects(), rects);
+  EXPECT_EQ(large_move.getRects(), rects);
+
+  large_copy = small_copy;
+  small_copy = large_move;
+  EXPECT_EQ(large_copy.getRects(), std::vector<DlIRect>{rect});
+  EXPECT_EQ(small_copy.getRects(), rects);
+
+  large_copy = std::move(small_move);
+  large_move = std::move(small_copy);
+  EXPECT_EQ(large_copy.getRects(), std::vector<DlIRect>{rect});
+  EXPECT_EQ(large_move.getRects(), rects);
 }
 
 TEST(DisplayListRegion, NonOverlappingRectangles1) {
