@@ -173,8 +173,11 @@ TextureGLES::TextureGLES(std::shared_ptr<ReactorGLES> reactor,
       type_(GetTextureTypeFromDescriptor(
           GetTextureDescriptor(),
           reactor_->GetProcTable().GetCapabilities())),
+      // An FBO-only wrapper has no bindable texture or renderbuffer. A wrapper
+      // with an external texture name still owns its reactor handle record.
       handle_(
-          external_handle.has_value()
+          fbo.has_value() && !external_handle.has_value() ? UniqueHandleGLES()
+          : external_handle.has_value()
               ? UniqueHandleGLES(reactor_, external_handle.value())
               : (threadsafe
                      ? UniqueHandleGLES(reactor_, ToHandleType(type_))
@@ -220,14 +223,16 @@ Scalar TextureGLES::GetYCoordScale() const {
 // |Texture|
 void TextureGLES::SetLabel(std::string_view label) {
 #ifdef IMPELLER_DEBUG
-  reactor_->SetDebugLabel(handle_.Get(), label);
+  if (handle_.IsValid()) {
+    reactor_->SetDebugLabel(handle_.Get(), label);
+  }
 #endif  // IMPELLER_DEBUG
 }
 
 // |Texture|
 void TextureGLES::SetLabel(std::string_view label, std::string_view trailing) {
 #ifdef IMPELLER_DEBUG
-  if (reactor_->CanSetDebugLabels()) {
+  if (handle_.IsValid() && reactor_->CanSetDebugLabels()) {
     reactor_->SetDebugLabel(handle_.Get(),
                             std::format("{} {}", label, trailing));
   }
@@ -562,7 +567,7 @@ void TextureGLES::InitializeContentsIfNecessary() {
 }
 
 std::optional<GLuint> TextureGLES::GetGLHandle() const {
-  if (!IsValid()) {
+  if (!IsValid() || !handle_.IsValid()) {
     return std::nullopt;
   }
   return reactor_->GetGLHandle(handle_.Get());

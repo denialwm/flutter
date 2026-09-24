@@ -8,6 +8,7 @@
 #include "gtest/gtest.h"
 #include "impeller/renderer/backend/gles/context_gles.h"
 #include "impeller/renderer/backend/gles/test/mock_gles.h"
+#include "impeller/renderer/backend/gles/texture_gles.h"
 #include "impeller/renderer/testing/mocks.h"
 
 namespace impeller::testing {
@@ -94,6 +95,77 @@ TEST_F(RenderTargetRetentionTest, ReusesAttachmentsAfterIntermittentFrames) {
     cache.End();
   }
   EXPECT_EQ(allocator_->allocations, allocation_count);
+}
+
+TEST_F(RenderTargetRetentionTest, FrameEpochPreservesExclusiveMSAATargets) {
+  RenderTargetCache cache(allocator_, 0);
+  auto color = RenderTarget::kDefaultColorAttachmentConfigMSAA;
+  color.storage_mode = StorageMode::kDevicePrivate;
+  auto stencil = RenderTarget::kDefaultStencilAttachmentConfig;
+  stencil.storage_mode = StorageMode::kDevicePrivate;
+  cache.Start();
+  auto first = cache.CreateOffscreenMSAA(*context_, {40, 30}, 1, "First", color,
+                                         stencil);
+  auto second = cache.CreateOffscreenMSAA(*context_, {40, 30}, 1, "Second",
+                                          color, stencil);
+  ASSERT_TRUE(first.IsValid());
+  ASSERT_TRUE(second.IsValid());
+  EXPECT_NE(first.GetRenderTargetTexture(), second.GetRenderTargetTexture());
+  const size_t allocations = allocator_->allocations;
+  cache.End();
+
+  cache.Start();
+  color.clear_color = Color::Red();
+  color.load_action = LoadAction::kLoad;
+  stencil.load_action = LoadAction::kLoad;
+  stencil.store_action = StoreAction::kStore;
+  auto reused_first = cache.CreateOffscreenMSAA(*context_, {40, 30}, 1,
+                                                "Reused", color, stencil);
+  auto reused_second = cache.CreateOffscreenMSAA(*context_, {40, 30}, 1,
+                                                 "Second", color, stencil);
+  EXPECT_EQ(reused_first.GetRenderTargetTexture(),
+            first.GetRenderTargetTexture());
+  EXPECT_EQ(reused_second.GetRenderTargetTexture(),
+            second.GetRenderTargetTexture());
+  EXPECT_EQ(reused_first.GetColorAttachment(0).clear_color, Color::Red());
+  EXPECT_EQ(reused_first.GetColorAttachment(0).load_action, LoadAction::kLoad);
+  ASSERT_TRUE(reused_first.GetDepthAttachment());
+  EXPECT_EQ(reused_first.GetDepthAttachment()->load_action, LoadAction::kLoad);
+  EXPECT_EQ(reused_first.GetDepthAttachment()->store_action,
+            StoreAction::kStore);
+  EXPECT_EQ(reused_first.GetDepthAttachment()->texture,
+            first.GetDepthAttachment()->texture);
+  EXPECT_EQ(reused_first.GetStencilAttachment()->texture,
+            reused_first.GetDepthAttachment()->texture);
+  EXPECT_EQ(allocator_->allocations, allocations);
+  cache.End();
+}
+
+TEST_F(RenderTargetRetentionTest, FBOOnlyWrappersHaveNoOwnedGLHandle) {
+  TextureDescriptor desc;
+  desc.size = {40, 30};
+  desc.format = PixelFormat::kD24UnormS8Uint;
+  desc.usage = TextureUsage::kRenderTarget;
+  auto reactor = context_->GetReactor();
+
+  auto placeholder = TextureGLES::CreatePlaceholder(reactor, desc);
+  ASSERT_TRUE(placeholder);
+  EXPECT_TRUE(placeholder->IsValid());
+  EXPECT_TRUE(placeholder->IsWrapped());
+  EXPECT_EQ(placeholder->GetFBO(), 0u);
+  EXPECT_FALSE(placeholder->GetGLHandle().has_value());
+
+  auto fbo_only = TextureGLES::WrapFBO(reactor, desc, 23u);
+  ASSERT_TRUE(fbo_only);
+  EXPECT_EQ(fbo_only->GetFBO(), 23u);
+  EXPECT_FALSE(fbo_only->GetGLHandle().has_value());
+
+  desc.format = PixelFormat::kR8G8B8A8UNormInt;
+  desc.usage = TextureUsage::kRenderTarget | TextureUsage::kShaderRead;
+  auto borrowed_texture = TextureGLES::WrapFBOTexture(reactor, desc, 23u, 42u);
+  ASSERT_TRUE(borrowed_texture);
+  EXPECT_EQ(borrowed_texture->GetFBO(), 23u);
+  EXPECT_EQ(borrowed_texture->GetGLHandle(), 42u);
 }
 
 TEST_F(RenderTargetRetentionTest, IdleBudgetEvictsLeastRecentlyUsedTargets) {

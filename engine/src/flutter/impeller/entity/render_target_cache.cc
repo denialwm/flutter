@@ -33,13 +33,11 @@ bool IsGlassTargetRetentionByBudgetRequested() {
   return requested;
 }
 
-size_t AttachmentBytes(const RenderTarget& target) {
-  const auto color = target.GetColorAttachment(0);
-  const auto& depth = target.GetDepthAttachment();
-  const auto& stencil = target.GetStencilAttachment();
-  const std::array<std::shared_ptr<Texture>, 4> textures = {
-      color.texture, color.resolve_texture, depth ? depth->texture : nullptr,
-      stencil ? stencil->texture : nullptr};
+size_t AttachmentBytes(const std::shared_ptr<Texture>& color,
+                       const std::shared_ptr<Texture>& resolve,
+                       const std::shared_ptr<Texture>& depth_stencil) {
+  const std::array<Texture*, 3> textures = {color.get(), resolve.get(),
+                                            depth_stencil.get()};
   size_t bytes = 0;
   for (size_t i = 0; i < textures.size(); i++) {
     if (!textures[i] || std::find(textures.begin(), textures.begin() + i,
@@ -57,12 +55,12 @@ size_t AttachmentBytes(const RenderTarget& target) {
 
 size_t MotionRetentionBytes(const Context& context,
                             std::string_view label,
-                            const RenderTarget& target) {
+                            size_t attachment_bytes) {
   return IsGlassTargetRetentionRequested() &&
                  (label == "Denial pooled glass layer" ||
                   label == "Denial pooled glass material") &&
                  context.GetBackendType() == Context::BackendType::kOpenGLES
-             ? AttachmentBytes(target)
+             ? attachment_bytes
              : 0;
 }
 
@@ -78,9 +76,6 @@ RenderTargetCache::RenderTargetCache(std::shared_ptr<Allocator> allocator,
 void RenderTargetCache::Start() {
   cache_disabled_count_ = 0;
   frame_number_++;
-  for (auto& td : render_target_data_) {
-    td.used_this_frame = false;
-  }
 }
 
 void RenderTargetCache::End() {
@@ -102,14 +97,11 @@ void RenderTargetCache::End() {
   for (size_t i = 0; i < render_target_data_.size(); i++) {
     auto& td = render_target_data_[i];
     td.pending_eviction = false;
-    if (td.used_this_frame) {
-      td.last_used_frame = frame_number_;
+    if (td.last_used_frame == frame_number_) {
       if (td.motion_retained_bytes > 0) {
         td.motion_last_used_us = now();
       }
-    } else if (td.keep_alive_frame_count > 0) {
-      td.keep_alive_frame_count--;
-    } else {
+    } else if (frame_number_ - td.last_used_frame > keep_alive_frame_count_) {
       idle_candidates_.push_back(i);
       if (td.byte_size <= available_idle_bytes) {
         available_idle_bytes -= td.byte_size;
@@ -211,20 +203,14 @@ RenderTarget RenderTargetCache::CreateOffscreen(
       color_attachment_config.storage_mode, StorageMode::kDeviceTransient};
   if (CacheEnabled()) {
     for (RenderTargetData& render_target_data : render_target_data_) {
-      const RenderTargetConfig other_config = render_target_data.config;
-      if (!render_target_data.used_this_frame && other_config == config &&
+      if (render_target_data.last_used_frame != frame_number_ &&
+          render_target_data.config == config &&
           render_target_data.color_config == color_config) {
-        render_target_data.used_this_frame = true;
-        render_target_data.keep_alive_frame_count = keep_alive_frame_count_;
-        ColorAttachment color0 =
-            render_target_data.render_target.GetColorAttachment(0);
-        std::optional<DepthAttachment> depth =
-            render_target_data.render_target.GetDepthAttachment();
-        std::shared_ptr<Texture> depth_tex = depth ? depth->texture : nullptr;
+        render_target_data.last_used_frame = frame_number_;
         return RenderTargetAllocator::CreateOffscreen(
             context, size, mip_count, label, color_attachment_config,
-            stencil_attachment_config, color0.texture, depth_tex,
-            target_pixel_format);
+            stencil_attachment_config, render_target_data.color_texture,
+            render_target_data.depth_stencil_texture, target_pixel_format);
       }
     }
   }
@@ -235,15 +221,19 @@ RenderTarget RenderTargetCache::CreateOffscreen(
     return created_target;
   }
   if (CacheEnabled()) {
+    const auto color = created_target.GetColorAttachment(0);
+    const auto& depth = created_target.GetDepthAttachment();
+    const size_t bytes = AttachmentBytes(color.texture, color.resolve_texture,
+                                         depth ? depth->texture : nullptr);
     render_target_data_.push_back(RenderTargetData{
-        .used_this_frame = true,                            //
-        .keep_alive_frame_count = keep_alive_frame_count_,  //
-        .config = config,                                   //
-        .render_target = created_target,                    //
+        .config = config,
         .color_config = color_config,
-        .byte_size = AttachmentBytes(created_target),
-        .motion_retained_bytes =
-            MotionRetentionBytes(context, label, created_target),
+        .last_used_frame = frame_number_,
+        .color_texture = color.texture,
+        .resolve_texture = color.resolve_texture,
+        .depth_stencil_texture = depth ? depth->texture : nullptr,
+        .byte_size = bytes,
+        .motion_retained_bytes = MotionRetentionBytes(context, label, bytes),
     });
   }
   return created_target;
@@ -284,20 +274,15 @@ RenderTarget RenderTargetCache::CreateOffscreenMSAA(
       color_attachment_config.resolve_storage_mode};
   if (CacheEnabled()) {
     for (RenderTargetData& render_target_data : render_target_data_) {
-      const RenderTargetConfig other_config = render_target_data.config;
-      if (!render_target_data.used_this_frame && other_config == config &&
+      if (render_target_data.last_used_frame != frame_number_ &&
+          render_target_data.config == config &&
           render_target_data.color_config == color_config) {
-        render_target_data.used_this_frame = true;
-        render_target_data.keep_alive_frame_count = keep_alive_frame_count_;
-        ColorAttachment color0 =
-            render_target_data.render_target.GetColorAttachment(0);
-        std::optional<DepthAttachment> depth =
-            render_target_data.render_target.GetDepthAttachment();
-        std::shared_ptr<Texture> depth_tex = depth ? depth->texture : nullptr;
+        render_target_data.last_used_frame = frame_number_;
         return RenderTargetAllocator::CreateOffscreenMSAA(
             context, size, mip_count, label, color_attachment_config,
-            stencil_attachment_config, color0.texture, color0.resolve_texture,
-            depth_tex, target_pixel_format);
+            stencil_attachment_config, render_target_data.color_texture,
+            render_target_data.resolve_texture,
+            render_target_data.depth_stencil_texture, target_pixel_format);
       }
     }
   }
@@ -309,15 +294,19 @@ RenderTarget RenderTargetCache::CreateOffscreenMSAA(
     return created_target;
   }
   if (CacheEnabled()) {
+    const auto color = created_target.GetColorAttachment(0);
+    const auto& depth = created_target.GetDepthAttachment();
+    const size_t bytes = AttachmentBytes(color.texture, color.resolve_texture,
+                                         depth ? depth->texture : nullptr);
     render_target_data_.push_back(RenderTargetData{
-        .used_this_frame = true,                            //
-        .keep_alive_frame_count = keep_alive_frame_count_,  //
-        .config = config,                                   //
-        .render_target = created_target,                    //
+        .config = config,
         .color_config = color_config,
-        .byte_size = AttachmentBytes(created_target),
-        .motion_retained_bytes =
-            MotionRetentionBytes(context, label, created_target),
+        .last_used_frame = frame_number_,
+        .color_texture = color.texture,
+        .resolve_texture = color.resolve_texture,
+        .depth_stencil_texture = depth ? depth->texture : nullptr,
+        .byte_size = bytes,
+        .motion_retained_bytes = MotionRetentionBytes(context, label, bytes),
     });
   }
   return created_target;

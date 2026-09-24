@@ -77,13 +77,16 @@ class RenderTargetCache : public RenderTargetAllocator {
   };
 
   struct RenderTargetData {
-    bool used_this_frame;
-    uint32_t keep_alive_frame_count;
     RenderTargetConfig config;
-    RenderTarget render_target;
     ColorConfig color_config;
-    size_t byte_size = 0;
     uint64_t last_used_frame = 0;
+    // Keep only the resources. Each request constructs its own attachment
+    // actions, and depth and stencil share the same texture. Vector compaction
+    // moves these references rather than copying a full RenderTarget.
+    std::shared_ptr<Texture> color_texture;
+    std::shared_ptr<Texture> resolve_texture;
+    std::shared_ptr<Texture> depth_stencil_texture;
+    size_t byte_size = 0;
     bool pending_eviction = false;
     // Optional glass experiment with a separate idle retention budget.
     size_t motion_retained_bytes = 0;
