@@ -33,10 +33,13 @@ class MockLayer;
 }  // namespace testing
 
 class ContainerLayer;
+class DenialSceneLayer;
+class DenialCategoryLayer;
 class DisplayListLayer;
 class PerformanceOverlayLayer;
 class TextureLayer;
 class RasterCacheItem;
+class DenialRetainedCache;
 
 static constexpr DlRect kGiantRect = DlRect::MakeLTRB(-1E9F, -1E9F, 1E9F, 1E9F);
 
@@ -112,6 +115,8 @@ struct PaintContext {
 
   bool impeller_enabled = false;
   impeller::AiksContext* aiks_context;
+
+  DenialRetainedCache* denial_retained_cache = nullptr;
 
   // See PrerollContext::denial_render_output_logical_size.
   std::optional<DlSize> denial_render_output_logical_size;
@@ -251,6 +256,12 @@ class Layer {
   }
 #endif  //  !SLIMPELLER
   virtual const ContainerLayer* as_container_layer() const { return nullptr; }
+  virtual const DenialSceneLayer* as_denial_scene_layer() const {
+    return nullptr;
+  }
+  virtual const DenialCategoryLayer* as_denial_category_layer() const {
+    return nullptr;
+  }
   virtual const DisplayListLayer* as_display_list_layer() const {
     return nullptr;
   }

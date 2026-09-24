@@ -4,6 +4,8 @@
 
 #include "flutter/flow/layers/container_layer.h"
 
+#include "flutter/flow/denial_retained_cache.h"
+
 #include <optional>
 
 namespace flutter {
@@ -198,6 +200,24 @@ void ContainerLayer::PaintChildren(PaintContext& context) const {
       layer->Paint(context);
     }
   }
+}
+
+void DenialCategoryLayer::Preroll(PrerollContext* context) {
+  ContainerLayer::Preroll(context);
+  has_live_texture_ = context->has_texture_layer;
+  has_readback_ = context->surface_needs_readback;
+  has_platform_view_ = context->has_platform_view;
+}
+
+void DenialCategoryLayer::Paint(PaintContext& context) const {
+  // Windows and cursors are always live. An ordinary category with external
+  // textures or a readback can depend on an earlier composition entry.
+  if (category_ != 2 && category_ != 4 && !has_live_texture_ &&
+      !has_readback_ && !has_platform_view_ && context.denial_retained_cache &&
+      context.denial_retained_cache->Draw(*this, context)) {
+    return;
+  }
+  ContainerLayer::Paint(context);
 }
 
 }  // namespace flutter

@@ -45,6 +45,11 @@ class SceneBuilder : public RefCountedDartWrappable<SceneBuilder> {
   void pushTransform(Dart_Handle layer_handle,
                      tonic::Float64List& matrix4,
                      const fml::RefPtr<EngineLayer>& old_layer);
+  void pushDenialScene(Dart_Handle layer_handle,
+                       const fml::RefPtr<EngineLayer>& old_layer);
+  void pushDenialCategory(Dart_Handle layer_handle,
+                          int category,
+                          const fml::RefPtr<EngineLayer>& old_layer);
   void pushOffset(Dart_Handle layer_handle,
                   double dx,
                   double dy,
@@ -142,6 +147,9 @@ class SceneBuilder : public RefCountedDartWrappable<SceneBuilder> {
   void PopLayer();
 
   std::vector<std::shared_ptr<ContainerLayer>> layer_stack_;
+  bool denial_scene_seen_ = false;
+  bool denial_scene_active_ = false;
+  int last_denial_category_ = -1;
 
   FML_DISALLOW_COPY_AND_ASSIGN(SceneBuilder);
 };

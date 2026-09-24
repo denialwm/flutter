@@ -55,6 +55,34 @@ class ContainerLayer : public Layer {
   FML_DISALLOW_COPY_AND_ASSIGN(ContainerLayer);
 };
 
+// Explicit opt-in markers. Ordinary Flutter scenes contain neither layer and
+// continue through the existing composition path.
+class DenialSceneLayer final : public ContainerLayer {
+ public:
+  const DenialSceneLayer* as_denial_scene_layer() const override {
+    return this;
+  }
+};
+
+class DenialCategoryLayer final : public ContainerLayer {
+ public:
+  explicit DenialCategoryLayer(int category) : category_(category) {}
+
+  void Preroll(PrerollContext* context) override;
+  void Paint(PaintContext& context) const override;
+
+  int category() const { return category_; }
+  const DenialCategoryLayer* as_denial_category_layer() const override {
+    return this;
+  }
+
+ private:
+  const int category_;
+  bool has_live_texture_ = false;
+  bool has_readback_ = false;
+  bool has_platform_view_ = false;
+};
+
 }  // namespace flutter
 
 #endif  // FLUTTER_FLOW_LAYERS_CONTAINER_LAYER_H_

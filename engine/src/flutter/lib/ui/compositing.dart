@@ -166,6 +166,20 @@ class OffsetEngineLayer extends _EngineLayerWrapper {
   OffsetEngineLayer._(super.nativeLayer) : super._();
 }
 
+/// An opaque handle to a Denial retained-composition scene root.
+///
+/// Instances are created only by [SceneBuilder.pushDenialScene].
+class DenialSceneEngineLayer extends _EngineLayerWrapper {
+  DenialSceneEngineLayer._(super.nativeLayer) : super._();
+}
+
+/// An opaque handle to a category inside a Denial scene.
+///
+/// Instances are created only by [SceneBuilder.pushDenialCategory].
+class DenialCategoryEngineLayer extends _EngineLayerWrapper {
+  DenialCategoryEngineLayer._(super.nativeLayer) : super._();
+}
+
 /// An opaque handle to a clip rect engine layer.
 ///
 /// Instances of this class are created by [SceneBuilder.pushClipRect].
@@ -328,6 +342,25 @@ abstract class SceneBuilder {
   ///
   /// See [pop] for details about the operation stack.
   OffsetEngineLayer pushOffset(double dx, double dy, {OffsetEngineLayer? oldLayer});
+
+  /// Starts an opt-in Denial retained-composition scene.
+  ///
+  /// A scene may contain ordered categories added with [pushDenialCategory].
+  /// A view with no Denial scene root uses the ordinary Flutter rendering path.
+  /// Close this layer with [pop].
+  ///
+  /// {@macro dart.ui.sceneBuilder.oldLayer}
+  /// {@macro dart.ui.sceneBuilder.oldLayerVsRetained}
+  DenialSceneEngineLayer pushDenialScene({DenialSceneEngineLayer? oldLayer});
+
+  /// Starts a Denial scene category. The category wire values are background
+  /// (0), shell (1), windows (2), overlay (3), and cursor (4).
+  ///
+  /// Categories require an enclosing [pushDenialScene] and close with [pop].
+  ///
+  /// {@macro dart.ui.sceneBuilder.oldLayer}
+  /// {@macro dart.ui.sceneBuilder.oldLayerVsRetained}
+  DenialCategoryEngineLayer pushDenialCategory(int category, {DenialCategoryEngineLayer? oldLayer});
 
   /// Pushes a rectangular clip operation onto the operation stack.
   ///
@@ -749,6 +782,38 @@ base class _NativeSceneBuilder extends NativeFieldWrapperClass1 implements Scene
     symbol: 'SceneBuilder::pushOffset',
   )
   external void _pushOffset(EngineLayer layer, double dx, double dy, EngineLayer? oldLayer);
+
+  @override
+  DenialSceneEngineLayer pushDenialScene({DenialSceneEngineLayer? oldLayer}) {
+    assert(_debugCheckCanBeUsedAsOldLayer(oldLayer, 'pushDenialScene'));
+    final EngineLayer engineLayer = _NativeEngineLayer._();
+    _pushDenialScene(engineLayer, oldLayer?._nativeLayer);
+    final layer = DenialSceneEngineLayer._(engineLayer);
+    assert(_debugPushLayer(layer));
+    return layer;
+  }
+
+  @Native<Void Function(Pointer<Void>, Handle, Handle)>(symbol: 'SceneBuilder::pushDenialScene')
+  external void _pushDenialScene(EngineLayer layer, EngineLayer? oldLayer);
+
+  @override
+  DenialCategoryEngineLayer pushDenialCategory(
+    int category, {
+    DenialCategoryEngineLayer? oldLayer,
+  }) {
+    RangeError.checkValueInInterval(category, 0, 4, 'category');
+    assert(_debugCheckCanBeUsedAsOldLayer(oldLayer, 'pushDenialCategory'));
+    final EngineLayer engineLayer = _NativeEngineLayer._();
+    _pushDenialCategory(engineLayer, category, oldLayer?._nativeLayer);
+    final layer = DenialCategoryEngineLayer._(engineLayer);
+    assert(_debugPushLayer(layer));
+    return layer;
+  }
+
+  @Native<Void Function(Pointer<Void>, Handle, Int32, Handle)>(
+    symbol: 'SceneBuilder::pushDenialCategory',
+  )
+  external void _pushDenialCategory(EngineLayer layer, int category, EngineLayer? oldLayer);
 
   @override
   ClipRectEngineLayer pushClipRect(

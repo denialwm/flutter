@@ -500,6 +500,7 @@ void CompositorContext::OnGrContextCreated() {
 
 void CompositorContext::OnGrContextDestroyed() {
   texture_registry_->OnGrContextDestroyed();
+  denial_retained_cache_.Clear();
 #if !SLIMPELLER
   raster_cache_.Clear();
 #endif  //  !SLIMPELLER

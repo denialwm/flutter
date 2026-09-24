@@ -12,6 +12,7 @@
 
 #include "flutter/common/graphics/texture.h"
 #include "flutter/common/macros.h"
+#include "flutter/flow/denial_retained_cache.h"
 #include "flutter/flow/diff_context.h"
 #include "flutter/flow/embedded_views.h"
 #include "flutter/flow/raster_cache.h"
@@ -246,6 +247,10 @@ class CompositorContext {
     return texture_registry_;
   }
 
+  DenialRetainedCache& denial_retained_cache() {
+    return denial_retained_cache_;
+  }
+
   const Stopwatch& raster_time() const { return raster_time_; }
 
   Stopwatch& ui_time() { return ui_time_; }
@@ -253,6 +258,7 @@ class CompositorContext {
  private:
   NOT_SLIMPELLER(RasterCache raster_cache_);
   std::shared_ptr<TextureRegistry> texture_registry_;
+  DenialRetainedCache denial_retained_cache_;
   Stopwatch raster_time_;
   Stopwatch ui_time_;
 

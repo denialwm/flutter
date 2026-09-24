@@ -129,6 +129,7 @@ void LayerTree::Paint(CompositorContext::ScopedFrame& frame,
 #endif  //  !SLIMPELLER
       .impeller_enabled              = !!frame.aiks_context(),
       .aiks_context                  = frame.aiks_context(),
+      .denial_retained_cache         = &frame.context().denial_retained_cache(),
       // clang-format on
   };
 

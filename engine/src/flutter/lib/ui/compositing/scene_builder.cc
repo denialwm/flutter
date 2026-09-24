@@ -40,6 +40,53 @@ SceneBuilder::SceneBuilder() {
 
 SceneBuilder::~SceneBuilder() = default;
 
+void SceneBuilder::pushDenialScene(Dart_Handle layer_handle,
+                                   const fml::RefPtr<EngineLayer>& old_layer) {
+  if (denial_scene_seen_) {
+    Dart_ThrowException(Dart_NewStringFromCString(
+        "A Flutter scene may contain only one DenialScene root."));
+    return;
+  }
+  denial_scene_seen_ = true;
+  denial_scene_active_ = true;
+  last_denial_category_ = -1;
+  auto layer = std::make_shared<DenialSceneLayer>();
+  PushLayer(layer);
+  EngineLayer::MakeRetained(layer_handle, layer);
+  if (old_layer && old_layer->Layer() &&
+      old_layer->Layer()->as_denial_scene_layer()) {
+    layer->AssignOldLayer(old_layer->Layer().get());
+  }
+}
+
+void SceneBuilder::pushDenialCategory(
+    Dart_Handle layer_handle,
+    int category,
+    const fml::RefPtr<EngineLayer>& old_layer) {
+  if (!denial_scene_active_ || layer_stack_.empty() ||
+      !layer_stack_.back()->as_denial_scene_layer()) {
+    Dart_ThrowException(Dart_NewStringFromCString(
+        "Denial categories must be direct children of DenialScene."));
+    return;
+  }
+  if (category < 0 || category > 4 || category <= last_denial_category_) {
+    Dart_ThrowException(Dart_NewStringFromCString(
+        "Denial categories must be unique and ordered background, shell, "
+        "windows, overlay, cursor."));
+    return;
+  }
+  last_denial_category_ = category;
+  auto layer = std::make_shared<DenialCategoryLayer>(category);
+  PushLayer(layer);
+  EngineLayer::MakeRetained(layer_handle, layer);
+  if (old_layer && old_layer->Layer()) {
+    const auto* old_category = old_layer->Layer()->as_denial_category_layer();
+    if (old_category && old_category->category() == category) {
+      layer->AssignOldLayer(old_layer->Layer().get());
+    }
+  }
+}
+
 void SceneBuilder::pushTransform(Dart_Handle layer_handle,
                                  tonic::Float64List& matrix4,
                                  const fml::RefPtr<EngineLayer>& old_layer) {
@@ -333,6 +380,9 @@ void SceneBuilder::PushLayer(std::shared_ptr<ContainerLayer> layer) {
 void SceneBuilder::PopLayer() {
   // We never pop the root layer, so that AddLayer operations are always valid.
   if (layer_stack_.size() > 1) {
+    if (layer_stack_.back()->as_denial_scene_layer()) {
+      denial_scene_active_ = false;
+    }
     layer_stack_.pop_back();
   }
 }
