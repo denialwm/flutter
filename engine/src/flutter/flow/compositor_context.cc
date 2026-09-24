@@ -28,6 +28,11 @@ void ClipCanvasToRegion(DlCanvas* canvas, const DlRegion& region) {
     canvas->ClipRect(DlRect(), DlClipOp::kIntersect, false);
     return;
   }
+  if (region.isSimple()) {
+    canvas->ClipRect(DlRect::Make(region.bounds()), DlClipOp::kIntersect,
+                     false);
+    return;
+  }
 
   std::vector<DlIRect> rects = region.getRects();
   if (rects.size() == 1u) {
@@ -43,6 +48,10 @@ void ClipCanvasToRegion(DlCanvas* canvas, const DlRegion& region) {
 }
 
 double RegionArea(const DlRegion& region) {
+  if (region.isSimple()) {
+    const DlIRect& bounds = region.bounds();
+    return static_cast<double>(bounds.GetWidth()) * bounds.GetHeight();
+  }
   double area = 0.0;
   for (const DlIRect& rect : region.getRects()) {
     area += static_cast<double>(rect.GetWidth()) * rect.GetHeight();

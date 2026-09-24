@@ -148,8 +148,15 @@ DlRegion DiffContext::AlignRegion(const DlRegion& region,
   if (horizontal_alignment <= 1 && vertical_alignment <= 1) {
     return region;
   }
+  if (region.isSimple()) {
+    return DlRegion(
+        AlignRect(region.bounds(), horizontal_alignment, vertical_alignment));
+  }
+
+  const std::vector<DlIRect> rects = region.getRects();
   std::vector<DlIRect> aligned;
-  for (const DlIRect& rect : region.getRects()) {
+  aligned.reserve(rects.size());
+  for (const DlIRect& rect : rects) {
     DlIRect aligned_rect =
         AlignRect(rect, horizontal_alignment, vertical_alignment);
     if (!aligned_rect.IsEmpty()) {
