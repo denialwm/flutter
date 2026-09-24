@@ -129,6 +129,8 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
       const std::shared_ptr<impeller::AiksContext>& aiks_context,
       std::unique_ptr<SurfaceFrame> frame) override;
 
+  bool DidSubmitFlutterView(int64_t flutter_view_id) const override;
+
   // |ExternalViewEmbedder|
   DlCanvas* GetRootCanvas() override;
 
@@ -142,6 +144,7 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   ExistingDamageCallback existing_damage_callback_;
   SurfaceTransformationCallback surface_transformation_callback_;
   std::unique_ptr<EmbedderRenderTarget> pending_denial_render_target_;
+  bool last_denial_submission_succeeded_ = false;
   DlISize pending_frame_size_;
   double pending_device_pixel_ratio_ = 1.0;
   DlMatrix pending_surface_transformation_;

@@ -63,35 +63,42 @@ void RenderPassGLES::OnSetLabel(std::string_view label) {
 }
 
 void ConfigureBlending(const ProcTableGLES& gl,
-                       const ColorAttachmentDescriptor* color) {
-  if (color->blending_enabled) {
-    gl.Enable(GL_BLEND);
-    gl.BlendFuncSeparate(
-        ToBlendFactor(color->src_color_blend_factor),  // src color
-        ToBlendFactor(color->dst_color_blend_factor),  // dst color
-        ToBlendFactor(color->src_alpha_blend_factor),  // src alpha
-        ToBlendFactor(color->dst_alpha_blend_factor)   // dst alpha
-    );
-    gl.BlendEquationSeparate(
-        ToBlendOperation(color->color_blend_op),  // mode color
-        ToBlendOperation(color->alpha_blend_op)   // mode alpha
-    );
-  } else {
+                       const ColorAttachmentDescriptor& previous,
+                       const ColorAttachmentDescriptor& color) {
+  if (color.blending_enabled) {
+    if (!previous.blending_enabled) {
+      gl.Enable(GL_BLEND);
+    }
+    if (!previous.blending_enabled ||
+        previous.src_color_blend_factor != color.src_color_blend_factor ||
+        previous.dst_color_blend_factor != color.dst_color_blend_factor ||
+        previous.src_alpha_blend_factor != color.src_alpha_blend_factor ||
+        previous.dst_alpha_blend_factor != color.dst_alpha_blend_factor) {
+      gl.BlendFuncSeparate(ToBlendFactor(color.src_color_blend_factor),
+                           ToBlendFactor(color.dst_color_blend_factor),
+                           ToBlendFactor(color.src_alpha_blend_factor),
+                           ToBlendFactor(color.dst_alpha_blend_factor));
+    }
+    if (!previous.blending_enabled ||
+        previous.color_blend_op != color.color_blend_op ||
+        previous.alpha_blend_op != color.alpha_blend_op) {
+      gl.BlendEquationSeparate(ToBlendOperation(color.color_blend_op),
+                               ToBlendOperation(color.alpha_blend_op));
+    }
+  } else if (previous.blending_enabled) {
     gl.Disable(GL_BLEND);
   }
 
-  {
+  if (previous.write_mask != color.write_mask) {
     const auto is_set = [](ColorWriteMask mask,
                            ColorWriteMask check) -> GLboolean {
       return (mask & check) ? GL_TRUE : GL_FALSE;
     };
 
-    gl.ColorMask(
-        is_set(color->write_mask, ColorWriteMaskBits::kRed),    // red
-        is_set(color->write_mask, ColorWriteMaskBits::kGreen),  // green
-        is_set(color->write_mask, ColorWriteMaskBits::kBlue),   // blue
-        is_set(color->write_mask, ColorWriteMaskBits::kAlpha)   // alpha
-    );
+    gl.ColorMask(is_set(color.write_mask, ColorWriteMaskBits::kRed),
+                 is_set(color.write_mask, ColorWriteMaskBits::kGreen),
+                 is_set(color.write_mask, ColorWriteMaskBits::kBlue),
+                 is_set(color.write_mask, ColorWriteMaskBits::kAlpha));
   }
 }
 
@@ -305,11 +312,11 @@ static void EncodeViewport(const ProcTableGLES& gl,
   TextureGLES& color_gles = TextureGLES::Cast(*pass_data.color_attachment);
   const bool is_wrapped_fbo = color_gles.IsWrapped();
 
-  std::optional<GLuint> fbo = 0;
+  std::optional<GLuint> fbo;
   if (is_wrapped_fbo) {
-    if (color_gles.GetFBO().has_value()) {
-      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-      gl.BindFramebuffer(GL_FRAMEBUFFER, *color_gles.GetFBO());
+    fbo = color_gles.GetFBO();
+    if (fbo.has_value()) {
+      gl.BindFramebuffer(GL_FRAMEBUFFER, *fbo);
     }
   } else {
     // Create (once) and bind an offscreen FBO. The cached FBO remembers which
@@ -331,6 +338,11 @@ static void EncodeViewport(const ProcTableGLES& gl,
     if (needs_attachment ||
         !color_gles.CachedFBOMatchesSubresource(pass_data.color_mip_level,
                                                 pass_data.color_slice)) {
+      if (pass_data.depth_attachment || pass_data.stencil_attachment) {
+        // Keep the conservative discard path if this cached FBO may retain an
+        // auxiliary attachment after being used by a different render target.
+        color_gles.MarkCachedFBOHasAuxiliaryAttachments();
+      }
       if (!color_gles.SetAsFramebufferAttachment(
               GL_FRAMEBUFFER, TextureGLES::AttachmentType::kColor0,
               pass_data.color_mip_level, pass_data.color_slice)) {
@@ -407,7 +419,9 @@ static void EncodeViewport(const ProcTableGLES& gl,
   const bool flip_y = !is_wrapped_fbo;
   const float y_flip_value = flip_y ? -1.0f : 1.0f;
 
-  std::optional<ColorAttachmentDescriptor> current_color_attachment;
+  // ResetGLState establishes disabled blending and a full color mask. Blend
+  // factors/equations remain unknown until blending is first enabled.
+  ColorAttachmentDescriptor current_color_attachment;
   std::optional<DepthAttachmentDescriptor> current_depth_attachment;
   std::optional<StencilAttachmentDescriptor> current_front_stencil;
   std::optional<StencilAttachmentDescriptor> current_back_stencil;
@@ -461,9 +475,8 @@ static void EncodeViewport(const ProcTableGLES& gl,
       //--------------------------------------------------------------------------
       /// Configure blending.
       ///
-      if (!current_color_attachment.has_value() ||
-          current_color_attachment.value() != *color_attachment) {
-        ConfigureBlending(gl, color_attachment);
+      if (current_color_attachment != *color_attachment) {
+        ConfigureBlending(gl, current_color_attachment, *color_attachment);
         current_color_attachment = *color_attachment;
       }
 
@@ -850,65 +863,66 @@ static void EncodeViewport(const ProcTableGLES& gl,
     gl.BindFramebuffer(GL_FRAMEBUFFER, fbo.value());
   }
 
-  GLint framebuffer_id = 0;
-  gl.GetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer_id);
-  const bool is_default_fbo = framebuffer_id == 0;
-
-  if (gl.InvalidateFramebuffer.IsAvailable()) {
+  // A wrapped FBO may have external auxiliary attachments not described by
+  // RenderTarget. An owned cached FBO is known to be color-only until it has
+  // actually been used with a depth or stencil attachment.
+  const bool may_have_auxiliary_attachments =
+      is_wrapped_fbo || color_gles.CachedFBOHasAuxiliaryAttachments();
+  const bool discard_depth =
+      pass_data.discard_depth_attachment &&
+      (pass_data.depth_attachment || may_have_auxiliary_attachments);
+  const bool discard_stencil =
+      pass_data.discard_stencil_attachment &&
+      (pass_data.stencil_attachment || may_have_auxiliary_attachments);
+  if ((pass_data.discard_color_attachment || discard_depth ||
+       discard_stencil) &&
+      (gl.InvalidateFramebuffer.IsAvailable() ||
+       gl.DiscardFramebufferEXT.IsAvailable())) {
+    // The pass itself bound this FBO, except for a wrapped target whose FBO
+    // name was not supplied. Avoid a driver state query for the known case.
+    GLint framebuffer_id = 0;
+    if (fbo.has_value()) {
+      framebuffer_id = *fbo;
+    } else {
+      gl.GetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer_id);
+    }
+    const bool is_default_fbo = framebuffer_id == 0;
+    // TODO(130048): discarding stencil or depth on the default FBO causes
+    // ANGLE to discard the entire render target.
+    const bool angle_safe = !gl.GetCapabilities()->IsANGLE() || !is_default_fbo;
     std::array<GLenum, 3> attachments;
     size_t attachment_count = 0;
-
-    bool angle_safe = gl.GetCapabilities()->IsANGLE() ? !is_default_fbo : true;
-
     if (pass_data.discard_color_attachment) {
       attachments[attachment_count++] =
-          (is_default_fbo ? GL_COLOR_EXT : GL_COLOR_ATTACHMENT0);
+          is_default_fbo ? GL_COLOR_EXT : GL_COLOR_ATTACHMENT0;
     }
-
-    if (pass_data.discard_depth_attachment && angle_safe) {
+    if (discard_depth && angle_safe) {
       attachments[attachment_count++] =
-          (is_default_fbo ? GL_DEPTH_EXT : GL_DEPTH_ATTACHMENT);
+          is_default_fbo ? GL_DEPTH_EXT : GL_DEPTH_ATTACHMENT;
     }
-
-    if (pass_data.discard_stencil_attachment && angle_safe) {
+    if (discard_stencil && angle_safe) {
       attachments[attachment_count++] =
-          (is_default_fbo ? GL_STENCIL_EXT : GL_STENCIL_ATTACHMENT);
+          is_default_fbo ? GL_STENCIL_EXT : GL_STENCIL_ATTACHMENT;
     }
-    gl.InvalidateFramebuffer(GL_FRAMEBUFFER,     // target
-                             attachment_count,   // attachments to discard
-                             attachments.data()  // size
-    );
-  } else if (gl.DiscardFramebufferEXT.IsAvailable()) {
-    std::array<GLenum, 3> attachments;
-    size_t attachment_count = 0;
-
-    // TODO(130048): discarding stencil or depth on the default fbo causes Angle
-    // to discard the entire render target. Until we know the reason, default to
-    // storing.
-    bool angle_safe = gl.GetCapabilities()->IsANGLE() ? !is_default_fbo : true;
-
-    if (pass_data.discard_color_attachment) {
-      attachments[attachment_count++] =
-          (is_default_fbo ? GL_COLOR_EXT : GL_COLOR_ATTACHMENT0);
+    if (attachment_count != 0) {
+      if (gl.InvalidateFramebuffer.IsAvailable()) {
+        gl.InvalidateFramebuffer(GL_FRAMEBUFFER, attachment_count,
+                                 attachments.data());
+      } else {
+        gl.DiscardFramebufferEXT(GL_FRAMEBUFFER, attachment_count,
+                                 attachments.data());
+      }
     }
-
-    if (pass_data.discard_depth_attachment && angle_safe) {
-      attachments[attachment_count++] =
-          (is_default_fbo ? GL_DEPTH_EXT : GL_DEPTH_ATTACHMENT);
-    }
-
-    if (pass_data.discard_stencil_attachment && angle_safe) {
-      attachments[attachment_count++] =
-          (is_default_fbo ? GL_STENCIL_EXT : GL_STENCIL_ATTACHMENT);
-    }
-    gl.DiscardFramebufferEXT(GL_FRAMEBUFFER,     // target
-                             attachment_count,   // attachments to discard
-                             attachments.data()  // size
-    );
   }
 
 #ifdef IMPELLER_DEBUG
-  if (is_default_fbo) {
+  GLint debug_fbo = 0;
+  if (fbo.has_value()) {
+    debug_fbo = *fbo;
+  } else {
+    gl.GetIntegerv(GL_FRAMEBUFFER_BINDING, &debug_fbo);
+  }
+  if (debug_fbo == 0) {
     tracer->MarkFrameEnd(gl);
   }
 #endif  // IMPELLER_DEBUG

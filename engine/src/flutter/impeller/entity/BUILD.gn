@@ -156,6 +156,7 @@ impeller_component("entity") {
     "contents/filters/gaussian_blur_filter_contents.h",
     "contents/filters/glass_filter_contents.cc",
     "contents/filters/glass_filter_contents.h",
+    "contents/filters/glass_frost_cache.h",
     "contents/filters/inputs/contents_filter_input.cc",
     "contents/filters/inputs/contents_filter_input.h",
     "contents/filters/inputs/filter_contents_filter_input.cc",

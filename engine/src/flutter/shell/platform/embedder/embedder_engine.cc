@@ -367,13 +367,15 @@ bool EmbedderEngine::RenderOutputs(std::vector<int64_t> render_view_ids,
                                    std::vector<int64_t> texture_identifiers,
                                    bool rebuild_scene,
                                    uint64_t frame_start_time_nanos,
-                                   uint64_t frame_target_time_nanos) {
+                                   uint64_t frame_target_time_nanos,
+                                   TextureDamageMap texture_damage) {
   if (!IsValid() || render_view_ids.empty()) {
     return false;
   }
   shell_->RenderOutputs(std::move(render_view_ids),
                         std::move(texture_identifiers), rebuild_scene,
-                        frame_start_time_nanos, frame_target_time_nanos);
+                        frame_start_time_nanos, frame_target_time_nanos,
+                        std::move(texture_damage));
   return true;
 }
 

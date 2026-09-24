@@ -3658,6 +3658,28 @@ FlutterEngineResult DenialFlutterEngineRenderOutputs(
     uint64_t frame_start_time_nanos,
     uint64_t frame_target_time_nanos);
 
+/// Normalized physical buffer damage. Omit an ID for conservative full damage.
+typedef struct {
+  int64_t texture_id;
+  double left;
+  double top;
+  double right;
+  double bottom;
+} DenialTextureDamage;
+
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineRenderOutputsWithDamage(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const int64_t* render_view_ids,
+    size_t render_view_count,
+    const int64_t* texture_identifiers,
+    size_t texture_count,
+    bool rebuild_scene,
+    uint64_t frame_start_time_nanos,
+    uint64_t frame_target_time_nanos,
+    const DenialTextureDamage* texture_damage,
+    size_t damage_count);
+
 //------------------------------------------------------------------------------
 /// One physical raster target projected from the implicit Flutter view.
 /// Source coordinates are in the implicit view's physical-pixel coordinate

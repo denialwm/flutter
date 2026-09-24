@@ -1374,7 +1374,8 @@ void Shell::RenderOutputs(std::vector<int64_t> render_view_ids,
                           std::vector<int64_t> texture_identifiers,
                           bool rebuild_scene,
                           uint64_t frame_start_time_nanos,
-                          uint64_t frame_target_time_nanos) {
+                          uint64_t frame_target_time_nanos,
+                          TextureDamageMap texture_damage) {
   FML_DCHECK(is_set_up_);
   FML_DCHECK(task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread());
   FML_DCHECK(!render_view_ids.empty());
@@ -1383,10 +1384,12 @@ void Shell::RenderOutputs(std::vector<int64_t> render_view_ids,
     task_runners_.GetRasterTaskRunner()->PostTask(
         [rasterizer = rasterizer_->GetWeakPtr(),
          render_view_ids = std::move(render_view_ids),
-         texture_identifiers = std::move(texture_identifiers)]() mutable {
+         texture_identifiers = std::move(texture_identifiers),
+         texture_damage = std::move(texture_damage)]() mutable {
           if (rasterizer) {
             rasterizer->PrepareDenialRenderOutputs(
-                std::move(render_view_ids), std::move(texture_identifiers));
+                std::move(render_view_ids), std::move(texture_identifiers),
+                std::move(texture_damage));
           }
         });
     return;
@@ -1399,7 +1402,8 @@ void Shell::RenderOutputs(std::vector<int64_t> render_view_ids,
   task_runners_.GetRasterTaskRunner()->PostTask(
       [rasterizer = rasterizer_->GetWeakPtr(),
        render_view_ids = std::move(render_view_ids),
-       texture_identifiers = std::move(texture_identifiers), frame_start,
+       texture_identifiers = std::move(texture_identifiers),
+       texture_damage = std::move(texture_damage), frame_start,
        frame_target]() mutable {
         if (!rasterizer) {
           return;
@@ -1409,9 +1413,9 @@ void Shell::RenderOutputs(std::vector<int64_t> render_view_ids,
         const auto now = fml::TimePoint::Now();
         recorder->RecordBuildStart(now);
         recorder->RecordBuildEnd(now);
-        rasterizer->DrawDenialRenderOutputs(std::move(render_view_ids),
-                                            std::move(texture_identifiers),
-                                            std::move(recorder));
+        rasterizer->DrawDenialRenderOutputs(
+            std::move(render_view_ids), std::move(texture_identifiers),
+            std::move(texture_damage), std::move(recorder));
       });
 }
 

@@ -115,6 +115,63 @@ RasterDamagePlan RasterDamagePlan::Make(const std::optional<DlRegion>& damage,
   return RasterDamagePlan{*damage, *damage};
 }
 
+namespace {
+
+// The texture is sampled in physical-buffer coordinates. Its local bounds and
+// matrix include the crop, Wayland transform, and output projection.
+template <typename Visitor>
+void VisitVisibleTextureDamage(const TexturePaintRegion& region,
+                               const TextureDamageMap* damage,
+                               Visitor&& visit) {
+  auto visit_full = [&] {
+    for (const DlRect& rect : region.paint_region) {
+      visit(rect);
+    }
+  };
+  if (!damage || !region.paint_region.is_valid()) {
+    visit_full();
+    return;
+  }
+  const auto found = damage->find(region.texture_id);
+  if (found == damage->end() || !found->second.IsFinite() ||
+      !region.local_bounds.IsFinite() || !region.local_clip.IsFinite() ||
+      !region.transform.IsFinite() || region.transform.HasPerspective() ||
+      region.local_bounds.IsEmpty() || region.has_filter_bounds_adjustment ||
+      !region.supports_precise_sampling) {
+    visit_full();
+    return;
+  }
+  const DlRect& unit = found->second;
+  if (unit.IsEmpty() || unit.GetLeft() < 0 || unit.GetTop() < 0 ||
+      unit.GetRight() > 1 || unit.GetBottom() > 1) {
+    visit_full();
+    return;
+  }
+  const DlRect& local = region.local_bounds;
+  auto visible_local =
+      DlRect::MakeLTRB(local.GetLeft() + unit.GetLeft() * local.GetWidth(),
+                       local.GetTop() + unit.GetTop() * local.GetHeight(),
+                       local.GetLeft() + unit.GetRight() * local.GetWidth(),
+                       local.GetTop() + unit.GetBottom() * local.GetHeight())
+          .Intersection(region.local_clip);
+  if (!visible_local.has_value()) {
+    return;
+  }
+  DlRect mapped =
+      visible_local->TransformAndClipBounds(region.transform).Expand(1.0f);
+  if (!mapped.IsFinite()) {
+    visit_full();
+    return;
+  }
+  for (const DlRect& visible : region.paint_region) {
+    if (auto clipped = mapped.Intersection(visible); clipped.has_value()) {
+      visit(*clipped);
+    }
+  }
+}
+
+}  // namespace
+
 std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
     flutter::LayerTree& layer_tree,
     bool has_raster_cache,
@@ -137,24 +194,69 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
     context.PushCullRect(DlRect::MakeSize(layer_tree.frame_size()));
     if (reuse_diff_metadata) {
       context.UseCachedReadbackRegions(&layer_tree.readback_regions());
-      for (const auto& cache : layer_tree.backdrop_filter_caches()) {
-        if (std::any_of(cache.input_texture_ids.begin(),
-                        cache.input_texture_ids.end(), [&](int64_t texture_id) {
-                          return dirty_texture_ids_->contains(texture_id);
-                        })) {
-          cache.state->Invalidate();
-        }
-      }
+      const auto& regions = layer_tree.texture_paint_regions();
       for (const int64_t texture_id : *dirty_texture_ids_) {
-        const auto& regions = layer_tree.texture_paint_regions();
         auto region =
             std::lower_bound(regions.begin(), regions.end(), texture_id,
-                             [](const TexturePaintRegion& region, int64_t id) {
-                               return region.texture_id < id;
+                             [](const TexturePaintRegion& entry, int64_t id) {
+                               return entry.texture_id < id;
                              });
         while (region != regions.end() && region->texture_id == texture_id) {
-          context.AddDamage(region->paint_region);
+          VisitVisibleTextureDamage(*region, texture_damage_,
+                                    [&](const DlRect& rect) {
+                                      context.AddExternalTextureDamage(rect);
+                                    });
           ++region;
+        }
+      }
+      // Backdrop paint can become an input to a later backdrop. Propagate
+      // changed filter output in paint order so chained glass snapshots are
+      // invalidated even when raw texture damage misses a later readback.
+      std::optional<DlIRect> affected_backdrop_paint;
+      for (const auto& cache : layer_tree.backdrop_filter_caches()) {
+        bool intersects =
+            affected_backdrop_paint.has_value() &&
+            affected_backdrop_paint->IntersectsWithRect(cache.readback_rect);
+        for (int64_t texture_id : cache.input_texture_ids) {
+          if (!dirty_texture_ids_->contains(texture_id)) {
+            continue;
+          }
+          auto region =
+              std::lower_bound(regions.begin(), regions.end(), texture_id,
+                               [](const TexturePaintRegion& entry, int64_t id) {
+                                 return entry.texture_id < id;
+                               });
+          while (region != regions.end() && region->texture_id == texture_id) {
+            VisitVisibleTextureDamage(
+                *region, texture_damage_, [&](const DlRect& rect) {
+                  intersects |= DlIRect::RoundOut(rect).IntersectsWithRect(
+                      cache.readback_rect);
+                });
+            ++region;
+          }
+          if (intersects) {
+            break;
+          }
+        }
+        if (intersects) {
+          cache.state->Invalidate();
+          if (cache.has_filter_bounds_adjustment) {
+            affected_backdrop_paint =
+                DlIRect::MakeSize(layer_tree.frame_size());
+          } else if (!cache.paint_rect.IsEmpty()) {
+            affected_backdrop_paint =
+                affected_backdrop_paint
+                    ? DlIRect::MakeLTRB(
+                          std::min(affected_backdrop_paint->GetLeft(),
+                                   cache.paint_rect.GetLeft()),
+                          std::min(affected_backdrop_paint->GetTop(),
+                                   cache.paint_rect.GetTop()),
+                          std::max(affected_backdrop_paint->GetRight(),
+                                   cache.paint_rect.GetRight()),
+                          std::max(affected_backdrop_paint->GetBottom(),
+                                   cache.paint_rect.GetBottom()))
+                    : cache.paint_rect;
+          }
         }
       }
     } else {
@@ -181,6 +283,14 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
                   return a.texture_id < b.texture_id;
                 });
       layer_tree.set_has_diff_metadata(true);
+    }
+
+    if (force_full_damage_) {
+      context.AddExternalTextureDamage(
+          DlRect::MakeSize(layer_tree.frame_size()));
+      for (const auto& cache : layer_tree.backdrop_filter_caches()) {
+        cache.state->Invalidate();
+      }
     }
 
     damage_ = context.ComputeDamage(

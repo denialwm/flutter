@@ -598,11 +598,20 @@ class LayerBuilder {
 
 };  // namespace
 
+bool EmbedderExternalViewEmbedder::DidSubmitFlutterView(
+    int64_t flutter_view_id) const {
+  return flutter_view_id >= kFlutterImplicitViewId ||
+         last_denial_submission_succeeded_;
+}
+
 void EmbedderExternalViewEmbedder::SubmitFlutterView(
     int64_t flutter_view_id,
     GrDirectContext* context,
     const std::shared_ptr<impeller::AiksContext>& aiks_context,
     std::unique_ptr<SurfaceFrame> frame) {
+  if (flutter_view_id < kFlutterImplicitViewId) {
+    last_denial_submission_succeeded_ = false;
+  }
   if (flutter_view_id < kFlutterImplicitViewId &&
       pending_denial_render_target_) {
     FML_DCHECK(composition_order_.size() == 1u);
@@ -635,13 +644,15 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
     presented_layers.PushBackingStoreLayer(
         pending_denial_render_target_->GetBackingStore(),
         root->second->GetDlRegion().getRects());
-    presented_layers.InvokePresentCallback(flutter_view_id, present_callback_);
+    const bool presented = presented_layers.InvokePresentCallback(
+        flutter_view_id, present_callback_);
 
     // The embedder owns the FBO allocation. Releasing this temporary wrapper
     // only ends Flutter's borrow; the root frame then delivers the exact frame
     // and buffer damage through present-with-info.
     pending_denial_render_target_.reset();
-    frame->Submit();
+    const bool submitted = frame->Submit();
+    last_denial_submission_succeeded_ = presented && submitted;
     return;
   }
 

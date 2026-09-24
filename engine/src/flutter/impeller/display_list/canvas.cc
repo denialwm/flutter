@@ -41,6 +41,7 @@
 #include "impeller/entity/contents/content_context.h"
 #include "impeller/entity/contents/filters/filter_contents.h"
 #include "impeller/entity/contents/filters/glass_filter_contents.h"
+#include "impeller/entity/contents/filters/glass_frost_cache.h"
 #include "impeller/entity/contents/framebuffer_blend_contents.h"
 #include "impeller/entity/contents/line_contents.h"
 #include "impeller/entity/contents/shadow_vertices_contents.h"
@@ -508,7 +509,8 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
     const Color& clear_color,
     bool use_msaa,
     bool preserve_depth_stencil_between_passes = false,
-    bool pooled_glass_layer = false) {
+    bool pooled_glass_layer = false,
+    bool clear_color_on_first_pass = false) {
   const std::shared_ptr<Context>& context = renderer.GetContext();
 
   /// All of the load/store actions are managed by `InlinePassContext` when
@@ -531,7 +533,8 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
         RenderTarget::AttachmentConfigMSAA{
             .storage_mode = StorageMode::kDeviceTransient,
             .resolve_storage_mode = StorageMode::kDevicePrivate,
-            .load_action = LoadAction::kDontCare,
+            .load_action = clear_color_on_first_pass ? LoadAction::kClear
+                                                     : LoadAction::kDontCare,
             .store_action = StoreAction::kMultisampleResolve,
             .clear_color = clear_color},
         /*stencil_attachment_config=*/stencil_config);
@@ -543,7 +546,8 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
         "EntityPass",  // label
         RenderTarget::AttachmentConfig{
             .storage_mode = StorageMode::kDevicePrivate,
-            .load_action = LoadAction::kDontCare,
+            .load_action = clear_color_on_first_pass ? LoadAction::kClear
+                                                     : LoadAction::kDontCare,
             .store_action = StoreAction::kDontCare,
             .clear_color = clear_color,
         },              // color_attachment_config
@@ -2468,9 +2472,28 @@ void Canvas::SaveLayer(const Paint& paint,
           : transform_stack_.back().transform.HasTranslation()
               ? Entity::RenderingMode::kSubpassPrependSnapshotTransform
               : Entity::RenderingMode::kSubpassAppendSnapshotTransform;
-      backdrop_filter_contents =
-          WrapInput(renderer_, backdrop_filter,
-                    FilterInput::Make(std::move(input_texture)));
+      std::shared_ptr<GlassFrostCache> frost_cache;
+      const bool shared_scene =
+          will_cache_backdrop_texture ||
+          (planned_backdrop_epoch.has_value() &&
+           backdrop_epoch_plan_.scopes_by_epoch[*planned_backdrop_epoch]
+                   .size() > 1);
+      // Persistent snapshots disable target pooling and must own their pixels.
+      // Only temporary filters over a proven common scene share frost results.
+      if (backdrop_filter->asGlass() && shared_scene &&
+          !should_materialize_isolated_snapshot &&
+          !(will_cache_backdrop_texture && backdrop_data->all_filters_equal) &&
+          renderer_.GetContext()->GetBackendType() ==
+              Context::BackendType::kOpenGLES) {
+        if (!backdrop_frost_cache_) {
+          backdrop_frost_cache_ = std::make_shared<GlassFrostCache>();
+        }
+        backdrop_frost_cache_->SetSource(input_texture);
+        frost_cache = backdrop_frost_cache_;
+      }
+      backdrop_filter_contents = WrapInput(
+          renderer_, backdrop_filter,
+          FilterInput::Make(std::move(input_texture)), std::move(frost_cache));
       if (backdrop_filter->asGlass()) {
         std::static_pointer_cast<GlassFilterContents>(backdrop_filter_contents)
             ->SetMaterialTransform(material_transform);
@@ -2694,6 +2717,17 @@ void Canvas::SaveLayer(const Paint& paint,
     }
   }
 
+  // A direct glass material blends into this fresh color layer. Require an
+  // explicit transparent clear before its first draw, including on backends
+  // where kDontCare happens to clear today.
+  const bool try_child_glass =
+      backdrop_filter_contents && backdrop_filter &&
+      backdrop_filter->type() == flutter::DlImageFilterType::kGlass &&
+      !isolated_backdrop_snapshot.has_value() && !will_cache_backdrop_texture &&
+      !backdrop_alpha_threshold.has_value() && !paint.image_filter &&
+      !paint.color_filter &&
+      renderer_.GetContext()->GetBackendType() ==
+          Context::BackendType::kOpenGLES;
   render_passes_.push_back(
       LazyRenderingConfig(renderer_,                                     //
                           CreateRenderTarget(renderer_,                  //
@@ -2701,7 +2735,8 @@ void Canvas::SaveLayer(const Paint& paint,
                                              Color::BlackTransparent(),  //
                                              use_msaa,                   //
                                              false,                      //
-                                             pooled_glass_layer          //
+                                             pooled_glass_layer,         //
+                                             try_child_glass             //
                                              )));
   save_layer_state_.push_back(SaveLayerState{
       paint_copy, subpass_coverage.Shift(-coverage_origin_adjustment),
@@ -2747,6 +2782,27 @@ void Canvas::SaveLayer(const Paint& paint,
         Matrix::MakeTranslation(Vector3(-local_position)) *
         backdrop_entity.GetTransform());
   } else {
+    // This child color layer is new and transparent. An uncached glass material
+    // can write its first draw here without a separate material texture when
+    // both sampled inputs are independent of every destination attachment and
+    // its exact pixel-center sampling lattice is preserved. Persistent/grouped
+    // snapshots and alpha-threshold consumers retain their texture result.
+    if (try_child_glass) {
+      backdrop_entity.SetContents(backdrop_filter_contents);
+      backdrop_entity.SetTransform(
+          Matrix::MakeTranslation(Vector3(-local_position)));
+      backdrop_entity.SetClipDepth(std::numeric_limits<uint32_t>::max());
+      auto direct =
+          std::static_pointer_cast<GlassFilterContents>(
+              backdrop_filter_contents)
+              ->GetChildLayerEntity(renderer_, backdrop_entity, std::nullopt,
+                                    GetCurrentRenderPass().GetRenderTarget());
+      if (direct.has_value()) {
+        direct->SetClipDepth(backdrop_entity.GetClipDepth());
+        direct->Render(renderer_, GetCurrentRenderPass());
+        return;
+      }
+    }
     if (IsPooledGlassMaterialPaddingRequested() && use_msaa &&
         backdrop_filter &&
         backdrop_filter->type() == flutter::DlImageFilterType::kGlass &&
@@ -3439,6 +3495,9 @@ void Canvas::SetBackdropData(
   backdrop_epoch_cursor_.Reset();
   active_backdrop_epoch_.reset();
   active_backdrop_epoch_texture_.reset();
+  if (backdrop_frost_cache_) {
+    backdrop_frost_cache_->Clear();
+  }
   RecordBackdropGraphPlan(backdrop_epoch_plan_);
 }
 
@@ -3476,6 +3535,9 @@ std::shared_ptr<Texture> Canvas::FlipBackdrop(Point global_pass_position,
   // epoch after this method returns.
   active_backdrop_epoch_.reset();
   active_backdrop_epoch_texture_.reset();
+  if (backdrop_frost_cache_) {
+    backdrop_frost_cache_->Clear();
+  }
 
   LazyRenderingConfig rendering_config = std::move(render_passes_.back());
   render_passes_.pop_back();
@@ -3696,6 +3758,9 @@ void Canvas::EndReplay() {
   backdrop_epoch_cursor_.Reset();
   active_backdrop_epoch_.reset();
   active_backdrop_epoch_texture_.reset();
+  if (backdrop_frost_cache_) {
+    backdrop_frost_cache_->Clear();
+  }
 
   // If requires_readback_ was true, then we rendered to an offscreen texture
   // instead of to the onscreen provided in the render target. Now we need to

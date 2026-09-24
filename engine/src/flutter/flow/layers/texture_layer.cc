@@ -29,7 +29,10 @@ void TextureLayer::Diff(DiffContext* context, const Layer* old_layer) {
       context->AddExistingPaintRegion(context->GetOldLayerPaintRegion(prev));
       const PaintRegion paint_region = context->CurrentSubtreeRegion();
       context->SetLayerPaintRegion(this, paint_region);
-      context->CacheTexturePaintRegion(texture_id_, paint_region);
+      context->CacheTexturePaintRegion(
+          texture_id_, paint_region, DlRect::MakeOriginSize(offset_, size_),
+          sampling_ == DlImageSampling::kNearestNeighbor ||
+              sampling_ == DlImageSampling::kLinear);
       return;
     }
     // TODO(knopp) It would be nice to be able to determine that a texture is
@@ -46,7 +49,10 @@ void TextureLayer::Diff(DiffContext* context, const Layer* old_layer) {
   context->AddLayerBounds(DlRect::MakeOriginSize(offset_, size_));
   const PaintRegion paint_region = context->CurrentSubtreeRegion();
   context->SetLayerPaintRegion(this, paint_region);
-  context->CacheTexturePaintRegion(texture_id_, paint_region);
+  context->CacheTexturePaintRegion(
+      texture_id_, paint_region, DlRect::MakeOriginSize(offset_, size_),
+      sampling_ == DlImageSampling::kNearestNeighbor ||
+          sampling_ == DlImageSampling::kLinear);
 }
 
 void TextureLayer::Preroll(PrerollContext* context) {

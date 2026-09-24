@@ -812,6 +812,7 @@ std::optional<HandleGLES> TextureGLES::GetSyncFence() const {
 
 void TextureGLES::SetCachedFBO(HandleGLES fbo) {
   cached_fbo_ = UniqueHandleGLES(reactor_, fbo);
+  cached_fbo_has_auxiliary_attachments_ = false;
 }
 
 const HandleGLES& TextureGLES::GetCachedFBO() const {
@@ -821,6 +822,14 @@ const HandleGLES& TextureGLES::GetCachedFBO() const {
 void TextureGLES::SetCachedFBOSubresource(uint32_t mip_level, uint32_t slice) {
   cached_fbo_mip_level_ = mip_level;
   cached_fbo_slice_ = slice;
+}
+
+void TextureGLES::MarkCachedFBOHasAuxiliaryAttachments() {
+  cached_fbo_has_auxiliary_attachments_ = true;
+}
+
+bool TextureGLES::CachedFBOHasAuxiliaryAttachments() const {
+  return cached_fbo_has_auxiliary_attachments_;
 }
 
 bool TextureGLES::CachedFBOMatchesSubresource(uint32_t mip_level,

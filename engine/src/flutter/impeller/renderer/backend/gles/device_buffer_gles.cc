@@ -111,6 +111,13 @@ bool DeviceBufferGLES::BindAndUploadDataIfNecessary(BindingType type) const {
   const auto target_type = ToTarget(type);
   const auto& gl = reactor_->GetProcTable();
 
+  // Uniform consumers bind the indexed range separately. The generic UBO
+  // binding is only needed when initializing or uploading this buffer.
+  if (type == BindingType::kUniformBuffer && initialized_ &&
+      !has_dirty_range_.load(std::memory_order_acquire)) {
+    return true;
+  }
+
   gl.BindBuffer(target_type, buffer.value());
   if (!initialized_) {
     gl.BufferData(target_type, backing_store_->GetLength().GetByteSize(),

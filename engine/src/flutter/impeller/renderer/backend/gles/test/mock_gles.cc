@@ -82,6 +82,27 @@ void mockBlendFuncSeparate(GLenum src_rgb,
 static_assert(CheckSameSignature<decltype(mockBlendFuncSeparate),
                                  decltype(glBlendFuncSeparate)>::value);
 
+void mockBlendEquationSeparate(GLenum mode_rgb, GLenum mode_alpha) {
+  CallMockMethod(&IMockGLESImpl::BlendEquationSeparate, mode_rgb, mode_alpha);
+}
+static_assert(CheckSameSignature<decltype(mockBlendEquationSeparate),
+                                 decltype(glBlendEquationSeparate)>::value);
+
+void mockColorMask(GLboolean red,
+                   GLboolean green,
+                   GLboolean blue,
+                   GLboolean alpha) {
+  CallMockMethod(&IMockGLESImpl::ColorMask, red, green, blue, alpha);
+}
+static_assert(
+    CheckSameSignature<decltype(mockColorMask), decltype(glColorMask)>::value);
+
+void mockBindBuffer(GLenum target, GLuint buffer) {
+  CallMockMethod(&IMockGLESImpl::BindBuffer, target, buffer);
+}
+static_assert(CheckSameSignature<decltype(mockBindBuffer),
+                                 decltype(glBindBuffer)>::value);
+
 void mockCullFace(GLenum face) {
   CallMockMethod(&IMockGLESImpl::CullFace, face);
 }
@@ -721,6 +742,12 @@ const ProcTableGLES::Resolver kMockResolverGLES = [](const char* name) {
   if (strcmp(name, "glBlendFuncSeparate") == 0) {
     return reinterpret_cast<void*>(mockBlendFuncSeparate);
   }
+  if (strcmp(name, "glBlendEquationSeparate") == 0) {
+    return reinterpret_cast<void*>(mockBlendEquationSeparate);
+  }
+  if (strcmp(name, "glColorMask") == 0) {
+    return reinterpret_cast<void*>(mockColorMask);
+  }
   if (strcmp(name, "glCullFace") == 0) {
     return reinterpret_cast<void*>(mockCullFace);
   }
@@ -781,6 +808,8 @@ const ProcTableGLES::Resolver kMockResolverGLES = [](const char* name) {
     return reinterpret_cast<void*>(mockTexImage2D);
   } else if (strcmp(name, "glBindTexture") == 0) {
     return reinterpret_cast<void*>(mockBindTexture);
+  } else if (strcmp(name, "glBindBuffer") == 0) {
+    return reinterpret_cast<void*>(mockBindBuffer);
   } else if (strcmp(name, "glObjectLabelKHR") == 0) {
     return reinterpret_cast<void*>(mockObjectLabelKHR);
   } else if (strcmp(name, "glGenBuffers") == 0) {

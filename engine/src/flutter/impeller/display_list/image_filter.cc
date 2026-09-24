@@ -14,15 +14,18 @@
 #include "impeller/display_list/skia_conversions.h"
 #include "impeller/entity/contents/filters/color_filter_contents.h"
 #include "impeller/entity/contents/filters/filter_contents.h"
+#include "impeller/entity/contents/filters/gaussian_blur_filter_contents.h"
 #include "impeller/entity/contents/filters/glass_filter_contents.h"
 #include "impeller/entity/contents/filters/inputs/filter_input.h"
 #include "impeller/renderer/context.h"
 
 namespace impeller {
 
-std::shared_ptr<FilterContents> WrapInput(const ContentContext& renderer,
-                                          const flutter::DlImageFilter* filter,
-                                          const FilterInput::Ref& input) {
+std::shared_ptr<FilterContents> WrapInput(
+    const ContentContext& renderer,
+    const flutter::DlImageFilter* filter,
+    const FilterInput::Ref& input,
+    std::shared_ptr<GlassFrostCache> frost_cache) {
   FML_DCHECK(filter);
 
   switch (filter->type()) {
@@ -57,6 +60,10 @@ std::shared_ptr<FilterContents> WrapInput(const ContentContext& renderer,
                 Sigma(glass_filter->sigma_y()), Entity::TileMode::kClamp,
                 std::nullopt, FilterContents::BlurStyle::kNormal, nullptr,
                 glass_filter->downsample_scale());
+        if (frost_cache) {
+          std::static_pointer_cast<GaussianBlurFilterContents>(frost)
+              ->SetGlassFrostCache(std::move(frost_cache));
+        }
         frost_input = FilterInput::Make(std::move(frost));
       }
       const flutter::DlColor tint = glass_filter->tint();

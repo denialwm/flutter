@@ -362,7 +362,8 @@ std::shared_ptr<BackdropFilterCacheState>
 DiffContext::RegisterBackdropFilterCache(
     std::optional<int64_t> group_id,
     std::shared_ptr<BackdropFilterCacheState> state,
-    const DlIRect& readback_rect) {
+    const DlIRect& readback_rect,
+    const DlIRect& paint_rect) {
   if (group_id.has_value()) {
     auto [entry, inserted] =
         backdrop_group_states_.try_emplace(group_id.value(), state);
@@ -372,7 +373,12 @@ DiffContext::RegisterBackdropFilterCache(
   }
 
   if (backdrop_filter_cache_) {
-    BackdropFilterCacheMetadata metadata{.state = state};
+    BackdropFilterCacheMetadata metadata{
+        .state = state,
+        .readback_rect = readback_rect,
+        .paint_rect = paint_rect,
+        .has_filter_bounds_adjustment =
+            !filter_bounds_adjustment_stack_.empty()};
     std::unordered_set<int64_t> seen;
     for (const auto& texture : *texture_region_cache_) {
       bool intersects = false;
@@ -414,13 +420,21 @@ void DiffContext::SetDiffMetadataCache(
 }
 
 void DiffContext::CacheTexturePaintRegion(int64_t texture_id,
-                                          const PaintRegion& paint_region) {
+                                          const PaintRegion& paint_region,
+                                          const DlRect& local_bounds,
+                                          bool supports_precise_sampling) {
+  const TexturePaintRegion entry{texture_id,
+                                 paint_region,
+                                 local_bounds,
+                                 GetCullRect(),
+                                 GetMatrix(),
+                                 !filter_bounds_adjustment_stack_.empty(),
+                                 supports_precise_sampling};
   if (texture_region_cache_) {
-    texture_region_cache_->push_back({texture_id, paint_region});
+    texture_region_cache_->push_back(entry);
   }
   if (retained_subtree_capture_) {
-    retained_subtree_capture_->texture_paint_regions.push_back(
-        {texture_id, paint_region});
+    retained_subtree_capture_->texture_paint_regions.push_back(entry);
   }
 }
 

@@ -98,7 +98,8 @@ class EmbedderEngine {
                      std::vector<int64_t> texture_identifiers,
                      bool rebuild_scene,
                      uint64_t frame_start_time_nanos,
-                     uint64_t frame_target_time_nanos);
+                     uint64_t frame_target_time_nanos,
+                     TextureDamageMap texture_damage = {});
 
   bool SetRenderOutputs(std::vector<DenialRenderOutput> outputs);
 

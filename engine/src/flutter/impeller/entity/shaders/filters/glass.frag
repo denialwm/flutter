@@ -34,6 +34,7 @@ uniform FragInfo {
   float rim_width;
   float rim_falloff;
   float opposite_light_strength;
+  float sample_at_pixel_center;
 }
 frag_info;
 
@@ -107,10 +108,10 @@ vec2 blurredUvOffset(vec2 pixel_offset) {
          frag_info.blurred_uv_basis.zw * pixel_offset.y;
 }
 
-vec4 sampleFrost(vec2 pixel_offset, float spread) {
-  return vec4(texture(blurred_texture_sampler,
-                      v_blurred_texture_coords +
-                          blurredUvOffset(pixel_offset * spread))) *
+vec4 sampleFrost(vec2 blurred_coords, vec2 pixel_offset, float spread) {
+  return vec4(
+             texture(blurred_texture_sampler,
+                     blurred_coords + blurredUvOffset(pixel_offset * spread))) *
          frag_info.blurred_opacity;
 }
 
@@ -183,11 +184,11 @@ vec3 applyGlassTint(vec3 color) {
   return mix(color, screened, strength);
 }
 
-vec4 applyMaterialCoverage(vec4 material, float coverage) {
+vec4 applyMaterialCoverage(vec4 material, float coverage, vec2 scene_coords) {
   if (coverage >= 1.0) {
     return material;
   }
-  vec4 scene = vec4(texture(scene_texture_sampler, v_scene_texture_coords)) *
+  vec4 scene = vec4(texture(scene_texture_sampler, scene_coords)) *
                frag_info.scene_opacity;
   // A backdrop filter replaces scene pixels. Shape coverage must interpolate
   // that replacement with the original premultiplied scene, including alpha.
@@ -195,11 +196,27 @@ vec4 applyMaterialCoverage(vec4 material, float coverage) {
   return mix(scene, material, coverage);
 }
 
+vec2 atPixelCenter(vec2 interpolated) {
+  if (frag_info.sample_at_pixel_center < 0.5) {
+    return interpolated;
+  }
+  // The old material texture is shaded once at each pixel center. An MSAA
+  // child target may evaluate this shader at a sample position instead; move
+  // its affine interpolants back to that same center before any optical work.
+  // This uniform branch keeps ordinary offscreen materials on their old path.
+  vec2 offset = floor(gl_FragCoord.xy) + vec2(0.5) - gl_FragCoord.xy;
+  return interpolated + dFdx(interpolated) * offset.x +
+         dFdy(interpolated) * offset.y;
+}
+
 void main() {
+  vec2 blurred_coords = atPixelCenter(v_blurred_texture_coords);
+  vec2 scene_coords = atPixelCenter(v_scene_texture_coords);
+  vec2 material_position = atPixelCenter(v_material_position);
   float signed_distance;
   vec2 outward_normal;
   float normal_confidence;
-  roundedBoxField(v_material_position, signed_distance, outward_normal,
+  roundedBoxField(material_position, signed_distance, outward_normal,
                   normal_confidence);
 
   if (dot(outward_normal, outward_normal) > 0.0) {
@@ -211,7 +228,7 @@ void main() {
   float thickness = max(frag_info.thickness, 0.0001);
   float foreground_alpha = 1.0 - smoothstep(-2.0, 0.0, signed_distance);
   if (foreground_alpha < 0.01) {
-    frag_color = f16vec4(applyMaterialCoverage(vec4(0.0), 0.0));
+    frag_color = f16vec4(applyMaterialCoverage(vec4(0.0), 0.0, scene_coords));
     return;
   }
 
@@ -242,12 +259,14 @@ void main() {
         refracted_ray.xy * ray_length * frag_info.refraction_depth_scale;
   }
 
-  vec4 refracted_green = sampleFrost(displacement, 1.0);
+  vec4 refracted_green = sampleFrost(blurred_coords, displacement, 1.0);
   vec3 refracted_rgb = straightRgb(refracted_green);
   if (frag_info.dispersion > 0.0001 && any(notEqual(displacement, vec2(0.0)))) {
     float chroma = frag_info.dispersion * 0.5;
-    vec4 refracted_red = sampleFrost(displacement, 1.0 + chroma);
-    vec4 refracted_blue = sampleFrost(displacement, 1.0 - chroma);
+    vec4 refracted_red =
+        sampleFrost(blurred_coords, displacement, 1.0 + chroma);
+    vec4 refracted_blue =
+        sampleFrost(blurred_coords, displacement, 1.0 - chroma);
     refracted_rgb = vec3(straightRgb(refracted_red).r, refracted_rgb.g,
                          straightRgb(refracted_blue).b);
   }
@@ -265,6 +284,7 @@ void main() {
                       : frag_info.brightness * material_rgb;
   material_rgb = clamp(material_rgb, 0.0, 1.0);
 
-  frag_color = f16vec4(applyMaterialCoverage(
-      vec4(material_rgb * material_alpha, material_alpha), foreground_alpha));
+  frag_color = f16vec4(
+      applyMaterialCoverage(vec4(material_rgb * material_alpha, material_alpha),
+                            foreground_alpha, scene_coords));
 }

@@ -162,6 +162,58 @@ bool GlassFrostNeedsBlur(Scalar sigma_x, Scalar sigma_y) {
   return sigma_x != 0.0f || sigma_y != 0.0f;
 }
 
+bool CanDrawGlassIntoChildLayer(const RenderTarget& target,
+                                const Snapshot& scene,
+                                const Snapshot& frost,
+                                const Rect& material_coverage,
+                                PixelFormat material_format) {
+  const ColorAttachment output = target.GetColorAttachment(0);
+  if (!scene.texture || !frost.texture || !output.texture ||
+      material_coverage.IsEmpty() ||
+      output.texture->GetTextureDescriptor().format != material_format ||
+      (output.resolve_texture &&
+       output.resolve_texture->GetTextureDescriptor().format !=
+           material_format) ||
+      output.load_action != LoadAction::kClear ||
+      output.clear_color != Color::BlackTransparent() ||
+      !Rect::MakeSize(target.GetRenderTargetSize())
+           .Contains(material_coverage)) {
+    return false;
+  }
+
+  // The original child pass begins transparent. Matching render and resolve
+  // formats keeps the same material quantization; at integral pixel edges the
+  // later texture composite samples exactly one texel. The shader explicitly
+  // evaluates at pixel centers in MSAA child passes, so every covered sample
+  // resolves the same material value without assuming sample-frequency shading.
+  // The old single-sample material texture is read one texel per child pixel
+  // only at integral edges. Fractional origins/extents also introduce bilinear
+  // interpolation during its composite, so they retain the old path.
+  const auto integral = [](Scalar value) {
+    return std::isfinite(value) && std::trunc(value) == value;
+  };
+  if (!integral(material_coverage.GetLeft()) ||
+      !integral(material_coverage.GetTop()) ||
+      !integral(material_coverage.GetRight()) ||
+      !integral(material_coverage.GetBottom())) {
+    return false;
+  }
+
+  bool aliases_destination = false;
+  target.IterateAllAttachments([&](const Attachment& attachment) {
+    if (attachment.texture == scene.texture ||
+        attachment.texture == frost.texture ||
+        (attachment.resolve_texture &&
+         (attachment.resolve_texture == scene.texture ||
+          attachment.resolve_texture == frost.texture))) {
+      aliases_destination = true;
+      return false;
+    }
+    return true;
+  });
+  return !aliases_destination;
+}
+
 GlassFilterContents::GlassFilterContents(RoundRect shape,
                                          Scalar thickness,
                                          Scalar refraction,
@@ -215,6 +267,21 @@ std::optional<Entity> GlassFilterContents::GetDirectEntity(
   return GetEntity(renderer, entity, coverage_hint);
 }
 
+std::optional<Entity> GlassFilterContents::GetChildLayerEntity(
+    const ContentContext& renderer,
+    const Entity& entity,
+    const std::optional<Rect>& coverage_hint,
+    const RenderTarget& child_target) {
+  const bool previous_direct = std::exchange(render_material_directly_, true);
+  const RenderTarget* previous_target =
+      std::exchange(direct_child_target_, &child_target);
+  fml::ScopedCleanupClosure restore([&] {
+    render_material_directly_ = previous_direct;
+    direct_child_target_ = previous_target;
+  });
+  return GetEntity(renderer, entity, coverage_hint);
+}
+
 std::optional<Entity> GlassFilterContents::RenderFilter(
     const FilterInput::Vector& inputs,
     const ContentContext& renderer,
@@ -265,7 +332,15 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
     blurred_snapshot = scene_snapshot;
   }
 
-  if (render_material_directly_) {
+  if (direct_child_target_ &&
+      !CanDrawGlassIntoChildLayer(
+          *direct_child_target_, *scene_snapshot, *blurred_snapshot,
+          material_coverage,
+          renderer.GetDeviceCapabilities().GetDefaultColorFormat())) {
+    return std::nullopt;
+  }
+
+  if (render_material_directly_ && !direct_child_target_) {
     const bool frost_uses_scene =
         blurred_snapshot->texture == scene_snapshot->texture;
     // Zero frost (or the allocation fallback) refracts the original scene, so
@@ -320,6 +395,7 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
        draw_size, material_size, material_coordinates, normal_transform,
        corner_radii, blurred_uv_basis, physical_thickness,
        preserve_scene = IsBackdropFilter(),
+       sample_at_pixel_center = direct_child_target_ != nullptr,
        refractive_index = GlassRefractiveIndex(refraction_),
        dispersion = dispersion_, saturation = saturation_, tint = tint_,
        tint_strength = tint_strength_, brightness = brightness_,
@@ -371,6 +447,7 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         frag_info.rim_falloff = rim_falloff;
         frag_info.opposite_light_strength = opposite_light_strength;
         frag_info.blurred_opacity = blurred_snapshot->opacity;
+        frag_info.sample_at_pixel_center = sample_at_pixel_center ? 1.0f : 0.0f;
 
         SamplerDescriptor blurred_sampler =
             blurred_snapshot->sampler_descriptor;

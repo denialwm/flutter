@@ -45,6 +45,10 @@ struct Damage {
 // avoids a separate node allocation for every layer in each new tree.
 using PaintRegionMap = absl::flat_hash_map<uint64_t, PaintRegion>;
 
+// One conservative normalized buffer-coordinate rectangle per changed texture.
+// Missing entries retain full-texture damage.
+using TextureDamageMap = absl::flat_hash_map<int64_t, DlRect>;
+
 // Reusable metadata for autonomous frames that redraw an unchanged layer tree.
 // A texture ID may occur in more than one TextureLayer. The list is sorted by
 // ID after collection so autonomous frames can search it without pointer-heavy
@@ -52,6 +56,11 @@ using PaintRegionMap = absl::flat_hash_map<uint64_t, PaintRegion>;
 struct TexturePaintRegion {
   int64_t texture_id;
   PaintRegion paint_region;
+  DlRect local_bounds;
+  DlRect local_clip;
+  DlMatrix transform;
+  bool has_filter_bounds_adjustment;
+  bool supports_precise_sampling;
 };
 
 using TexturePaintRegionList = std::vector<TexturePaintRegion>;
@@ -113,6 +122,9 @@ class BackdropFilterCacheState {
 struct BackdropFilterCacheMetadata {
   std::shared_ptr<BackdropFilterCacheState> state;
   std::vector<int64_t> input_texture_ids;
+  DlIRect readback_rect;
+  DlIRect paint_rect;
+  bool has_filter_bounds_adjustment;
 };
 
 using BackdropFilterCacheMetadataList =
@@ -226,13 +238,17 @@ class DiffContext {
   std::shared_ptr<BackdropFilterCacheState> RegisterBackdropFilterCache(
       std::optional<int64_t> group_id,
       std::shared_ptr<BackdropFilterCacheState> state,
-      const DlIRect& readback_rect);
+      const DlIRect& readback_rect,
+      const DlIRect& paint_rect);
 
   // Returns the paint region for current subtree; Each rect in paint region is
   // in screen coordinates; Once a layer accumulates the paint regions of its
   // children, this PaintRegion value can be associated with the current layer
   // using DiffContext::SetLayerPaintRegion.
   PaintRegion CurrentSubtreeRegion() const;
+
+  // Adds already-transformed physical output damage from an external texture.
+  void AddExternalTextureDamage(const DlRect& rect) { AddDamage(rect); }
 
   // Computes final damage
   //
@@ -287,7 +303,9 @@ class DiffContext {
 
   // Records the paint region for a TextureLayer in the active metadata cache.
   void CacheTexturePaintRegion(int64_t texture_id,
-                               const PaintRegion& paint_region);
+                               const PaintRegion& paint_region,
+                               const DlRect& local_bounds,
+                               bool supports_precise_sampling);
 
   // Reuses all per-layer and external-texture metadata for an unchanged,
   // readback-free retained subtree if none of its textures are dirty.

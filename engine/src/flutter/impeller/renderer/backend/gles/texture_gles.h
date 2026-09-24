@@ -179,6 +179,12 @@ class TextureGLES final : public Texture,
   /// Records the subresource the cached FBO is currently bound to.
   void SetCachedFBOSubresource(uint32_t mip_level, uint32_t slice);
 
+  // A cached FBO may be used with another target that adds depth or stencil.
+  // Keep auxiliary discards conservative until the FBO itself is replaced.
+  void MarkCachedFBOHasAuxiliaryAttachments();
+
+  bool CachedFBOHasAuxiliaryAttachments() const;
+
   /// Whether the cached FBO is currently bound to `(mip_level, slice)`. When
   /// false, the FBO must be re-attached before use.
   bool CachedFBOMatchesSubresource(uint32_t mip_level, uint32_t slice) const;
@@ -210,6 +216,7 @@ class TextureGLES final : public Texture,
   UniqueHandleGLES cached_fbo_;
   uint32_t cached_fbo_mip_level_ = 0;
   uint32_t cached_fbo_slice_ = 0;
+  bool cached_fbo_has_auxiliary_attachments_ = false;
   bool is_valid_ = false;
 
   TextureGLES(std::shared_ptr<ReactorGLES> reactor,

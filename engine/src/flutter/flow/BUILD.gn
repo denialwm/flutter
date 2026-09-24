@@ -147,6 +147,18 @@ if (enable_unittests) {
     ]
   }
 
+  # Headless damage and retained-backdrop regression tests for release builds.
+  # This target avoids raster-cache tests that require Ganesh in Slimpeller.
+  executable("flow_damage_unittests") {
+    testonly = true
+    sources = [ "compositor_context_unittests.cc" ]
+    deps = [
+      ":flow",
+      "//flutter/testing:testing_lib",
+      "//flutter/third_party/googletest:gtest_main",
+    ]
+  }
+
   executable("flow_unittests") {
     testonly = true
 

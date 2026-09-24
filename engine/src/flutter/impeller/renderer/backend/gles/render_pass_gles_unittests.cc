@@ -32,6 +32,7 @@ namespace impeller {
 namespace testing {
 
 using ::testing::_;
+using ::testing::AnyNumber;
 using ::testing::Args;
 using ::testing::ElementsAreArray;
 using ::testing::NiceMock;
@@ -192,7 +193,7 @@ TEST_P(RenderPassGLESWithDiscardFrameBufferExtTest, DiscardFramebufferExt) {
   const auto render_pass = command_buffer->CreateRenderPass(render_target);
 
   EXPECT_CALL(mock_gl_impl_ref, GetIntegerv(GL_FRAMEBUFFER_BINDING, _))
-      .WillOnce(SetArgPointee<1>(test_params.frame_buffer_id));
+      .Times(0);
 
   EXPECT_CALL(mock_gl_impl_ref, DiscardFramebufferEXT(GL_FRAMEBUFFER, _, _))
       .With(Args<2, 1>(ElementsAreArray(test_params.expected_attachments)))
@@ -325,7 +326,7 @@ TEST_P(RenderPassGLESWithDiscardFrameBufferExtTest, InvalidateFramebuffer) {
   const auto render_pass = command_buffer->CreateRenderPass(render_target);
 
   EXPECT_CALL(mock_gl_impl_ref, GetIntegerv(GL_FRAMEBUFFER_BINDING, _))
-      .WillOnce(SetArgPointee<1>(test_params.frame_buffer_id));
+      .Times(0);
 
   // InvalidateFramebuffer should be called instead of DiscardFramebufferEXT
   EXPECT_CALL(mock_gl_impl_ref, InvalidateFramebuffer(GL_FRAMEBUFFER, _, _))
@@ -335,6 +336,132 @@ TEST_P(RenderPassGLESWithDiscardFrameBufferExtTest, InvalidateFramebuffer) {
       .Times(0);
 
   ASSERT_TRUE(render_pass->EncodeCommands());
+  ASSERT_TRUE(reactor->React());
+}
+
+TEST(RenderPassGLESTest, OwnedColorOnlyFBOHasNoAuxiliaryDiscard) {
+  auto mock_gl_impl = std::make_unique<NiceMock<MockGLESImpl>>();
+  auto& gl = *mock_gl_impl;
+  auto mock_gl =
+      MockGLES::Init(std::move(mock_gl_impl), std::nullopt, "OpenGL ES 3.0");
+  auto context = CreateFakeGLESContext();
+  auto worker = std::make_shared<MockWorker>();
+  context->AddReactorWorker(worker);
+  auto reactor = context->GetReactor();
+  ON_CALL(gl, GenFramebuffers(_, _))
+      .WillByDefault([](GLsizei count, GLuint* names) { names[0] = 71; });
+  auto commands =
+      std::static_pointer_cast<Context>(context)->CreateCommandBuffer();
+
+  TextureDescriptor description{.storage_mode = StorageMode::kDevicePrivate,
+                                .format = PixelFormat::kR8G8B8A8UNormInt,
+                                .size = {10, 10},
+                                .usage = TextureUsage::kRenderTarget};
+  auto color = std::make_shared<TextureGLES>(reactor, description, false);
+  RenderTarget target;
+  ColorAttachment attachment;
+  attachment.texture = color;
+  attachment.store_action = StoreAction::kStore;
+  target.SetColorAttachment(attachment, 0);
+
+  EXPECT_CALL(gl, CheckFramebufferStatus(_))
+      .WillRepeatedly(Return(GL_FRAMEBUFFER_COMPLETE));
+  EXPECT_CALL(gl, GetIntegerv(GL_FRAMEBUFFER_BINDING, _)).Times(0);
+  EXPECT_CALL(gl, InvalidateFramebuffer(_, _, _)).Times(0);
+  EXPECT_CALL(gl, DiscardFramebufferEXT(_, _, _)).Times(0);
+  for (int i = 0; i < 2; i++) {
+    auto pass = commands->CreateRenderPass(target);
+    ASSERT_TRUE(pass->EncodeCommands());
+    ASSERT_TRUE(reactor->React());
+  }
+  EXPECT_FALSE(color->CachedFBOHasAuxiliaryAttachments());
+}
+
+TEST(RenderPassGLESTest, OwnedCachedFBOStillDiscardsStaleAuxiliaryAttachment) {
+  auto mock_gl_impl = std::make_unique<NiceMock<MockGLESImpl>>();
+  auto& gl = *mock_gl_impl;
+  auto mock_gl =
+      MockGLES::Init(std::move(mock_gl_impl), std::nullopt, "OpenGL ES 3.0");
+  auto context = CreateFakeGLESContext();
+  auto worker = std::make_shared<MockWorker>();
+  context->AddReactorWorker(worker);
+  auto reactor = context->GetReactor();
+  ON_CALL(gl, GenFramebuffers(_, _))
+      .WillByDefault([](GLsizei count, GLuint* names) { names[0] = 72; });
+  auto commands =
+      std::static_pointer_cast<Context>(context)->CreateCommandBuffer();
+
+  TextureDescriptor color_desc{.storage_mode = StorageMode::kDevicePrivate,
+                               .format = PixelFormat::kR8G8B8A8UNormInt,
+                               .size = {10, 10},
+                               .usage = TextureUsage::kRenderTarget};
+  TextureDescriptor depth_desc{.format = PixelFormat::kD24UnormS8Uint,
+                               .size = {10, 10},
+                               .usage = TextureUsage::kRenderTarget};
+  auto color = std::make_shared<TextureGLES>(reactor, color_desc, false);
+  auto depth = std::make_shared<TextureGLES>(reactor, depth_desc, false);
+  RenderTarget with_depth;
+  ColorAttachment color_attachment;
+  color_attachment.texture = color;
+  color_attachment.store_action = StoreAction::kStore;
+  with_depth.SetColorAttachment(color_attachment, 0);
+  DepthAttachment depth_attachment;
+  depth_attachment.texture = depth;
+  depth_attachment.store_action = StoreAction::kDontCare;
+  with_depth.SetDepthAttachment(depth_attachment);
+  EXPECT_CALL(gl, CheckFramebufferStatus(_))
+      .WillRepeatedly(Return(GL_FRAMEBUFFER_COMPLETE));
+
+  auto first = commands->CreateRenderPass(with_depth);
+  ASSERT_TRUE(first->EncodeCommands());
+  ASSERT_TRUE(reactor->React());
+  ASSERT_TRUE(color->CachedFBOHasAuxiliaryAttachments());
+
+  RenderTarget color_only;
+  color_only.SetColorAttachment(color_attachment, 0);
+  EXPECT_CALL(gl, GetIntegerv(GL_FRAMEBUFFER_BINDING, _)).Times(0);
+  const std::array<GLenum, 2> expected = {GL_DEPTH_ATTACHMENT,
+                                          GL_STENCIL_ATTACHMENT};
+  EXPECT_CALL(gl, InvalidateFramebuffer(GL_FRAMEBUFFER, _, _))
+      .With(Args<2, 1>(ElementsAreArray(expected)))
+      .Times(1);
+  auto second = commands->CreateRenderPass(color_only);
+  ASSERT_TRUE(second->EncodeCommands());
+  ASSERT_TRUE(reactor->React());
+}
+
+TEST(RenderPassGLESTest, WrappedTextureWithoutFBOQueriesExternalBinding) {
+  auto mock_gl_impl = std::make_unique<NiceMock<MockGLESImpl>>();
+  auto& gl = *mock_gl_impl;
+  auto mock_gl =
+      MockGLES::Init(std::move(mock_gl_impl), std::nullopt, "OpenGL ES 3.0");
+  auto context = CreateFakeGLESContext();
+  auto worker = std::make_shared<MockWorker>();
+  context->AddReactorWorker(worker);
+  auto reactor = context->GetReactor();
+  auto commands =
+      std::static_pointer_cast<Context>(context)->CreateCommandBuffer();
+  TextureDescriptor description{.format = PixelFormat::kR8G8B8A8UNormInt,
+                                .size = {10, 10},
+                                .usage = TextureUsage::kRenderTarget};
+  auto texture = TextureGLES::WrapTexture(
+      reactor, description, reactor->CreateHandle(HandleType::kTexture, 42));
+  ASSERT_TRUE(texture);
+  RenderTarget target;
+  ColorAttachment attachment;
+  attachment.texture = texture;
+  attachment.store_action = StoreAction::kDontCare;
+  target.SetColorAttachment(attachment, 0);
+
+  EXPECT_CALL(gl, GetIntegerv(GL_FRAMEBUFFER_BINDING, _))
+      .WillOnce(SetArgPointee<1>(17));
+  const std::array<GLenum, 3> expected = {
+      GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT};
+  EXPECT_CALL(gl, InvalidateFramebuffer(GL_FRAMEBUFFER, _, _))
+      .With(Args<2, 1>(ElementsAreArray(expected)))
+      .Times(1);
+  auto pass = commands->CreateRenderPass(target);
+  ASSERT_TRUE(pass->EncodeCommands());
   ASSERT_TRUE(reactor->React());
 }
 
@@ -488,6 +615,48 @@ class RenderPassGLESCommandTest : public ::testing::Test {
     return pipeline;
   }
 };
+
+TEST_F(RenderPassGLESCommandTest,
+       FirstPipelineReusesResetBlendAndMaskStateAcrossPasses) {
+  auto ctx = CreateRenderPassGLESContext(kMockResolverGLES, 101);
+  auto blended_desc = ctx.pipeline->GetDescriptor();
+  auto color = *blended_desc.GetLegacyCompatibleColorAttachment();
+  color.blending_enabled = true;
+  color.write_mask = ColorWriteMaskBits::kRed;
+  blended_desc.SetColorAttachmentDescriptor(0, color);
+  auto blended = CreateSharedProgramVariant(ctx, blended_desc);
+
+  auto draw = [](const std::shared_ptr<RenderPass>& pass,
+                 const std::shared_ptr<PipelineGLES>& pipeline) {
+    pass->SetPipeline(PipelineRef(pipeline));
+    pass->SetElementCount(3);
+    pass->SetIndexBuffer({}, IndexType::kNone);
+    return pass->Draw().ok();
+  };
+  ASSERT_TRUE(draw(ctx.render_pass, ctx.pipeline));
+  ASSERT_TRUE(draw(ctx.render_pass, blended));
+  ASSERT_TRUE(draw(ctx.render_pass, ctx.pipeline));
+  auto next =
+      ctx.command_buffer->CreateRenderPass(ctx.render_pass->GetRenderTarget());
+  ASSERT_TRUE(draw(next, ctx.pipeline));
+
+  // One reset per pass, then only the actual blend/mask transitions. The
+  // initial unblended pipeline and the next pass's initial pipeline add none.
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Disable(_)).Times(AnyNumber());
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Disable(GL_BLEND)).Times(3);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Enable(GL_BLEND)).Times(1);
+  EXPECT_CALL(ctx.mock_gl_impl_ref,
+              ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE))
+      .Times(3);
+  EXPECT_CALL(ctx.mock_gl_impl_ref,
+              ColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_FALSE))
+      .Times(1);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, BlendFuncSeparate(_, _, _, _)).Times(1);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, BlendEquationSeparate(_, _)).Times(1);
+  ASSERT_TRUE(ctx.render_pass->EncodeCommands());
+  ASSERT_TRUE(next->EncodeCommands());
+  ASSERT_TRUE(ctx.reactor->React());
+}
 
 TEST_F(RenderPassGLESCommandTest,
        PipelineStateAndDynamicStateRemainIndependent) {

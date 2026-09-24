@@ -3919,10 +3919,30 @@ FlutterEngineResult DenialFlutterEngineRenderOutputs(
     bool rebuild_scene,
     uint64_t frame_start_time_nanos,
     uint64_t frame_target_time_nanos) {
+  return DenialFlutterEngineRenderOutputsWithDamage(
+      engine, render_view_ids, render_view_count, texture_identifiers,
+      texture_count, rebuild_scene, frame_start_time_nanos,
+      frame_target_time_nanos, nullptr, 0);
+}
+
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineRenderOutputsWithDamage(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const int64_t* render_view_ids,
+    size_t render_view_count,
+    const int64_t* texture_identifiers,
+    size_t texture_count,
+    bool rebuild_scene,
+    uint64_t frame_start_time_nanos,
+    uint64_t frame_target_time_nanos,
+    const DenialTextureDamage* texture_damage,
+    size_t damage_count) {
   if (engine == nullptr || render_view_ids == nullptr ||
       render_view_count == 0 ||
       render_view_count > kMaximumDenialRenderOutputCount ||
       (texture_identifiers == nullptr && texture_count != 0) ||
+      (texture_damage == nullptr && damage_count != 0) ||
+      damage_count > texture_count ||
       frame_start_time_nanos > frame_target_time_nanos ||
       frame_target_time_nanos >
           static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
@@ -3954,9 +3974,43 @@ FlutterEngineResult DenialFlutterEngineRenderOutputs(
     textures.push_back(texture_id);
   }
 
+  flutter::TextureDamageMap precise_damage;
+  precise_damage.reserve(damage_count);
+  for (size_t index = 0; index < damage_count; index++) {
+    const auto& entry = texture_damage[index];
+    if (!unique_textures.contains(entry.texture_id) ||
+        !std::isfinite(entry.left) || !std::isfinite(entry.top) ||
+        !std::isfinite(entry.right) || !std::isfinite(entry.bottom) ||
+        entry.left < 0.0 || entry.top < 0.0 || entry.right > 1.0 ||
+        entry.bottom > 1.0 || entry.right <= entry.left ||
+        entry.bottom <= entry.top) {
+      // An invalid or unknown mapping must damage the whole texture.
+      if (unique_textures.contains(entry.texture_id)) {
+        precise_damage[entry.texture_id] = flutter::DlRect();
+      }
+      continue;
+    }
+    const auto bounds = flutter::DlRect::MakeLTRB(entry.left, entry.top,
+                                                  entry.right, entry.bottom);
+    auto found = precise_damage.find(entry.texture_id);
+    if (found == precise_damage.end()) {
+      precise_damage.emplace(entry.texture_id, bounds);
+    } else if (!found->second.IsEmpty()) {
+      found->second = found->second.Union(bounds);
+    }
+  }
+  for (auto entry = precise_damage.begin(); entry != precise_damage.end();) {
+    if (entry->second.IsEmpty()) {
+      precise_damage.erase(entry++);
+    } else {
+      ++entry;
+    }
+  }
+
   return reinterpret_cast<flutter::EmbedderEngine*>(engine)->RenderOutputs(
              std::move(render_views), std::move(textures), rebuild_scene,
-             frame_start_time_nanos, frame_target_time_nanos)
+             frame_start_time_nanos, frame_target_time_nanos,
+             std::move(precise_damage))
              ? kSuccess
              : LOG_EMBEDDER_ERROR(
                    kInternalInconsistency,

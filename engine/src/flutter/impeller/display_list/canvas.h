@@ -40,6 +40,8 @@
 
 namespace impeller {
 
+class GlassFrostCache;
+
 struct BackdropData {
   size_t backdrop_count = 0;
   bool all_filters_equal = true;
@@ -379,6 +381,7 @@ class Canvas {
   BackdropEpochCursor backdrop_epoch_cursor_;
   std::optional<uint32_t> active_backdrop_epoch_;
   std::shared_ptr<Texture> active_backdrop_epoch_texture_;
+  std::shared_ptr<GlassFrostCache> backdrop_frost_cache_;
 
   /// The remaining number of backdrop filters.
   ///

@@ -310,12 +310,14 @@ class Rasterizer final : public SnapshotDelegate,
 
   /// Selects the physical outputs for the next framework-produced scene.
   void PrepareDenialRenderOutputs(std::vector<int64_t> render_view_ids,
-                                  std::vector<int64_t> texture_identifiers);
+                                  std::vector<int64_t> texture_identifiers,
+                                  TextureDamageMap texture_damage = {});
 
   /// Draws the latest scene directly to the selected physical outputs.
   void DrawDenialRenderOutputs(
       std::vector<int64_t> render_view_ids,
       std::vector<int64_t> texture_identifiers,
+      TextureDamageMap texture_damage,
       std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder);
 
   //----------------------------------------------------------------------------
@@ -358,6 +360,8 @@ class Rasterizer final : public SnapshotDelegate,
   // Marks an external texture and remembers its ID for the next autonomous
   // reused-layer-tree damage calculation.
   void MarkTextureFrameAvailable(int64_t texture_id);
+  void MarkTextureFramesWithDamage(const std::vector<int64_t>& texture_ids,
+                                   const TextureDamageMap& texture_damage);
 
   //----------------------------------------------------------------------------
   /// @brief      Takes the next item from the layer tree pipeline and executes
@@ -687,6 +691,7 @@ class Rasterizer final : public SnapshotDelegate,
   struct ViewRecord {
     std::unique_ptr<LayerTreeTask> last_successful_task;
     std::optional<DrawSurfaceStatus> last_draw_status;
+    bool force_full_damage = false;
   };
 
   // |SnapshotDelegate|
@@ -835,6 +840,7 @@ class Rasterizer final : public SnapshotDelegate,
       flutter::LayerTree& layer_tree,
       const flutter::LayerTree* previous_layer_tree,
       const std::unordered_set<int64_t>* dirty_texture_ids,
+      const TextureDamageMap* texture_damage,
       float device_pixel_ratio,
       std::optional<fml::TimePoint> presentation_time);
 
@@ -860,6 +866,7 @@ class Rasterizer final : public SnapshotDelegate,
   std::unordered_set<int64_t> denial_selected_render_view_ids_;
   bool denial_render_selection_pending_ = false;
   std::unordered_set<int64_t> pending_texture_ids_;
+  TextureDamageMap pending_texture_damage_;
   fml::closure next_frame_callback_;
   bool user_override_resource_cache_bytes_ = false;
   std::optional<size_t> max_cache_bytes_;

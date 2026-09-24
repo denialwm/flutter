@@ -130,6 +130,7 @@ struct LayerTreeTask {
   /// Texture IDs that requested this autonomous redraw. A missing value keeps
   /// Flutter's conservative behavior and damages every TextureLayer.
   std::optional<std::unordered_set<int64_t>> dirty_texture_ids;
+  std::shared_ptr<const TextureDamageMap> texture_damage;
   /// Denial's physical-output configuration generation for a synthetic
   /// render-view task. The implicit Dart view leaves this unset.
   std::optional<uint64_t> render_output_configuration_generation;

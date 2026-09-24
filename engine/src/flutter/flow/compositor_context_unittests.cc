@@ -10,6 +10,7 @@
 
 #include "flutter/flow/layers/backdrop_filter_layer.h"
 #include "flutter/flow/layers/clip_rect_layer.h"
+#include "flutter/flow/layers/image_filter_layer.h"
 #include "flutter/flow/layers/layer_tree.h"
 #include "flutter/flow/layers/texture_layer.h"
 #include "flutter/flow/layers/transform_layer.h"
@@ -190,6 +191,191 @@ TEST(FrameDamageTest, ReusedTreeDamagesDirtyTextureWithoutDiffingLayers) {
   ASSERT_TRUE(autonomous_frame.GetFrameDamage().has_value());
   ExpectRegion(*autonomous_frame.GetFrameDamage(),
                {DlIRect::MakeLTRB(50, 10, 70, 40)});
+}
+
+TEST(FrameDamageTest, ReusedTreeMapsNormalizedDamageThroughTextureAndClip) {
+  auto root = std::make_shared<ContainerLayer>();
+  auto clip = std::make_shared<ClipRectLayer>(DlRect::MakeLTRB(20, 20, 60, 60),
+                                              Clip::kHardEdge);
+  clip->Add(std::make_shared<TextureLayer>(DlPoint(10, 10), DlSize(80, 80), 7,
+                                           false, DlImageSampling::kLinear));
+  root->Add(clip);
+  LayerTree tree(root, kFrameSize);
+  FrameDamage initial;
+  initial.ComputeDamageRegion(tree, true, false);
+
+  const std::unordered_set<int64_t> dirty = {7};
+  TextureDamageMap outside;
+  outside.emplace(7, DlRect::MakeLTRB(0, 0, 0.1f, 0.1f));
+  FrameDamage no_visible_change;
+  no_visible_change.SetPreviousLayerTree(&tree);
+  no_visible_change.SetDirtyTextureIds(&dirty);
+  no_visible_change.SetTextureDamage(&outside);
+  no_visible_change.SetExistingDamage(DlRegion());
+  no_visible_change.ComputeDamageRegion(tree, true, false);
+  ASSERT_TRUE(no_visible_change.GetFrameDamage().has_value());
+  EXPECT_TRUE(no_visible_change.GetFrameDamage()->isEmpty());
+
+  TextureDamageMap inside;
+  inside.emplace(7, DlRect::MakeLTRB(0.25f, 0.25f, 0.35f, 0.35f));
+  FrameDamage visible_change;
+  visible_change.SetPreviousLayerTree(&tree);
+  visible_change.SetDirtyTextureIds(&dirty);
+  visible_change.SetTextureDamage(&inside);
+  visible_change.SetExistingDamage(DlRegion());
+  visible_change.ComputeDamageRegion(tree, true, false);
+  ASSERT_TRUE(visible_change.GetFrameDamage().has_value());
+  ExpectRegion(*visible_change.GetFrameDamage(),
+               {DlIRect::MakeLTRB(29, 29, 39, 39)});
+}
+
+TEST(FrameDamageTest, ReusedTreeUsesFullTextureRegionForCubicSampling) {
+  auto root = std::make_shared<ContainerLayer>();
+  root->Add(std::make_shared<TextureLayer>(DlPoint(20, 20), DlSize(40, 40), 7,
+                                           false, DlImageSampling::kCubic));
+  LayerTree tree(root, kFrameSize);
+  FrameDamage initial;
+  initial.ComputeDamageRegion(tree, true, false);
+  ASSERT_EQ(tree.texture_paint_regions().size(), 1u);
+  EXPECT_FALSE(tree.texture_paint_regions().front().supports_precise_sampling);
+
+  const std::unordered_set<int64_t> dirty = {7};
+  TextureDamageMap tiny;
+  tiny.emplace(7, DlRect::MakeLTRB(0.1f, 0.1f, 0.2f, 0.2f));
+  FrameDamage changed;
+  changed.SetPreviousLayerTree(&tree);
+  changed.SetDirtyTextureIds(&dirty);
+  changed.SetTextureDamage(&tiny);
+  changed.SetExistingDamage(DlRegion());
+  changed.ComputeDamageRegion(tree, true, false);
+  ASSERT_TRUE(changed.GetFrameDamage().has_value());
+  ExpectRegion(*changed.GetFrameDamage(), {DlIRect::MakeLTRB(20, 20, 60, 60)});
+}
+
+TEST(FrameDamageTest, ReusedTreeUsesFullTextureRegionUnderImageFilter) {
+  auto root = std::make_shared<ContainerLayer>();
+  auto filter = std::make_shared<ImageFilterLayer>(
+      DlImageFilter::MakeBlur(3, 3, DlTileMode::kClamp));
+  filter->Add(std::make_shared<TextureLayer>(DlPoint(40, 40), DlSize(20, 20), 7,
+                                             false, DlImageSampling::kLinear));
+  root->Add(filter);
+  LayerTree tree(root, kFrameSize);
+  FrameDamage initial;
+  initial.ComputeDamageRegion(tree, true, false);
+  ASSERT_EQ(tree.texture_paint_regions().size(), 1u);
+  const auto& metadata = tree.texture_paint_regions().front();
+  ASSERT_TRUE(metadata.has_filter_bounds_adjustment);
+
+  const std::unordered_set<int64_t> dirty = {7};
+  TextureDamageMap tiny;
+  tiny.emplace(7, DlRect::MakeLTRB(0.1f, 0.1f, 0.2f, 0.2f));
+  FrameDamage changed;
+  changed.SetPreviousLayerTree(&tree);
+  changed.SetDirtyTextureIds(&dirty);
+  changed.SetTextureDamage(&tiny);
+  changed.SetExistingDamage(DlRegion());
+  changed.ComputeDamageRegion(tree, true, false);
+  ASSERT_TRUE(changed.GetFrameDamage().has_value());
+  EXPECT_EQ(changed.GetFrameDamage()->bounds(),
+            DlIRect::RoundOut(metadata.paint_region.ComputeBounds()));
+}
+
+TEST(FrameDamageTest, ReusedTreeInvalidatesOnlyIntersectingBackdropInput) {
+  auto root = std::make_shared<ContainerLayer>();
+  root->Add(std::make_shared<TextureLayer>(DlPoint(), DlSize(100, 100), 7,
+                                           false, DlImageSampling::kLinear));
+  auto clip = std::make_shared<ClipRectLayer>(DlRect::MakeLTRB(40, 40, 60, 60),
+                                              Clip::kHardEdge);
+  clip->Add(std::make_shared<BackdropFilterLayer>(
+      DlImageFilter::MakeBlur(2, 2, DlTileMode::kClamp), DlBlendMode::kSrc));
+  root->Add(clip);
+  LayerTree tree(root, kFrameSize);
+  FrameDamage initial;
+  initial.ComputeDamageRegion(tree, true, true);
+  ASSERT_EQ(tree.backdrop_filter_caches().size(), 1u);
+  const auto& cache = tree.backdrop_filter_caches().front();
+  ASSERT_EQ(cache.input_texture_ids, std::vector<int64_t>({7}));
+  const std::unordered_set<int64_t> dirty = {7};
+  const int64_t initial_token = cache.state->token();
+
+  TextureDamageMap outside;
+  outside.emplace(7, DlRect::MakeLTRB(0, 0, 0.1f, 0.1f));
+  FrameDamage far_change;
+  far_change.SetPreviousLayerTree(&tree);
+  far_change.SetDirtyTextureIds(&dirty);
+  far_change.SetTextureDamage(&outside);
+  far_change.SetExistingDamage(DlRegion());
+  far_change.ComputeDamageRegion(tree, true, true);
+  EXPECT_EQ(cache.state->token(), initial_token);
+
+  TextureDamageMap inside;
+  inside.emplace(7, DlRect::MakeLTRB(0.45f, 0.45f, 0.5f, 0.5f));
+  FrameDamage near_change;
+  near_change.SetPreviousLayerTree(&tree);
+  near_change.SetDirtyTextureIds(&dirty);
+  near_change.SetTextureDamage(&inside);
+  near_change.SetExistingDamage(DlRegion());
+  near_change.ComputeDamageRegion(tree, true, true);
+  const int64_t near_token = cache.state->token();
+  EXPECT_NE(near_token, initial_token);
+
+  FrameDamage unknown_change;
+  unknown_change.SetPreviousLayerTree(&tree);
+  unknown_change.SetDirtyTextureIds(&dirty);
+  unknown_change.SetExistingDamage(DlRegion());
+  unknown_change.ComputeDamageRegion(tree, true, true);
+  EXPECT_NE(cache.state->token(), near_token);
+
+  const int64_t full_fallback_token = cache.state->token();
+  FrameDamage after_failed_draw;
+  after_failed_draw.SetPreviousLayerTree(&tree);
+  after_failed_draw.SetDirtyTextureIds(&dirty);
+  after_failed_draw.SetTextureDamage(&outside);
+  after_failed_draw.SetExistingDamage(DlRegion());
+  after_failed_draw.SetForceFullDamage(true);
+  after_failed_draw.ComputeDamageRegion(tree, true, true);
+  ASSERT_TRUE(after_failed_draw.GetFrameDamage().has_value());
+  ExpectRegion(*after_failed_draw.GetFrameDamage(), {kFullFrame});
+  EXPECT_NE(cache.state->token(), full_fallback_token);
+}
+
+TEST(FrameDamageTest, ReusedTreeInvalidatesChainedBackdropInputs) {
+  auto root = std::make_shared<ContainerLayer>();
+  root->Add(std::make_shared<TextureLayer>(DlPoint(), DlSize(100, 100), 7,
+                                           false, DlImageSampling::kLinear));
+  auto first_clip = std::make_shared<ClipRectLayer>(
+      DlRect::MakeLTRB(35, 35, 65, 65), Clip::kHardEdge);
+  first_clip->Add(std::make_shared<BackdropFilterLayer>(
+      DlImageFilter::MakeBlur(2, 2, DlTileMode::kClamp), DlBlendMode::kSrc));
+  root->Add(first_clip);
+  auto second_clip = std::make_shared<ClipRectLayer>(
+      DlRect::MakeLTRB(65, 35, 85, 65), Clip::kHardEdge);
+  second_clip->Add(std::make_shared<BackdropFilterLayer>(
+      DlImageFilter::MakeBlur(2, 2, DlTileMode::kClamp), DlBlendMode::kSrc));
+  root->Add(second_clip);
+  LayerTree tree(root, kFrameSize);
+  FrameDamage initial;
+  initial.ComputeDamageRegion(tree, true, true);
+  ASSERT_EQ(tree.backdrop_filter_caches().size(), 2u);
+  auto& first = tree.backdrop_filter_caches()[0];
+  auto& second = tree.backdrop_filter_caches()[1];
+  EXPECT_FALSE(DlIRect::MakeLTRB(39, 39, 46, 46)
+                   .IntersectsWithRect(second.readback_rect));
+  EXPECT_TRUE(first.paint_rect.IntersectsWithRect(second.readback_rect));
+  const int64_t first_token = first.state->token();
+  const int64_t second_token = second.state->token();
+
+  const std::unordered_set<int64_t> dirty = {7};
+  TextureDamageMap damage;
+  damage.emplace(7, DlRect::MakeLTRB(0.4f, 0.4f, 0.45f, 0.45f));
+  FrameDamage changed;
+  changed.SetPreviousLayerTree(&tree);
+  changed.SetDirtyTextureIds(&dirty);
+  changed.SetTextureDamage(&damage);
+  changed.SetExistingDamage(DlRegion());
+  changed.ComputeDamageRegion(tree, true, true);
+  EXPECT_NE(first.state->token(), first_token);
+  EXPECT_NE(second.state->token(), second_token);
 }
 
 TEST(FrameDamageTest, RetainedTextureSubtreeReusesCompleteDiffMetadata) {

@@ -13,6 +13,8 @@
 
 namespace impeller {
 
+class GlassFrostCache;
+
 // Comes from gaussian.frag.
 static constexpr int32_t kGaussianBlurMaxKernelSize = 50;
 
@@ -101,6 +103,11 @@ class GaussianBlurFilterContents final : public FilterContents {
                                       const Geometry* mask_geometry = nullptr,
                                       Scalar downsample_scale = 1.0f);
 
+  // Only Canvas-owned immutable backdrop scenes may supply this cache.
+  void SetGlassFrostCache(std::shared_ptr<GlassFrostCache> cache) {
+    glass_frost_cache_ = std::move(cache);
+  }
+
   std::optional<Rect> GetBounds() const { return bounds_; }
   Scalar GetSigmaX() const { return sigma_.x; }
   Scalar GetSigmaY() const { return sigma_.y; }
@@ -154,6 +161,7 @@ class GaussianBlurFilterContents final : public FilterContents {
       const Rect& coverage,
       const std::optional<Rect>& coverage_hint) const override;
 
+  std::shared_ptr<GlassFrostCache> glass_frost_cache_;
   const Vector2 sigma_ = Vector2(0.0, 0.0);
   const Entity::TileMode tile_mode_;
   const std::optional<Rect> bounds_ = std::nullopt;

@@ -216,3 +216,31 @@ aiks_unittests_component("aiks_unittests_golden") {
     "IMPELLER_ENABLE_VALIDATION=1",
   ]
 }
+
+# Headless glass path tests. This avoids the playground and the Slimpeller
+# incompatible display-list tests pulled in by the umbrella test executable.
+impeller_component("glass_canvas_unittests") {
+  # This standalone target owns MockGLES and pure filter test sources that are
+  # also compiled by other test targets.
+  check_includes = false
+  target_type = "executable"
+  testonly = true
+  sources = [
+    "glass_canvas_unittests.cc",
+    "../entity/contents/filters/glass_filter_contents_unittests.cc",
+    "../entity/contents/filters/glass_frost_cache_unittests.cc",
+    "../renderer/backend/gles/test/mock_gles.cc",
+  ]
+  deps = [
+    ":display_list",
+    "//flutter/impeller/entity",
+    "//flutter/impeller/entity:entity_shaders",
+    "//flutter/impeller/entity:framebuffer_blend_entity_shaders",
+    "//flutter/impeller/entity:modern_entity_shaders",
+    "//flutter/impeller/geometry:geometry_asserts",
+    "//flutter/impeller/renderer/backend/gles:gles",
+    "//flutter/impeller/renderer/testing:mocks",
+    "//flutter/testing:testing_lib",
+    "//flutter/third_party/googletest:gtest_main",
+  ]
+}

@@ -33,6 +33,11 @@ class IMockGLESImpl {
                                  GLenum dst_rgb,
                                  GLenum src_alpha,
                                  GLenum dst_alpha) {}
+  virtual void BlendEquationSeparate(GLenum mode_rgb, GLenum mode_alpha) {}
+  virtual void ColorMask(GLboolean red,
+                         GLboolean green,
+                         GLboolean blue,
+                         GLboolean alpha) {}
   virtual void CullFace(GLenum face) {}
   virtual void FrontFace(GLenum winding) {}
   virtual void ClearColor(GLfloat red,
@@ -85,6 +90,7 @@ class IMockGLESImpl {
                              GLenum format,
                              GLenum type,
                              const void* pixels) {}
+  virtual void BindBuffer(GLenum target, GLuint buffer) {}
   virtual void GenFramebuffers(GLsizei n, GLuint* framebuffers) {}
   virtual void BindFramebuffer(GLenum target, GLuint framebuffer) {}
   virtual void BlitFramebuffer(GLint src_x0,
@@ -194,6 +200,14 @@ class MockGLESImpl : public IMockGLESImpl {
       BlendFuncSeparate,
       (GLenum src_rgb, GLenum dst_rgb, GLenum src_alpha, GLenum dst_alpha),
       (override));
+  MOCK_METHOD(void,
+              BlendEquationSeparate,
+              (GLenum mode_rgb, GLenum mode_alpha),
+              (override));
+  MOCK_METHOD(void,
+              ColorMask,
+              (GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha),
+              (override));
   MOCK_METHOD(void, CullFace, (GLenum face), (override));
   MOCK_METHOD(void, FrontFace, (GLenum winding), (override));
   MOCK_METHOD(void,
@@ -230,6 +244,7 @@ class MockGLESImpl : public IMockGLESImpl {
                GLenum type,
                const void* pixels),
               (override));
+  MOCK_METHOD(void, BindBuffer, (GLenum target, GLuint buffer), (override));
   MOCK_METHOD(void,
               GenFramebuffers,
               (GLsizei n, GLuint* framebuffers),

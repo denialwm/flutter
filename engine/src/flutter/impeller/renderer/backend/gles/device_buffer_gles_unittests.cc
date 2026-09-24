@@ -120,6 +120,32 @@ TEST(DeviceBufferGLESTest, CleanBindingsAndMergedFlushes) {
   EXPECT_EQ(uploads.size(), 3u);
 }
 
+TEST(DeviceBufferGLESTest, CleanUniformBufferSkipsGenericBind) {
+  auto mock_gles_impl = std::make_unique<MockGLESImpl>();
+  EXPECT_CALL(*mock_gles_impl, BindBuffer(GL_UNIFORM_BUFFER, _)).Times(2);
+  EXPECT_CALL(*mock_gles_impl, BindBuffer(GL_ARRAY_BUFFER, _)).Times(1);
+  EXPECT_CALL(*mock_gles_impl, BufferSubData(GL_UNIFORM_BUFFER, 4, 4, _))
+      .Times(1);
+  auto mock_gles = MockGLES::Init(std::move(mock_gles_impl));
+  auto worker = std::make_shared<TestWorker>();
+  auto reactor = std::make_shared<ReactorGLES>(
+      std::make_unique<ProcTableGLES>(kMockResolverGLES));
+  reactor->AddWorker(worker);
+  auto backing_store = std::make_unique<Allocation>();
+  ASSERT_TRUE(backing_store->Truncate(Bytes{16}));
+  DeviceBufferGLES buffer(DeviceBufferDescriptor{.size = 16}, reactor,
+                          std::move(backing_store));
+  using Binding = DeviceBufferGLES::BindingType;
+
+  EXPECT_TRUE(buffer.BindAndUploadDataIfNecessary(Binding::kUniformBuffer));
+  EXPECT_TRUE(buffer.BindAndUploadDataIfNecessary(Binding::kUniformBuffer));
+  buffer.Flush(Range{4, 4});
+  EXPECT_TRUE(buffer.BindAndUploadDataIfNecessary(Binding::kUniformBuffer));
+  EXPECT_TRUE(buffer.BindAndUploadDataIfNecessary(Binding::kUniformBuffer));
+  // Vertex setup still needs the generic array-buffer binding when clean.
+  EXPECT_TRUE(buffer.BindAndUploadDataIfNecessary(Binding::kArrayBuffer));
+}
+
 TEST(DeviceBufferGLESTest, BindUniformData) {
   auto mock_gles_impl = std::make_unique<MockGLESImpl>();
 

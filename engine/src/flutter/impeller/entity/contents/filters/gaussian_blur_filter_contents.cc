@@ -9,6 +9,7 @@
 #include "flutter/fml/make_copyable.h"
 #include "impeller/entity/contents/clip_contents.h"
 #include "impeller/entity/contents/content_context.h"
+#include "impeller/entity/contents/filters/glass_frost_cache.h"
 #include "impeller/entity/entity.h"
 #include "impeller/entity/texture_downsample.frag.h"
 #include "impeller/entity/texture_downsample_bounded.frag.h"
@@ -907,6 +908,47 @@ std::optional<Entity> GaussianBlurFilterContents::RenderFilter(
       source_expanded_coverage_hint, source_bounds, inputs[0], snapshot_entity,
       tile_mode_, downsample_scale_);
 
+  auto make_output = [&](std::shared_ptr<Texture> texture) {
+    Entity output = Entity::FromSnapshot(
+        Snapshot{
+            .texture = std::move(texture),
+            .transform =
+                entity.GetTransform() *
+                Matrix::MakeScale(1.f / blur_info.source_space_scalar) *
+                Matrix::MakeTranslation(-blur_info.source_space_offset) *
+                downsample_pass_args.transform *
+                Matrix::MakeScale(1 / downsample_pass_args.effective_scalar),
+            .sampler_descriptor = MakeSamplerDescriptor(
+                MinMagFilter::kLinear, SamplerAddressMode::kClampToEdge),
+            .opacity = input_snapshot->opacity,
+            .needs_rasterization_for_runtime_effects = true},
+        entity.GetBlendMode());
+    return ApplyBlurStyle(mask_blur_style_, entity, inputs[0], *input_snapshot,
+                          std::move(output), mask_geometry_,
+                          blur_info.source_space_scalar,
+                          blur_info.source_space_offset);
+  };
+
+  std::optional<GlassFrostKey> frost_key;
+  if (glass_frost_cache_ && IsBackdropFilter() && !bounds_.has_value() &&
+      tile_mode_ == Entity::TileMode::kClamp &&
+      mask_blur_style_ == BlurStyle::kNormal &&
+      glass_frost_cache_->GetSource() == input_snapshot->texture) {
+    frost_key = GlassFrostKey{
+        .size = downsample_pass_args.subpass_size,
+        .source_uvs = downsample_pass_args.uvs,
+        .scaled_sigma = blur_info.scaled_sigma,
+        .effective_scale = downsample_pass_args.effective_scalar,
+        .sampler_key =
+            SamplerDescriptor::ToKey(input_snapshot->sampler_descriptor),
+        .source_y_scale = input_snapshot->texture->GetYCoordScale(),
+        .source_mips_ready = !input_snapshot->texture->NeedsMipmapGeneration(),
+    };
+    if (auto cached = glass_frost_cache_->Find(*frost_key)) {
+      return make_output(std::move(cached));
+    }
+  }
+
   Vector2 downsampled_pixel_size =
       1.0 / Vector2(downsample_pass_args.subpass_size);
   Quad blur_uvs = {Point(0, 0), Point(1, 0), Point(0, 1), Point(1, 1)};
@@ -1050,26 +1092,11 @@ std::optional<Entity> GaussianBlurFilterContents::RenderFilter(
   FML_DCHECK(vertical_pass->GetRenderTargetSize() ==
              horizontal_pass.value().GetRenderTargetSize());
 
-  SamplerDescriptor sampler_desc = MakeSamplerDescriptor(
-      MinMagFilter::kLinear, SamplerAddressMode::kClampToEdge);
-
-  Entity blur_output_entity = Entity::FromSnapshot(
-      Snapshot{.texture = horizontal_pass.value().GetRenderTargetTexture(),
-               .transform =
-                   entity.GetTransform() *                                   //
-                   Matrix::MakeScale(1.f / blur_info.source_space_scalar) *  //
-                   Matrix::MakeTranslation(-1 * blur_info.source_space_offset) *
-                   downsample_pass_args.transform *  //
-                   Matrix::MakeScale(1 / downsample_pass_args.effective_scalar),
-               .sampler_descriptor = sampler_desc,
-               .opacity = input_snapshot->opacity,
-               .needs_rasterization_for_runtime_effects = true},
-      entity.GetBlendMode());
-
-  return ApplyBlurStyle(mask_blur_style_, entity, inputs[0],
-                        input_snapshot.value(), std::move(blur_output_entity),
-                        mask_geometry_, blur_info.source_space_scalar,
-                        blur_info.source_space_offset);
+  auto output = horizontal_pass.value().GetRenderTargetTexture();
+  if (frost_key.has_value()) {
+    glass_frost_cache_->Store(*frost_key, output);
+  }
+  return make_output(std::move(output));
 }
 
 Scalar GaussianBlurFilterContents::CalculateBlurRadius(Scalar sigma) {
@@ -1140,8 +1167,8 @@ KernelSamples GenerateBlurInfo(BlurParameters parameters) {
   }
 
   // Make sure everything adds up to 1.
-  for (auto& sample : result.samples) {
-    sample.coefficient /= tally;
+  for (int i = 0; i < result.sample_count; ++i) {
+    result.samples[i].coefficient /= tally;
   }
 
   return result;

@@ -36,7 +36,8 @@ void BackdropFilterLayer::Diff(DiffContext* context, const Layer* old_layer) {
       backdrop_cache_state_ = prev->backdrop_cache_state_;
     }
     backdrop_cache_state_ = context->RegisterBackdropFilterCache(
-        backdrop_id_, std::move(backdrop_cache_state_), filter_input_bounds);
+        backdrop_id_, std::move(backdrop_cache_state_), filter_input_bounds,
+        filter_target_bounds);
     if (!compatible || context->BackdropInputIsDirty(filter_input_bounds)) {
       backdrop_cache_state_->Invalidate();
     }

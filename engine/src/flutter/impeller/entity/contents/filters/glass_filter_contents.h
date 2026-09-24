@@ -8,6 +8,8 @@
 #include "impeller/entity/contents/filters/filter_contents.h"
 #include "impeller/geometry/color.h"
 #include "impeller/geometry/round_rect.h"
+#include "impeller/renderer/render_target.h"
+#include "impeller/renderer/snapshot.h"
 
 namespace impeller {
 
@@ -27,6 +29,14 @@ std::optional<GlassMaterialDraw> ResolveGlassMaterialDraw(
     const Matrix& material_transform = Matrix());
 
 bool GlassFrostNeedsBlur(Scalar sigma_x, Scalar sigma_y);
+
+// The direct child draw must use the material texture's pixel-center lattice
+// and must not sample any texture attached to the destination pass.
+bool CanDrawGlassIntoChildLayer(const RenderTarget& target,
+                                const Snapshot& scene,
+                                const Snapshot& frost,
+                                const Rect& material_coverage,
+                                PixelFormat material_format);
 
 class GlassFilterContents final : public FilterContents {
  public:
@@ -56,6 +66,15 @@ class GlassFilterContents final : public FilterContents {
       const ContentContext& renderer,
       const Entity& entity,
       const std::optional<Rect>& coverage_hint);
+
+  // Draw an uncached material into the already allocated backdrop child layer.
+  // Returns no entity when the sampling lattice or attachment ownership differs
+  // from the ordinary material-texture path; callers then use GetEntity.
+  std::optional<Entity> GetChildLayerEntity(
+      const ContentContext& renderer,
+      const Entity& entity,
+      const std::optional<Rect>& coverage_hint,
+      const RenderTarget& child_target);
 
   // Maps the complete layout shape into backdrop input coordinates. Retain
   // orientation as well as bounds so damage crops, reflections and rotations
@@ -100,6 +119,7 @@ class GlassFilterContents final : public FilterContents {
   const Scalar opposite_light_strength_;
   std::optional<Matrix> material_transform_;
   bool render_material_directly_ = false;
+  const RenderTarget* direct_child_target_ = nullptr;
   bool material_target_padding_enabled_ = false;
 };
 
