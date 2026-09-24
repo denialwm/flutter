@@ -25,6 +25,12 @@ uint32_t NextBackdropCacheFamily() {
 }
 
 bool RegionsEqual(const DlRegion& a, const DlRegion& b) {
+  if (a.isEmpty() || b.isEmpty()) {
+    return a.isEmpty() == b.isEmpty();
+  }
+  if (a.isSimple() || b.isSimple()) {
+    return a.isSimple() && b.isSimple() && a.bounds() == b.bounds();
+  }
   return a.getRects(false) == b.getRects(false);
 }
 
