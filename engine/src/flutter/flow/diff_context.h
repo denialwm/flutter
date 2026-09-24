@@ -17,6 +17,7 @@
 #include "flutter/common/backdrop_filter_cache_key.h"
 #include "flutter/flow/paint_region.h"
 #include "flutter/fml/macros.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace flutter {
 
@@ -39,8 +40,10 @@ struct Damage {
   DlRegion buffer_damage;
 };
 
-// Layer Unique Id to PaintRegion
-using PaintRegionMap = std::unordered_map<uint64_t, PaintRegion>;
+// Layer Unique Id to PaintRegion. Callers copy regions out of the table and
+// never retain entry addresses, so rehashing may relocate entries. Flat storage
+// avoids a separate node allocation for every layer in each new tree.
+using PaintRegionMap = absl::flat_hash_map<uint64_t, PaintRegion>;
 
 // Reusable metadata for autonomous frames that redraw an unchanged layer tree.
 // A texture ID may occur in more than one TextureLayer. The list is sorted by

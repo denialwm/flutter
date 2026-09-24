@@ -603,6 +603,72 @@ TEST(FrameDamageTest, MovingForegroundAboveCachedBackdropKeepsDamageSmall) {
   ExpectRegion(*changed_input.GetFrameDamage(), {kFullFrame});
 }
 
+TEST(FrameDamageTest, RetainedPaintRegionsSurviveTableGrowthAndOldTreeRelease) {
+  auto retained = std::make_shared<ContainerLayer>();
+  std::vector<std::shared_ptr<CountingTextureLayer>> textures;
+  for (int64_t id = 0; id < 32; id++) {
+    auto texture = std::make_shared<CountingTextureLayer>(DlPoint(10, 10),
+                                                          DlSize(10, 10), id);
+    retained->Add(texture);
+    textures.push_back(std::move(texture));
+  }
+  auto make_tree = [&](int extra_count) {
+    auto root = std::make_shared<ContainerLayer>();
+    root->Add(retained);
+    for (int i = 0; i < extra_count; i++) {
+      root->Add(std::make_shared<CountingTextureLayer>(
+          DlPoint(80, 80), DlSize(10, 10), 100 + i));
+    }
+    return std::make_unique<LayerTree>(root, kFrameSize);
+  };
+  const std::unordered_set<int64_t> clean;
+  auto first = make_tree(0);
+  FrameDamage initial;
+  initial.SetDirtyTextureIds(&clean);
+  initial.ComputeDamageRegion(*first, false, true);
+
+  // New entries exceed the reservation based on the previous tree. Retained
+  // subtree metadata must remain valid while its destination table grows.
+  auto second = make_tree(257);
+  {
+    FrameDamage expanded;
+    expanded.SetPreviousLayerTree(first.get());
+    expanded.SetDirtyTextureIds(&clean);
+    expanded.SetExistingDamage(DlRegion());
+    expanded.ComputeDamageRegion(*second, false, true);
+    ExpectRegion(*expanded.GetFrameDamage(),
+                 {DlIRect::MakeLTRB(80, 80, 90, 90)});
+  }
+  EXPECT_GT(second->paint_region_map().size(),
+            first->paint_region_map().size());
+  first.reset();
+  for (const auto& texture : textures) {
+    const auto entry = second->paint_region_map().find(texture->unique_id());
+    ASSERT_NE(entry, second->paint_region_map().end());
+    EXPECT_EQ(entry->second.ComputeBounds(), DlRect::MakeLTRB(10, 10, 20, 20));
+  }
+
+  auto third = make_tree(0);
+  {
+    FrameDamage contracted;
+    contracted.SetPreviousLayerTree(second.get());
+    contracted.SetDirtyTextureIds(&clean);
+    contracted.SetExistingDamage(DlRegion());
+    contracted.ComputeDamageRegion(*third, false, true);
+    ExpectRegion(*contracted.GetFrameDamage(),
+                 {DlIRect::MakeLTRB(80, 80, 90, 90)});
+  }
+  second.reset();
+  const std::unordered_set<int64_t> dirty = {0};
+  FrameDamage autonomous;
+  autonomous.SetPreviousLayerTree(third.get());
+  autonomous.SetDirtyTextureIds(&dirty);
+  autonomous.SetExistingDamage(DlRegion());
+  autonomous.ComputeDamageRegion(*third, false, true);
+  ExpectRegion(*autonomous.GetFrameDamage(),
+               {DlIRect::MakeLTRB(10, 10, 20, 20)});
+}
+
 TEST(FrameDamageTest, GroupedBackdropFiltersShareInvalidationState) {
   auto root = std::make_shared<ContainerLayer>();
   root->Add(
