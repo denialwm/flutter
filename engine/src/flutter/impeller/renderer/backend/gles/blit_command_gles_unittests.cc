@@ -7,6 +7,7 @@
 
 #include "flutter/testing/testing.h"  // IWYU pragma: keep
 #include "gtest/gtest.h"
+#include "impeller/base/validation.h"
 #include "impeller/core/formats.h"
 #include "impeller/renderer/backend/gles/blit_command_gles.h"
 #include "impeller/renderer/backend/gles/device_buffer_gles.h"
@@ -17,6 +18,7 @@ namespace impeller {
 namespace testing {
 
 using ::testing::_;
+using ::testing::Pointee;
 using ::testing::Return;
 
 class TestReactorGLES : public ReactorGLES {
@@ -195,6 +197,8 @@ TEST(BlitCommandGLESTest, BlitCopyTextureToBufferCommandGLESRGBA) {
   BlitCopyTextureToBufferCommandGLES command =
       CreateCopyTextureToBufferCommand(source_texture, dest_buffer);
 
+  EXPECT_CALL(mock_gles_impl_ref, GenFramebuffers(1, _))
+      .WillOnce(::testing::SetArgPointee<1>(3));
   EXPECT_CALL(mock_gles_impl_ref, CheckFramebufferStatus(_))
       .WillOnce(Return(GL_FRAMEBUFFER_COMPLETE));
   // Expect gl ReadPixels with GL_RGBA.
@@ -223,6 +227,8 @@ TEST(BlitCommandGLESTest, BlitCopyTextureToBufferCommandGLESBGRA) {
   BlitCopyTextureToBufferCommandGLES command =
       CreateCopyTextureToBufferCommand(source_texture, dest_buffer);
 
+  EXPECT_CALL(mock_gles_impl_ref, GenFramebuffers(1, _))
+      .WillOnce(::testing::SetArgPointee<1>(3));
   EXPECT_CALL(mock_gles_impl_ref, CheckFramebufferStatus(_))
       .WillOnce(Return(GL_FRAMEBUFFER_COMPLETE));
   // Expect gl ReadPixels with GL_BGRA_EXT.
@@ -524,6 +530,133 @@ TEST(BlitCommandGLESTest,
       .Times(1);
 
   EXPECT_TRUE(command.Encode(*reactor));
+}
+
+class BlitFBOTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    mock_gl_ = MockGLES::Init(std::make_unique<MockGLESImpl>());
+    impl_ = static_cast<MockGLESImpl*>(mock_gl_->GetImpl());
+    reactor_ = std::make_shared<TestReactorGLES>();
+    worker_ = std::make_shared<MockWorker>();
+    reactor_->AddWorker(worker_);
+  }
+
+  TextureDescriptor ColorDescriptor() const {
+    TextureDescriptor desc;
+    desc.format = PixelFormat::kR8G8B8A8UNormInt;
+    desc.size = {10, 10};
+    desc.storage_mode = StorageMode::kDevicePrivate;
+    desc.usage = TextureUsage::kRenderTarget | TextureUsage::kShaderRead;
+    return desc;
+  }
+
+  std::shared_ptr<TextureGLES> BorrowedFBO(GLuint fbo) const {
+    return TextureGLES::WrapFBO(reactor_, ColorDescriptor(), fbo);
+  }
+
+  std::shared_ptr<TextureGLES> BorrowedTexture(GLuint name) const {
+    HandleGLES handle = reactor_->CreateHandle(HandleType::kTexture, name);
+    if (!reactor_->RegisterCleanupCallback(handle, [] {})) {
+      return nullptr;
+    }
+    return TextureGLES::WrapTexture(reactor_, ColorDescriptor(), handle);
+  }
+
+  std::shared_ptr<MockGLES> mock_gl_;
+  MockGLESImpl* impl_ = nullptr;
+  std::shared_ptr<TestReactorGLES> reactor_;
+  std::shared_ptr<MockWorker> worker_;
+};
+
+TEST_F(BlitFBOTest, CopyUsesBorrowedDefaultAndNonzeroFramebuffers) {
+  auto source = BorrowedFBO(0);
+  auto destination = TextureGLES::WrapFBOTexture(
+      reactor_, ColorDescriptor(), /*fbo=*/23, /*texture_name=*/42);
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(destination);
+
+  BlitCopyTextureToTextureCommandGLES command;
+  command.source = source;
+  command.destination = destination;
+  command.source_region = IRect::MakeSize(source->GetTextureDescriptor().size);
+  command.destination_origin = {0, 0};
+
+  EXPECT_CALL(*impl_, BindFramebuffer(GL_READ_FRAMEBUFFER, 0)).Times(1);
+  EXPECT_CALL(*impl_, BindFramebuffer(GL_DRAW_FRAMEBUFFER, 23)).Times(1);
+  EXPECT_CALL(*impl_, GenFramebuffers(_, _)).Times(0);
+  EXPECT_CALL(*impl_, DeleteFramebuffers(_, _)).Times(0);
+  EXPECT_CALL(*impl_, BlitFramebuffer(_, _, _, _, _, _, _, _,
+                                      GL_COLOR_BUFFER_BIT, GL_NEAREST))
+      .Times(1);
+  EXPECT_TRUE(command.Encode(*reactor_));
+}
+
+TEST_F(BlitFBOTest, ResizeAttachesExternalTextureToOwnedFramebuffer) {
+  auto source = BorrowedTexture(77);
+  auto destination = BorrowedFBO(0);
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(destination);
+
+  BlitResizeTextureCommandGLES command;
+  command.source = source;
+  command.destination = destination;
+
+  EXPECT_CALL(*impl_, GenFramebuffers(1, _))
+      .WillOnce([](GLsizei, GLuint* names) { *names = 91; });
+  EXPECT_CALL(*impl_, BindFramebuffer(GL_READ_FRAMEBUFFER, 91)).Times(1);
+  EXPECT_CALL(*impl_,
+              FramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_2D, 77, 0))
+      .Times(1);
+  EXPECT_CALL(*impl_, CheckFramebufferStatus(GL_READ_FRAMEBUFFER))
+      .WillOnce(Return(GL_FRAMEBUFFER_COMPLETE));
+  EXPECT_CALL(*impl_, BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0)).Times(1);
+  EXPECT_CALL(*impl_, BindFramebuffer(GL_READ_FRAMEBUFFER, 0)).Times(1);
+  EXPECT_CALL(*impl_, DeleteFramebuffers(1, Pointee(91u))).Times(1);
+  EXPECT_CALL(*impl_, BlitFramebuffer(_, _, _, _, _, _, _, _,
+                                      GL_COLOR_BUFFER_BIT, GL_LINEAR))
+      .Times(1);
+  EXPECT_TRUE(command.Encode(*reactor_));
+}
+
+TEST_F(BlitFBOTest, ReadbackUsesBorrowedNonzeroFramebufferWithoutHandle) {
+  auto source = BorrowedFBO(23);
+  auto destination = CreateBuffer(reactor_);
+  ASSERT_TRUE(source);
+
+  auto command = CreateCopyTextureToBufferCommand(source, destination);
+  EXPECT_CALL(*impl_, BindFramebuffer(GL_FRAMEBUFFER, 23)).Times(1);
+  EXPECT_CALL(*impl_, GenFramebuffers(_, _)).Times(0);
+  EXPECT_CALL(*impl_, DeleteFramebuffers(_, _)).Times(0);
+  EXPECT_CALL(*impl_, ReadPixels(0, 0, 10, 10, GL_RGBA, GL_UNSIGNED_BYTE, _))
+      .Times(1);
+  EXPECT_TRUE(command.Encode(*reactor_));
+}
+
+TEST_F(BlitFBOTest, FailedOwnedFramebufferDoesNotDeleteBorrowedSource) {
+  ScopedValidationDisable disable_validation;
+  auto source = BorrowedFBO(23);
+  auto destination = BorrowedTexture(77);
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(destination);
+
+  BlitCopyTextureToTextureCommandGLES command;
+  command.source = source;
+  command.destination = destination;
+  command.source_region = IRect::MakeSize(source->GetTextureDescriptor().size);
+  command.destination_origin = {0, 0};
+
+  EXPECT_CALL(*impl_, BindFramebuffer(GL_READ_FRAMEBUFFER, 23)).Times(1);
+  EXPECT_CALL(*impl_, GenFramebuffers(1, _))
+      .WillOnce([](GLsizei, GLuint* names) { *names = 91; });
+  EXPECT_CALL(*impl_, BindFramebuffer(GL_DRAW_FRAMEBUFFER, 91)).Times(1);
+  EXPECT_CALL(*impl_, BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0)).Times(1);
+  EXPECT_CALL(*impl_, CheckFramebufferStatus(GL_DRAW_FRAMEBUFFER))
+      .WillOnce(Return(GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT));
+  EXPECT_CALL(*impl_, DeleteFramebuffers(1, Pointee(91u))).Times(1);
+  EXPECT_CALL(*impl_, BlitFramebuffer(_, _, _, _, _, _, _, _, _, _)).Times(0);
+  EXPECT_FALSE(command.Encode(*reactor_));
 }
 
 }  // namespace testing

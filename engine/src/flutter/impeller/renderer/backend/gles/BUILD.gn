@@ -51,6 +51,7 @@ impeller_component("gles_render_pass_unittests") {
   target_type = "executable"
   testonly = true
   sources = [
+    "blit_command_gles_unittests.cc",
     "buffer_bindings_gles_unittests.cc",
     "device_buffer_gles_unittests.cc",
     "render_pass_gles_unittests.cc",

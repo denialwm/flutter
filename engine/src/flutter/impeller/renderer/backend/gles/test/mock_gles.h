@@ -87,6 +87,16 @@ class IMockGLESImpl {
                              const void* pixels) {}
   virtual void GenFramebuffers(GLsizei n, GLuint* framebuffers) {}
   virtual void BindFramebuffer(GLenum target, GLuint framebuffer) {}
+  virtual void BlitFramebuffer(GLint src_x0,
+                               GLint src_y0,
+                               GLint src_x1,
+                               GLint src_y1,
+                               GLint dst_x0,
+                               GLint dst_y0,
+                               GLint dst_x1,
+                               GLint dst_y1,
+                               GLbitfield mask,
+                               GLenum filter) {}
   virtual void FramebufferTexture2D(GLenum target,
                                     GLenum attachment,
                                     GLenum textarget,
@@ -227,6 +237,19 @@ class MockGLESImpl : public IMockGLESImpl {
   MOCK_METHOD(void,
               BindFramebuffer,
               (GLenum target, GLuint framebuffer),
+              (override));
+  MOCK_METHOD(void,
+              BlitFramebuffer,
+              (GLint src_x0,
+               GLint src_y0,
+               GLint src_x1,
+               GLint src_y1,
+               GLint dst_x0,
+               GLint dst_y0,
+               GLint dst_x1,
+               GLint dst_y1,
+               GLbitfield mask,
+               GLenum filter),
               (override));
   MOCK_METHOD(void,
               FramebufferTexture2D,

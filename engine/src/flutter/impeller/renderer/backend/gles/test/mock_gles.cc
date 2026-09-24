@@ -377,6 +377,42 @@ void mockBindFramebuffer(GLenum target, GLuint framebuffer) {
 static_assert(CheckSameSignature<decltype(mockBindFramebuffer),  //
                                  decltype(glBindFramebuffer)>::value);
 
+void mockBlitFramebuffer(GLint src_x0,
+                         GLint src_y0,
+                         GLint src_x1,
+                         GLint src_y1,
+                         GLint dst_x0,
+                         GLint dst_y0,
+                         GLint dst_x1,
+                         GLint dst_y1,
+                         GLbitfield mask,
+                         GLenum filter) {
+  CallMockMethod(&IMockGLESImpl::BlitFramebuffer, src_x0, src_y0, src_x1,
+                 src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter);
+}
+
+static_assert(CheckSameSignature<decltype(mockBlitFramebuffer),  //
+                                 decltype(glBlitFramebuffer)>::value);
+
+void mockFramebufferTexture2D(GLenum target,
+                              GLenum attachment,
+                              GLenum textarget,
+                              GLuint texture,
+                              GLint level) {
+  CallMockMethod(&IMockGLESImpl::FramebufferTexture2D, target, attachment,
+                 textarget, texture, level);
+}
+
+static_assert(CheckSameSignature<decltype(mockFramebufferTexture2D),  //
+                                 decltype(glFramebufferTexture2D)>::value);
+
+void mockDeleteFramebuffers(GLsizei n, const GLuint* framebuffers) {
+  CallMockMethod(&IMockGLESImpl::DeleteFramebuffers, n, framebuffers);
+}
+
+static_assert(CheckSameSignature<decltype(mockDeleteFramebuffers),  //
+                                 decltype(glDeleteFramebuffers)>::value);
+
 void mockReadPixels(GLint x,
                     GLint y,
                     GLsizei width,
@@ -761,6 +797,12 @@ const ProcTableGLES::Resolver kMockResolverGLES = [](const char* name) {
     return reinterpret_cast<void*>(mockGenFramebuffers);
   } else if (strcmp(name, "glBindFramebuffer") == 0) {
     return reinterpret_cast<void*>(mockBindFramebuffer);
+  } else if (strcmp(name, "glBlitFramebuffer") == 0) {
+    return reinterpret_cast<void*>(mockBlitFramebuffer);
+  } else if (strcmp(name, "glFramebufferTexture2D") == 0) {
+    return reinterpret_cast<void*>(mockFramebufferTexture2D);
+  } else if (strcmp(name, "glDeleteFramebuffers") == 0) {
+    return reinterpret_cast<void*>(mockDeleteFramebuffers);
   } else if (strcmp(name, "glDiscardFramebufferEXT") == 0) {
     return reinterpret_cast<void*>(mockDiscardFramebufferEXT);
   } else if (strcmp(name, "glInvalidateFramebuffer") == 0) {

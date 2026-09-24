@@ -19,34 +19,44 @@ namespace impeller {
 
 BlitEncodeGLES::~BlitEncodeGLES() = default;
 
-static void DeleteFBO(const ProcTableGLES& gl, GLuint fbo, GLenum type) {
-  if (fbo != GL_NONE) {
-    gl.BindFramebuffer(type, GL_NONE);
-    gl.DeleteFramebuffers(1u, &fbo);
-  }
+struct ConfiguredFBO {
+  GLuint name = GL_NONE;
+  bool owned = false;
 };
 
-static std::optional<GLuint> ConfigureFBO(
+static void DeleteFBO(const ProcTableGLES& gl, ConfiguredFBO fbo, GLenum type) {
+  if (fbo.owned && fbo.name != GL_NONE) {
+    gl.BindFramebuffer(type, GL_NONE);
+    gl.DeleteFramebuffers(1u, &fbo.name);
+  }
+}
+
+static std::optional<ConfiguredFBO> ConfigureFBO(
     const ProcTableGLES& gl,
     const std::shared_ptr<Texture>& texture,
     GLenum fbo_type) {
-  auto handle = TextureGLES::Cast(texture.get())->GetGLHandle();
-  if (!handle.has_value()) {
+  TextureGLES& texture_gles = TextureGLES::Cast(*texture);
+  if (auto borrowed_fbo = texture_gles.GetFBO(); borrowed_fbo.has_value()) {
+    // An FBO wrapper may have no texture handle. The framebuffer, including
+    // FBO 0, belongs to the caller and must never be deleted here.
+    gl.BindFramebuffer(fbo_type, borrowed_fbo.value());
+    return ConfiguredFBO{borrowed_fbo.value(), false};
+  }
+
+  // A wrapped external texture without an FBO still needs a temporary FBO.
+  if (!texture_gles.GetGLHandle().has_value()) {
     return std::nullopt;
   }
 
-  if (TextureGLES::Cast(*texture).IsWrapped()) {
-    // The texture is attached to the default FBO, so there's no need to
-    // create/configure one.
-    gl.BindFramebuffer(fbo_type, 0);
-    return 0;
+  ConfiguredFBO fbo{GL_NONE, true};
+  gl.GenFramebuffers(1u, &fbo.name);
+  if (fbo.name == GL_NONE) {
+    VALIDATION_LOG << "Could not create a framebuffer.";
+    return std::nullopt;
   }
+  gl.BindFramebuffer(fbo_type, fbo.name);
 
-  GLuint fbo;
-  gl.GenFramebuffers(1u, &fbo);
-  gl.BindFramebuffer(fbo_type, fbo);
-
-  if (!TextureGLES::Cast(*texture).SetAsFramebufferAttachment(
+  if (!texture_gles.SetAsFramebufferAttachment(
           fbo_type, TextureGLES::AttachmentType::kColor0)) {
     VALIDATION_LOG << "Could not attach texture to framebuffer.";
     DeleteFBO(gl, fbo, fbo_type);
@@ -62,7 +72,7 @@ static std::optional<GLuint> ConfigureFBO(
   }
 
   return fbo;
-};
+}
 
 BlitCopyTextureToTextureCommandGLES::~BlitCopyTextureToTextureCommandGLES() =
     default;
@@ -83,8 +93,8 @@ bool BlitCopyTextureToTextureCommandGLES::Encode(
     return false;
   }
 
-  GLuint read_fbo = GL_NONE;
-  GLuint draw_fbo = GL_NONE;
+  ConfiguredFBO read_fbo;
+  ConfiguredFBO draw_fbo;
   fml::ScopedCleanupClosure delete_fbos([&gl, &read_fbo, &draw_fbo]() {
     DeleteFBO(gl, read_fbo, GL_READ_FRAMEBUFFER);
     DeleteFBO(gl, draw_fbo, GL_DRAW_FRAMEBUFFER);
@@ -297,7 +307,7 @@ bool BlitCopyTextureToBufferCommandGLES::Encode(
     return false;
   }
 
-  GLuint read_fbo = GL_NONE;
+  ConfiguredFBO read_fbo;
   fml::ScopedCleanupClosure delete_fbos(
       [&gl, &read_fbo]() { DeleteFBO(gl, read_fbo, GL_FRAMEBUFFER); });
 
@@ -358,8 +368,8 @@ bool BlitResizeTextureCommandGLES::Encode(const ReactorGLES& reactor) const {
     return false;
   }
 
-  GLuint read_fbo = GL_NONE;
-  GLuint draw_fbo = GL_NONE;
+  ConfiguredFBO read_fbo;
+  ConfiguredFBO draw_fbo;
   fml::ScopedCleanupClosure delete_fbos([&gl, &read_fbo, &draw_fbo]() {
     DeleteFBO(gl, read_fbo, GL_READ_FRAMEBUFFER);
     DeleteFBO(gl, draw_fbo, GL_DRAW_FRAMEBUFFER);
