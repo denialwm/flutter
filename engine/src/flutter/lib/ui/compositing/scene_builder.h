@@ -47,7 +47,7 @@ class SceneBuilder : public RefCountedDartWrappable<SceneBuilder> {
                      const fml::RefPtr<EngineLayer>& old_layer);
   void pushWindowSurface(Dart_Handle layer_handle,
                          Dart_Handle geometry,
-                         ImageFilter* backdrop,
+                         Dart_Handle backdrop,
                          int64_t texture_id,
                          int64_t frame_color,
                          int sampling,

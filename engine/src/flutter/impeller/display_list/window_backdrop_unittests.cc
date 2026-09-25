@@ -141,6 +141,85 @@ TEST_F(WindowBackdropTest, ExplicitWindowNeverUsesClipOrBorderDraws) {
   }
 }
 
+TEST_F(WindowBackdropTest, ExplicitWindowReusesInsetGlassAndBlurAcrossFrames) {
+  int64_t key = 100;
+  for (bool glass : {false, true}) {
+    for (bool direct : {true, false}) {
+      for (Scalar border : {0.0f, 2.0f}) {
+        for (bool transformed : {false, true}) {
+          SCOPED_TRACE(glass);
+          SCOPED_TRACE(direct);
+          SCOPED_TRACE(border);
+          SCOPED_TRACE(transformed);
+          ++key;
+          flutter::DlWindowSurfaceFilter::Style style{
+              Rect::MakeLTRB(20.25f, 10.5f, 179.75f, 89.5f),
+              {},
+              18,
+              flutter::DlColor::kRed()};
+          style.content_bounds = style.bounds.Expand(-border);
+          std::shared_ptr<flutter::DlImageFilter> filter =
+              glass ? flutter::DlGlassImageFilter::Make(
+                          7, 7,
+                          RoundRect::MakeRectXY(style.content_bounds, 8, 8), 1,
+                          27, 0.52f, 0.51f, 1, flutter::DlColor::kTransparent(),
+                          0, 1, 0, 1, 1, 0.65f, false)
+                    : flutter::DlBlurImageFilter::Make(
+                          6, 6, flutter::DlTileMode::kClamp, std::nullopt, 1,
+                          0.65f, false);
+          flutter::DlWindowSurfaceFilter window(style, filter, direct);
+          const Matrix transform =
+              transformed ? Matrix::MakeTranslation(Vector2(3, 98)) *
+                                Matrix::MakeScale(Vector2(0.75f, -0.75f))
+                          : Matrix();
+          std::shared_ptr<Texture> cached_texture;
+          for (int frame = 0; frame < 3; ++frame) {
+            SCOPED_TRACE(frame);
+            TextureDescriptor desc;
+            desc.size = {200, 100};
+            desc.format = PixelFormat::kR8G8B8A8UNormInt;
+            desc.usage = TextureUsage::kRenderTarget;
+            desc.storage_mode = StorageMode::kDevicePrivate;
+            ColorAttachment color;
+            color.texture =
+                renderer_->GetContext()->GetResourceAllocator()->CreateTexture(
+                    desc);
+            ASSERT_TRUE(color.texture);
+            color.load_action = LoadAction::kClear;
+            RenderTarget target;
+            target.SetColorAttachment(color, 0);
+            Canvas canvas(*renderer_, target, false, true);
+            canvas.SetBackdropData({{key, BackdropData{.backdrop_count = 1}}},
+                                   1);
+            canvas.Transform(transform);
+            Paint restore;
+            restore.blend_mode = BlendMode::kSrc;
+            canvas.SaveLayer(restore, style.bounds, &window,
+                             ContentBoundsPromise::kUnknown, 1, false, key);
+            canvas.DrawImageRect(texture_, Rect::MakeSize(texture_->GetSize()),
+                                 Rect::MakeLTRB(-10, -20, 210, 110), {}, {},
+                                 SourceRectConstraint::kStrict, true);
+            canvas.Restore();
+            canvas.EndReplay();
+            auto cached = renderer_->GetCachedBackdropSnapshot(key);
+            ASSERT_TRUE(cached);
+            ASSERT_TRUE(cached->GetCoverage());
+            const Rect needed = style.content_bounds.TransformBounds(transform);
+            EXPECT_TRUE(cached->GetCoverage()->Contains(needed));
+            if (cached_texture) {
+              EXPECT_EQ(cached->texture, cached_texture)
+                  << "Unchanged glass must not be rebuilt for the outer frame";
+            }
+            cached_texture = cached->texture;
+            BackdropSnapshotPins pins(*renderer_);
+            EXPECT_TRUE(pins.Pin(key, needed));
+          }
+        }
+      }
+    }
+  }
+}
+
 TEST_F(WindowBackdropTest, SourceTextureContainsOnlyWindowPixels) {
   const Rect window = Rect::MakeLTRB(55, 10, 96, 90);
   auto cropped = CropWindowBackdrop(*renderer_, texture_, window);

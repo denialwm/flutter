@@ -59,12 +59,18 @@ void SceneBuilder::pushTransform(Dart_Handle layer_handle,
 void SceneBuilder::pushWindowSurface(
     Dart_Handle layer_handle,
     Dart_Handle geometry_handle,
-    ImageFilter* backdrop,
+    Dart_Handle backdrop_handle,
     int64_t texture_id,
     int64_t frame_color,
     int sampling,
     const fml::RefPtr<EngineLayer>& old_layer) {
   tonic::Float64List geometry(geometry_handle);
+  // NativeFieldWrapper-to-Pointer FFI conversion dereferences a null Dart
+  // object before entering C++. Carry this optional material as a Handle.
+  auto* backdrop =
+      Dart_IsNull(backdrop_handle)
+          ? nullptr
+          : tonic::DartConverter<ImageFilter*>::FromDart(backdrop_handle);
   FML_CHECK(geometry.num_elements() == 30);
   const auto g = [&](size_t i) { return SafeNarrow(geometry[i]); };
   const DlWindowSurfaceFilter::Style style{

@@ -1017,7 +1017,7 @@ base class _NativeSceneBuilder extends NativeFieldWrapperClass1 implements Scene
     return layer;
   }
 
-  @Native<Void Function(Pointer<Void>, Handle, Handle, Pointer<Void>, Int64, Int64, Int32, Handle)>(
+  @Native<Void Function(Pointer<Void>, Handle, Handle, Handle, Int64, Int64, Int32, Handle)>(
     symbol: 'SceneBuilder::pushWindowSurface',
   )
   external void _pushWindowSurface(

@@ -621,6 +621,9 @@ TEST(FrameDamageTest, ExplicitWindowKeepsVisibleTextureCacheDependencies) {
       FrameDamage initial;
       initial.ComputeDamageRegion(*first, false, true);
       ASSERT_EQ(first->backdrop_filter_caches().size(), 1u);
+      ASSERT_EQ(first->readback_regions().size(), 1u);
+      EXPECT_EQ(first->readback_regions().front().cache_coverage,
+                upper_rect.Expand(-2));
       const auto state = first->backdrop_filter_caches().front().state;
       const auto token = state->token();
       EXPECT_EQ(first->backdrop_filter_caches().front().input_texture_ids,

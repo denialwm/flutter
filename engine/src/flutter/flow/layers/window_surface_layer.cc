@@ -33,7 +33,8 @@ void WindowSurfaceLayer::Diff(DiffContext* context, const Layer* old_layer) {
   }
   context->AddLayerBounds(style_.bounds.Expand(1));
   if (backdrop_) {
-    const auto mapped = context->MapRect(style_.bounds);
+    // Match Canvas's material scope, not the outer frame or its AA fringe.
+    const auto mapped = context->MapRect(style_.content_bounds);
     const auto target = DlIRect::RoundOut(mapped);
     const bool compatible = prev && prev->cache_prepared_ &&
                             !material_changed &&

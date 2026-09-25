@@ -2155,9 +2155,9 @@ void Canvas::SaveLayer(const Paint& paint,
   if (window_filter) {
     window = std::make_shared<CanvasStackEntry::WindowState>();
     window->style = window_filter->style();
-    // Decorations extend the draw by an AA fringe, but the material's input
-    // and persistent-cache coverage remain exactly the window rectangle.
-    bounds = window->style.bounds;
+    // Only the client area samples the backdrop. The frame and AA fringe
+    // belong to the final window draw, not the cached material's coverage.
+    bounds = window->style.content_bounds;
     window->transform = transform_stack_.back().transform;
     window->opacity =
         paint.color.alpha * transform_stack_.back().distributed_opacity;
@@ -2221,17 +2221,23 @@ void Canvas::SaveLayer(const Paint& paint,
   // No rounded-clip/coverage/sampling heuristics participate in this decision.
   const bool direct_window = window && window_filter->direct_texture();
 
-  std::optional<Rect> maybe_subpass_coverage = ComputeSaveLayerCoverage(
-      bounds.value_or(Rect::MakeMaximum()),
-      transform_stack_.back().transform,  //
-      coverage_limit,                     //
-      filter_contents,                    //
-      /*flood_output_coverage=*/
-      Entity::IsBlendModeDestructive(paint.blend_mode),  //
-      /*flood_input_coverage=*/!!backdrop_filter ||
-          (paint.color_filter &&
-           paint.color_filter->modifies_transparent_black())  //
-  );
+  // Generic backdrop/kSrc layers flood the current clip, regardless of their
+  // supplied bounds. A WindowSurface has an explicit finite domain instead:
+  // neither backdrop filtering nor a composed client input extends past it.
+  std::optional<Rect> maybe_subpass_coverage =
+      window ? window->style.content_bounds.TransformBounds(window->transform)
+                   .Intersection(coverage_limit)
+             : ComputeSaveLayerCoverage(
+                   bounds.value_or(Rect::MakeMaximum()),
+                   transform_stack_.back().transform,  //
+                   coverage_limit,                     //
+                   filter_contents,                    //
+                   /*flood_output_coverage=*/
+                   Entity::IsBlendModeDestructive(paint.blend_mode),  //
+                   /*flood_input_coverage=*/!!backdrop_filter ||
+                       (paint.color_filter &&
+                        paint.color_filter->modifies_transparent_black())  //
+               );
 
   if (!maybe_subpass_coverage.has_value()) {
     return SkipUntilMatchingRestore(total_content_depth);
