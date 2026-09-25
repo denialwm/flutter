@@ -43,7 +43,7 @@ void TextureLayer::Diff(DiffContext* context, const Layer* old_layer) {
   // See ContainerLayer::DiffChildren
   // https://github.com/flutter/flutter/issues/92925
   context->MarkSubtreeHasTextureLayer();
-  context->AddLayerBounds(DlRect::MakeOriginSize(offset_, size_));
+  context->AddTextureLayerBounds(DlRect::MakeOriginSize(offset_, size_));
   const PaintRegion paint_region = context->CurrentSubtreeRegion();
   context->SetLayerPaintRegion(this, paint_region);
   context->CacheTexturePaintRegion(texture_id_, paint_region);

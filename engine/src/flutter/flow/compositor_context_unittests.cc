@@ -12,6 +12,7 @@
 
 #include "flutter/flow/layers/backdrop_filter_layer.h"
 #include "flutter/flow/layers/clip_rect_layer.h"
+#include "flutter/flow/layers/image_filter_layer.h"
 #include "flutter/flow/layers/layer_tree.h"
 #include "flutter/flow/layers/texture_layer.h"
 #include "flutter/flow/layers/transform_layer.h"
@@ -588,6 +589,205 @@ TEST(FrameDamageTest,
       EXPECT_EQ(cache.state->token() != token, overlap);
     }
   }
+}
+
+TEST(FrameDamageTest, FreshTreeWindowBackdropIgnoresClippedTextureDamage) {
+  for (bool glass : {false, true}) {
+    for (bool overlap : {false, true}) {
+      SCOPED_TRACE(glass);
+      SCOPED_TRACE(overlap);
+      const DlRect lower_bounds =
+          DlRect::MakeLTRB(0, 0, overlap ? 65 : 45, 100);
+      auto lower =
+          std::make_shared<ClipRectLayer>(lower_bounds, Clip::kHardEdge);
+      auto texture = std::make_shared<CountingTextureLayer>(DlPoint(-10, -10),
+                                                            DlSize(85, 120), 7);
+      lower->Add(texture);
+      const DlRect bounds = DlRect::MakeLTRB(55.25f, 2.5f, 95.75f, 97.5f);
+      auto clip = std::make_shared<ClipRectLayer>(bounds, Clip::kAntiAlias);
+      std::shared_ptr<DlImageFilter> filter =
+          glass ? DlGlassImageFilter::Make(
+                      7, 7, DlRoundRect::MakeRectXY(bounds, 8, 8), 1, 27, 0.52f,
+                      0.51f, 1, DlColor::kTransparent(), 0, 1, 0, 1, 1, 0.65f,
+                      true)
+                : DlBlurImageFilter::Make(6, 6, DlTileMode::kClamp,
+                                          std::nullopt, 1, 0.65f, true);
+      auto backdrop = std::make_shared<CountingBackdropFilterLayer>(
+          filter, DlBlendMode::kSrc);
+      backdrop->Add(std::make_shared<CountingTextureLayer>(DlPoint(45, -10),
+                                                           DlSize(65, 120), 8));
+      clip->Add(backdrop);
+      auto make_tree = [&] {
+        auto root = std::make_shared<ContainerLayer>();
+        root->Add(lower);
+        root->Add(clip);
+        return std::make_unique<LayerTree>(root, kFrameSize);
+      };
+      auto first = make_tree();
+      FrameDamage initial;
+      initial.ComputeDamageRegion(*first, false, true);
+      const auto state = first->backdrop_filter_caches().front().state;
+      const auto token = state->token();
+
+      // A fresh tree forces normal Diff even though the child layers are
+      // retained. The oversized old AND current texture regions must be
+      // clipped.
+      auto second = make_tree();
+      const std::unordered_set<int64_t> dirty = {7, 8};
+      FrameDamage next;
+      next.SetPreviousLayerTree(first.get());
+      next.SetDirtyTextureIds(&dirty);
+      next.SetExistingDamage(DlRegion());
+      next.ComputeDamageRegion(*second, false, true);
+      EXPECT_EQ(texture->diff_count(), 2);
+      EXPECT_EQ(backdrop->diff_count(), 2);
+      EXPECT_EQ(state->token() != token, overlap);
+      if (!overlap) {
+        ExpectRegion(*next.GetFrameDamage(), {DlIRect::RoundOut(lower_bounds),
+                                              DlIRect::RoundOut(bounds)});
+      }
+
+      // A clean lower texture carries its clipped paint region forward;
+      // changes to the backdrop's own child must not invalidate its input.
+      auto third = make_tree();
+      const auto second_token = state->token();
+      const std::unordered_set<int64_t> foreground_dirty = {8};
+      FrameDamage foreground;
+      foreground.SetPreviousLayerTree(second.get());
+      foreground.SetDirtyTextureIds(&foreground_dirty);
+      foreground.SetExistingDamage(DlRegion());
+      foreground.ComputeDamageRegion(*third, false, true);
+      EXPECT_EQ(state->token(), second_token);
+      EXPECT_EQ(backdrop->diff_count(), 3);
+    }
+  }
+}
+
+TEST(FrameDamageTest, ClippedTextureDamagePreservesOldClipOnChangeAndRemoval) {
+  const DlRect old_bounds = DlRect::MakeLTRB(10.25f, 10.5f, 40.75f, 40.5f);
+  for (const DlRect new_bounds : {
+           DlRect::MakeLTRB(20.25f, 20.5f, 30.75f, 30.5f),  // Shrink.
+           DlRect::MakeLTRB(1.25f, 1.5f, 50.75f, 50.5f),    // Grow.
+           DlRect::MakeLTRB(60.25f, 60.5f, 90.75f, 90.5f),  // Disjoint move.
+           DlRect::MakeLTRB(110, 110, 140, 140),            // Fully offscreen.
+       }) {
+    SCOPED_TRACE(new_bounds);
+    auto texture = std::make_shared<CountingTextureLayer>(DlPoint(-20, -20),
+                                                          DlSize(180, 180), 7);
+    std::shared_ptr<ClipRectLayer> previous_clip;
+    auto make_tree = [&](const DlRect& bounds) {
+      auto root = std::make_shared<ContainerLayer>();
+      auto clip = std::make_shared<ClipRectLayer>(bounds, Clip::kAntiAlias);
+      if (previous_clip) {
+        clip->AssignOldLayer(previous_clip.get());
+      }
+      previous_clip = clip;
+      clip->Add(texture);
+      root->Add(clip);
+      return std::make_unique<LayerTree>(root, kFrameSize);
+    };
+    const std::unordered_set<int64_t> no_dirty_textures;
+    auto first = make_tree(old_bounds);
+    FrameDamage initial;
+    initial.ComputeDamageRegion(*first, false, true);
+    // The first frame intentionally damages the full output, but the stored
+    // texture region must already be clipped for later updates/removal.
+    ExpectRegion(*initial.GetFrameDamage(), {kFullFrame});
+    EXPECT_EQ(
+        first->paint_region_map().at(texture->unique_id()).ComputeBounds(),
+        old_bounds);
+
+    // Also exercise the clean retained-texture metadata path before changing
+    // the clip, so old damage must survive being carried between trees.
+    auto retained = make_tree(old_bounds);
+    FrameDamage clean;
+    clean.SetPreviousLayerTree(first.get());
+    clean.SetDirtyTextureIds(&no_dirty_textures);
+    clean.SetExistingDamage(DlRegion());
+    clean.ComputeDamageRegion(*retained, false, true);
+    ExpectRegion(*clean.GetFrameDamage(), {});
+
+    auto changed = make_tree(new_bounds);
+    FrameDamage change;
+    change.SetPreviousLayerTree(retained.get());
+    change.SetDirtyTextureIds(&no_dirty_textures);
+    change.SetExistingDamage(DlRegion());
+    change.ComputeDamageRegion(*changed, false, true);
+    const DlIRect visible_new =
+        DlIRect::RoundOut(new_bounds).IntersectionOrEmpty(kFullFrame);
+    ExpectRegion(*change.GetFrameDamage(),
+                 {DlIRect::RoundOut(old_bounds), visible_new});
+
+    LayerTree empty(std::make_shared<ContainerLayer>(), kFrameSize);
+    FrameDamage removal;
+    removal.SetPreviousLayerTree(changed.get());
+    removal.SetDirtyTextureIds(&no_dirty_textures);
+    removal.SetExistingDamage(DlRegion());
+    removal.ComputeDamageRegion(empty, false, true);
+    ExpectRegion(*removal.GetFrameDamage(), {visible_new});
+  }
+}
+
+TEST(FrameDamageTest, ClippedTextureDamagePreservesOldTransform) {
+  auto clip = std::make_shared<ClipRectLayer>(
+      DlRect::MakeLTRB(10.25f, 10.5f, 20.75f, 20.5f), Clip::kAntiAlias);
+  clip->Add(std::make_shared<CountingTextureLayer>(DlPoint(-20, -20),
+                                                   DlSize(80, 80), 7));
+  std::shared_ptr<TransformLayer> previous_transform;
+  auto make_tree = [&](float x) {
+    auto root = std::make_shared<ContainerLayer>();
+    auto transform = std::make_shared<TransformLayer>(
+        DlMatrix::MakeTranslation({x, 0}) * DlMatrix::MakeScale({2, 2, 1}));
+    if (previous_transform) {
+      transform->AssignOldLayer(previous_transform.get());
+    }
+    previous_transform = transform;
+    transform->Add(clip);
+    root->Add(transform);
+    return std::make_unique<LayerTree>(root, kFrameSize);
+  };
+  auto first = make_tree(0);
+  FrameDamage initial;
+  initial.ComputeDamageRegion(*first, false, true);
+  auto moved = make_tree(40);
+  const std::unordered_set<int64_t> no_dirty_textures;
+  FrameDamage movement;
+  movement.SetPreviousLayerTree(first.get());
+  movement.SetDirtyTextureIds(&no_dirty_textures);
+  movement.SetExistingDamage(DlRegion());
+  movement.ComputeDamageRegion(*moved, false, true);
+  ExpectRegion(*movement.GetFrameDamage(), {DlIRect::MakeLTRB(20, 21, 42, 41),
+                                            DlIRect::MakeLTRB(60, 21, 82, 41)});
+}
+
+TEST(FrameDamageTest, ClippedTextureKeepsConservativeAncestorFilterDamage) {
+  auto clip = std::make_shared<ClipRectLayer>(DlRect::MakeLTRB(20, 20, 40, 40),
+                                              Clip::kHardEdge);
+  clip->Add(std::make_shared<CountingTextureLayer>(DlPoint(10, 10),
+                                                   DlSize(40, 40), 7));
+  auto blur = DlImageFilter::MakeBlur(6, 6, DlTileMode::kDecal);
+  auto filter = std::make_shared<ImageFilterLayer>(blur, DlPoint());
+  filter->Add(clip);
+  auto make_tree = [&] {
+    auto root = std::make_shared<ContainerLayer>();
+    root->Add(filter);
+    return std::make_unique<LayerTree>(root, kFrameSize);
+  };
+  auto first = make_tree();
+  FrameDamage initial;
+  initial.ComputeDamageRegion(*first, false, true);
+  auto second = make_tree();
+  const std::unordered_set<int64_t> dirty = {7};
+  FrameDamage next;
+  next.SetPreviousLayerTree(first.get());
+  next.SetDirtyTextureIds(&dirty);
+  next.SetExistingDamage(DlRegion());
+  next.ComputeDamageRegion(*second, false, true);
+  DlIRect expanded;
+  blur->map_device_bounds(DlIRect::MakeLTRB(10, 10, 50, 50), DlMatrix(),
+                          expanded);
+  ExpectRegion(*next.GetFrameDamage(),
+               {expanded.IntersectionOrEmpty(kFullFrame)});
 }
 
 TEST(FrameDamageTest, OrdinaryBackdropKeepsItsOutsideSamplingDependency) {

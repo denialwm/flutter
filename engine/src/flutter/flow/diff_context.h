@@ -200,6 +200,11 @@ class DiffContext {
   // coordinates.
   void AddLayerBounds(const DlRect& rect);
 
+  // Records only the texture's visible coverage, unless ancestor image
+  // filters require conservative expanded bounds. Clipping when recording
+  // (not when later adding damage) preserves the old clip on moves/removal.
+  void AddTextureLayerBounds(const DlRect& rect);
+
   // Add entire paint region of retained layer for current subtree. This can
   // only be used in subtrees that are not dirty, otherwise ancestor transforms
   // or clips may result in different paint region.
@@ -347,6 +352,8 @@ class DiffContext {
   DlRect MapRect(const DlRect& rect);
 
  private:
+  void AddLayerBounds(const DlRect& rect, bool clip_texture_bounds);
+
   struct State {
     State();
 

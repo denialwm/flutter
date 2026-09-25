@@ -280,6 +280,14 @@ void DiffContext::MarkSubtreeDirty(const DlRect& previous_paint_region) {
 }
 
 void DiffContext::AddLayerBounds(const DlRect& rect) {
+  AddLayerBounds(rect, false);
+}
+
+void DiffContext::AddTextureLayerBounds(const DlRect& rect) {
+  AddLayerBounds(rect, filter_bounds_adjustment_stack_.empty());
+}
+
+void DiffContext::AddLayerBounds(const DlRect& rect, bool clip_texture_bounds) {
   // During painting we cull based on non-overriden transform and then
   // override the transform right before paint. Do the same thing here to get
   // identical paint rect.
@@ -291,6 +299,17 @@ void DiffContext::AddLayerBounds(const DlRect& rect) {
       MakeTransformIntegral(temp_state);
       temp_state.mapRect(rect, &transformed_rect);
       transformed_rect = ApplyFilterBoundsAdjustment(transformed_rect);
+    }
+    if (clip_texture_bounds) {
+      // Client shadows/resize margins outside the actual clip are not painted.
+      // Store this intersection so both current and OLD texture damage use
+      // their own visible coverage. Never clip old damage to the current clip:
+      // moves and removals must still repaint the previously visible pixels.
+      transformed_rect = transformed_rect.IntersectionOrEmpty(
+          state_.matrix_clip.GetDeviceCullCoverage());
+      if (transformed_rect.IsEmpty()) {
+        return;
+      }
     }
     rects_->push_back(transformed_rect);
     if (IsSubtreeDirty()) {
@@ -402,29 +421,14 @@ void DiffContext::SetDiffMetadataCache(
 
 void DiffContext::CacheTexturePaintRegion(int64_t texture_id,
                                           const PaintRegion& paint_region) {
-  PaintRegion visible_region = paint_region;
-  // Client buffers can extend beyond the window clip (decorations, shadows,
-  // resize margins). Those pixels cannot invalidate a neighboring backdrop.
-  // Keep the ordinary layer paint/damage bounds unchanged, and remain
-  // conservative under ancestor image filters which may expand the input.
-  if (filter_bounds_adjustment_stack_.empty() && paint_region.is_valid()) {
-    auto visible_rects = std::make_shared<std::vector<DlRect>>();
-    const DlRect clip = state_.matrix_clip.GetDeviceCullCoverage();
-    for (const DlRect& rect : paint_region) {
-      if (auto visible = rect.Intersection(clip)) {
-        visible_rects->push_back(*visible);
-      }
-    }
-    visible_region =
-        PaintRegion(visible_rects, 0, visible_rects->size(),
-                    paint_region.has_readback(), paint_region.has_texture());
-  }
+  // AddTextureLayerBounds already captured the visible region. Share the same
+  // geometry between normal diffing and autonomous/retained metadata reuse.
   if (texture_region_cache_) {
-    texture_region_cache_->push_back({texture_id, visible_region});
+    texture_region_cache_->push_back({texture_id, paint_region});
   }
   if (retained_subtree_capture_) {
     retained_subtree_capture_->texture_paint_regions.push_back(
-        {texture_id, visible_region});
+        {texture_id, paint_region});
   }
 }
 
