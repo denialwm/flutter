@@ -474,9 +474,6 @@ void DisplayListStreamDispatcher::setColorSource(const DlColorSource* source) {
 }
 void DisplayListStreamDispatcher::out(const DlColorFilter& filter) {
   switch (filter.type()) {
-    case DlImageFilterType::kWindowSurface:
-      os_ << "DlWindowSurfaceFilter";
-      break;
     case DlColorFilterType::kBlend: {
       const DlBlendColorFilter* blend = filter.asBlend();
       FML_DCHECK(blend);
@@ -556,6 +553,9 @@ void DisplayListStreamDispatcher::setMaskFilter(const DlMaskFilter* filter) {
 }
 void DisplayListStreamDispatcher::out(const DlImageFilter& filter) {
   switch (filter.type()) {
+    case DlImageFilterType::kWindowSurface:
+      os_ << "DlWindowSurfaceFilter";
+      break;
     case DlImageFilterType::kBlur: {
       const DlBlurImageFilter* blur = filter.asBlur();
       FML_DCHECK(blur);

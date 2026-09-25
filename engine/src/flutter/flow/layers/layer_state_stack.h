@@ -5,13 +5,6 @@
 #ifndef FLUTTER_FLOW_LAYERS_LAYER_STATE_STACK_H_
 #define FLUTTER_FLOW_LAYERS_LAYER_STATE_STACK_H_
 
-#include <array>
-#include <cstddef>
-#include <memory_resource>
-#include <new>
-#include <utility>
-#include <vector>
-
 #include "flutter/display_list/dl_canvas.h"
 #include "flutter/flow/embedded_views.h"
 #include "flutter/flow/paint_utils.h"
@@ -111,9 +104,7 @@ namespace flutter {
 /// }
 class LayerStateStack {
  public:
-  explicit LayerStateStack(
-      std::pmr::memory_resource* upstream = std::pmr::get_default_resource());
-  ~LayerStateStack();
+  LayerStateStack();
 
   // Clears out any old delegate to make room for a new one.
   void clear_delegate();
@@ -322,7 +313,7 @@ class LayerStateStack {
   void restore_to_count(size_t restore_count);
   void reapply_all();
 
-  void apply_last_entry() { state_stack_.back().entry->apply(this); }
+  void apply_last_entry() { state_stack_.back()->apply(this); }
 
   // The push methods simply push an associated StateEntry on the stack
   // and then apply it to the current canvas and builder.
@@ -406,14 +397,6 @@ class LayerStateStack {
 
     FML_DISALLOW_COPY_ASSIGN_AND_MOVE(StateEntry);
   };
-
-  template <typename Entry, typename... Args>
-  void emplace_entry(Args&&... args) {
-    void* storage = entry_pool_.allocate(sizeof(Entry), alignof(Entry));
-    Entry* entry = new (storage) Entry(std::forward<Args>(args)...);
-    state_stack_.push_back({entry, sizeof(Entry), alignof(Entry)});
-    apply_last_entry();
-  }
   friend class SaveEntry;
   friend class SaveLayerEntry;
   friend class BackdropFilterEntry;
@@ -476,20 +459,7 @@ class LayerStateStack {
   friend class DlCanvasDelegate;
   friend class PrerollDelegate;
 
-  struct EntrySlot {
-    StateEntry* entry;
-    size_t size;
-    size_t alignment;
-  };
-
-  void destroy_entry(const EntrySlot& slot);
-
-  // Pool blocks are recycled as sibling scopes close, so storage follows
-  // maximum nesting rather than the total number of layers in a frame.
-  std::array<std::byte, 4096> inline_entry_storage_;
-  std::pmr::monotonic_buffer_resource entry_storage_;
-  std::pmr::unsynchronized_pool_resource entry_pool_;
-  std::vector<EntrySlot> state_stack_;
+  std::vector<std::unique_ptr<StateEntry>> state_stack_;
   friend class MutatorContext;
 
   std::shared_ptr<Delegate> delegate_;
