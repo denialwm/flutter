@@ -42,26 +42,6 @@ impeller_component("gles_unittests") {
   ]
 }
 
-# Mock-only command tests can run with the release Slimpeller configuration.
-# They need neither a window nor the Skia canvas test harness.
-impeller_component("gles_command_unittests") {
-  target_type = "executable"
-  testonly = true
-  sources = [
-    "buffer_bindings_gles_unittests.cc",
-    "device_buffer_gles_unittests.cc",
-    "render_pass_gles_unittests.cc",
-    "test/mock_gles.cc",
-    "test/mock_gles.h",
-  ]
-  deps = [
-    ":gles",
-    "//flutter/impeller/entity",
-    "//flutter/third_party/googletest:gmock",
-    "//flutter/third_party/googletest:gtest_main",
-  ]
-}
-
 impeller_component("gles") {
   public_configs = []
 

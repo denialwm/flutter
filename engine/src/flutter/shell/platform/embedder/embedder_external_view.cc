@@ -126,8 +126,7 @@ static void InvalidateApiState(SkSurface& skia_surface) {
 
 bool EmbedderExternalView::Render(const EmbedderRenderTarget& render_target,
                                   bool clear_surface,
-                                  bool clear_impeller_surface,
-                                  std::optional<DlIRect> damage_cull) {
+                                  bool clear_impeller_surface) {
   TRACE_EVENT0("flutter", "EmbedderExternalView::Render");
   TryEndRecording();
 
@@ -148,20 +147,6 @@ bool EmbedderExternalView::Render(const EmbedderRenderTarget& render_target,
 
     auto cull_rect =
         impeller::Rect::MakeSize(impeller_target->GetRenderTargetSize());
-    if (damage_cull.has_value() && !damage_cull->IsEmpty() &&
-        !clear_impeller_surface) {
-      // Damage is in the Flutter view's coordinates. Impeller dispatches the
-      // recorded slice after applying the embedder's surface transform, so
-      // use the corresponding render-target bounds to cull both its backdrop
-      // collection and draw pass. The target outside this rect is loaded.
-      const auto transformed =
-          DlRect::Make(*damage_cull)
-              .TransformAndClipBounds(surface_transformation_)
-              .IntersectionOrEmpty(cull_rect);
-      if (!transformed.IsEmpty()) {
-        cull_rect = transformed;
-      }
-    }
 
     return impeller::RenderToTarget(aiks_context->GetContentContext(),  //
                                     *impeller_target,                   //

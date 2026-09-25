@@ -106,8 +106,7 @@ class EmbedderExternalView {
 
   bool Render(const EmbedderRenderTarget& render_target,
               bool clear_surface = true,
-              bool clear_impeller_surface = false,
-              std::optional<DlIRect> damage_cull = std::nullopt);
+              bool clear_impeller_surface = false);
 
   const DlRegion& GetDlRegion() const;
 
