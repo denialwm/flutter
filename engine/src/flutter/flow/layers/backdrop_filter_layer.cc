@@ -24,8 +24,14 @@ void BackdropFilterLayer::Diff(DiffContext* context, const Layer* old_layer) {
     auto mapped_paint_bounds = context->MapRect(paint_bounds);
     auto filter_target_bounds = DlIRect::RoundOut(mapped_paint_bounds);
     DlIRect filter_input_bounds;  // in screen coordinates
-    filter_->get_input_device_bounds(filter_target_bounds, context->GetMatrix(),
-                                     filter_input_bounds);
+    if (filter_->is_window_backdrop() && !backdrop_id_.has_value()) {
+      // Canvas crops the source before blur/refraction, then clamps at that
+      // texture's edges. The rounded pixel rectangle is the complete input.
+      filter_input_bounds = filter_target_bounds;
+    } else {
+      filter_->get_input_device_bounds(
+          filter_target_bounds, context->GetMatrix(), filter_input_bounds);
+    }
 
     const bool compatible =
         prev && prev->backdrop_cache_prepared_ && !filter_changed &&

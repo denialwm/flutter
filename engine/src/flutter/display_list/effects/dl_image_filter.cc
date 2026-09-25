@@ -9,6 +9,16 @@
 
 namespace flutter {
 
+bool DlImageFilter::is_window_backdrop() const {
+  if (const auto* blur = asBlur()) {
+    return blur->backdrop_alpha_threshold() >= 0;
+  }
+  if (const auto* glass = asGlass()) {
+    return glass->backdrop_alpha_threshold() >= 0;
+  }
+  return false;
+}
+
 std::shared_ptr<DlImageFilter> DlImageFilter::MakeBlur(DlScalar sigma_x,
                                                        DlScalar sigma_y,
                                                        DlTileMode tile_mode) {

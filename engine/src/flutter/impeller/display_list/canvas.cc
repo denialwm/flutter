@@ -2468,9 +2468,23 @@ void Canvas::SaveLayer(const Paint& paint,
           : transform_stack_.back().transform.HasTranslation()
               ? Entity::RenderingMode::kSubpassPrependSnapshotTransform
               : Entity::RenderingMode::kSubpassAppendSnapshotTransform;
-      backdrop_filter_contents =
-          WrapInput(renderer_, backdrop_filter,
-                    FilterInput::Make(std::move(input_texture)));
+      auto input = FilterInput::Make(input_texture);
+      if (backdrop_filter->is_window_backdrop() &&
+          !will_cache_backdrop_texture) {
+        // Crop the SOURCE, not just the filtered result. Both the Gaussian
+        // convolution and glass refraction now clamp to this window's edges.
+        // Keep direct_scene_snapshot unchanged for alpha-threshold restore.
+        auto local_source = CropWindowBackdrop(
+            renderer_, input_texture,
+            subpass_coverage.Shift(-GetGlobalPassPosition()));
+        if (!local_source) {
+          VALIDATION_LOG << "Failed to isolate window backdrop source.";
+          return SkipUntilMatchingRestore(total_content_depth);
+        }
+        input =
+            FilterInput::Make(local_source->texture, local_source->transform);
+      }
+      backdrop_filter_contents = WrapInput(renderer_, backdrop_filter, input);
       if (backdrop_filter->asGlass()) {
         std::static_pointer_cast<GlassFilterContents>(backdrop_filter_contents)
             ->SetMaterialTransform(material_transform);

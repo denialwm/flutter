@@ -402,12 +402,29 @@ void DiffContext::SetDiffMetadataCache(
 
 void DiffContext::CacheTexturePaintRegion(int64_t texture_id,
                                           const PaintRegion& paint_region) {
+  PaintRegion visible_region = paint_region;
+  // Client buffers can extend beyond the window clip (decorations, shadows,
+  // resize margins). Those pixels cannot invalidate a neighboring backdrop.
+  // Keep the ordinary layer paint/damage bounds unchanged, and remain
+  // conservative under ancestor image filters which may expand the input.
+  if (filter_bounds_adjustment_stack_.empty() && paint_region.is_valid()) {
+    auto visible_rects = std::make_shared<std::vector<DlRect>>();
+    const DlRect clip = state_.matrix_clip.GetDeviceCullCoverage();
+    for (const DlRect& rect : paint_region) {
+      if (auto visible = rect.Intersection(clip)) {
+        visible_rects->push_back(*visible);
+      }
+    }
+    visible_region =
+        PaintRegion(visible_rects, 0, visible_rects->size(),
+                    paint_region.has_readback(), paint_region.has_texture());
+  }
   if (texture_region_cache_) {
-    texture_region_cache_->push_back({texture_id, paint_region});
+    texture_region_cache_->push_back({texture_id, visible_region});
   }
   if (retained_subtree_capture_) {
     retained_subtree_capture_->texture_paint_regions.push_back(
-        {texture_id, paint_region});
+        {texture_id, visible_region});
   }
 }
 

@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "flutter/display_list/effects/image_filters/dl_blur_image_filter.h"
+#include "flutter/display_list/effects/image_filters/dl_glass_image_filter.h"
 #include "flutter/flow/compositor_context.h"
 
 #include <initializer_list>
@@ -531,6 +533,79 @@ TEST(FrameDamageTest,
   EXPECT_NE(invalidated_token, initial_token);
   EXPECT_EQ(GetBackdropFilterCacheFamily(invalidated_token),
             GetBackdropFilterCacheFamily(initial_token));
+}
+
+TEST(FrameDamageTest,
+     WindowLocalBackdropIgnoresClippedNeighborsButKeepsOverlap) {
+  for (bool glass : {false, true}) {
+    for (bool overlap : {false, true}) {
+      SCOPED_TRACE(glass);
+      SCOPED_TRACE(overlap);
+      auto root = std::make_shared<ContainerLayer>();
+      const DlRect lower_bounds =
+          DlRect::MakeLTRB(0, 0, overlap ? 65 : 45, 100);
+      auto lower =
+          std::make_shared<ClipRectLayer>(lower_bounds, Clip::kHardEdge);
+      // Deliberately larger than the clip, like a decorated client buffer.
+      lower->Add(std::make_shared<CountingTextureLayer>(DlPoint(),
+                                                        DlSize(75, 100), 7));
+      root->Add(lower);
+      const DlRect bounds = DlRect::MakeLTRB(55.25f, 2.5f, 95.75f, 97.5f);
+      auto clip = std::make_shared<ClipRectLayer>(bounds, Clip::kHardEdge);
+      std::shared_ptr<DlImageFilter> filter =
+          glass ? DlGlassImageFilter::Make(
+                      7, 7, DlRoundRect::MakeRectXY(bounds, 8, 8), 1, 27, 0.52f,
+                      0.51f, 1, DlColor::kTransparent(), 0, 1, 0, 1, 1, 0.65f,
+                      true)
+                : DlBlurImageFilter::Make(6, 6, DlTileMode::kClamp,
+                                          std::nullopt, 1, 0.65f, true);
+      ASSERT_TRUE(filter);
+      ASSERT_TRUE(filter->is_window_backdrop());
+      auto backdrop =
+          std::make_shared<BackdropFilterLayer>(filter, DlBlendMode::kSrc);
+      backdrop->Add(std::make_shared<CountingTextureLayer>(DlPoint(55, 0),
+                                                           DlSize(45, 100), 8));
+      clip->Add(backdrop);
+      root->Add(clip);
+      LayerTree tree(root, kFrameSize);
+      FrameDamage first;
+      first.ComputeDamageRegion(tree, true, true);
+      ASSERT_EQ(tree.backdrop_filter_caches().size(), 1u);
+      const auto& cache = tree.backdrop_filter_caches().front();
+      EXPECT_EQ(cache.input_texture_ids,
+                overlap ? std::vector<int64_t>{7} : std::vector<int64_t>{});
+      const auto token = cache.state->token();
+      const std::unordered_set<int64_t> foreground_dirty = {8};
+      FrameDamage next;
+      next.SetPreviousLayerTree(&tree);
+      next.SetExistingDamage(DlRegion());
+      next.SetDirtyTextureIds(&foreground_dirty);
+      next.ComputeDamageRegion(tree, true, true);
+      EXPECT_EQ(cache.state->token(), token);
+      const std::unordered_set<int64_t> background_dirty = {7};
+      next.SetDirtyTextureIds(&background_dirty);
+      next.ComputeDamageRegion(tree, true, true);
+      EXPECT_EQ(cache.state->token() != token, overlap);
+    }
+  }
+}
+
+TEST(FrameDamageTest, OrdinaryBackdropKeepsItsOutsideSamplingDependency) {
+  auto root = std::make_shared<ContainerLayer>();
+  root->Add(
+      std::make_shared<CountingTextureLayer>(DlPoint(), DlSize(45, 100), 7));
+  auto clip = std::make_shared<ClipRectLayer>(DlRect::MakeLTRB(55, 0, 100, 100),
+                                              Clip::kHardEdge);
+  auto filter = DlImageFilter::MakeBlur(6, 6, DlTileMode::kClamp);
+  EXPECT_FALSE(filter->is_window_backdrop());
+  clip->Add(std::make_shared<BackdropFilterLayer>(filter, DlBlendMode::kSrc));
+  root->Add(clip);
+  LayerTree tree(root, kFrameSize);
+  FrameDamage first;
+  first.ComputeDamageRegion(tree, true, true);
+  ASSERT_EQ(tree.backdrop_filter_caches().size(), 1u);
+  EXPECT_EQ(tree.backdrop_filter_caches().front().input_texture_ids,
+            std::vector<int64_t>{7});
 }
 
 TEST(FrameDamageTest, MovingForegroundAboveCachedBackdropKeepsDamageSmall) {

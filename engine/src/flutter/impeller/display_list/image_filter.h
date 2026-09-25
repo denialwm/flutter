@@ -11,6 +11,14 @@
 
 namespace impeller {
 
+// Copy just the window's physical pixel rectangle before filtering. Keeping
+// its translation lets callers use the existing backdrop coordinate system;
+// the independent texture makes clamp-to-edge apply to the window, not screen.
+std::optional<Snapshot> CropWindowBackdrop(
+    const ContentContext& renderer,
+    const std::shared_ptr<Texture>& texture,
+    const Rect& window_bounds);
+
 /// @brief  Generate a new FilterContents using this filter's configuration.
 ///
 std::shared_ptr<FilterContents> WrapInput(const ContentContext& renderer,

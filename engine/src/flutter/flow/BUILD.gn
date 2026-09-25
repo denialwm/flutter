@@ -11,6 +11,17 @@ if (is_fuchsia) {
   import("//flutter/tools/fuchsia/gn-sdk/src/gn_configs.gni")
 }
 
+# Headless release-path damage/cache tests; no Skia canvas test harness.
+executable("window_damage_unittests") {
+  testonly = true
+  sources = [ "compositor_context_unittests.cc" ]
+  deps = [
+    ":flow",
+    "$dart_src/runtime:libdart_jit",
+    "//flutter/third_party/googletest:gtest_main",
+  ]
+}
+
 source_set("flow") {
   sources = [
     "compositor_context.cc",

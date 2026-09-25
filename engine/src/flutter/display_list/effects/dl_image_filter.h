@@ -84,6 +84,12 @@ class DlImageFilter : public DlAttribute<DlImageFilter, DlImageFilterType> {
 
   virtual const DlGlassImageFilter* asGlass() const { return nullptr; }
 
+  // Denial's alpha-threshold filters are window materials. When used as an
+  // ungrouped backdrop, their source is the window's pixel rectangle with
+  // clamp-to-edge sampling, not an expanded region of the desktop. Ordinary
+  // image filters and explicitly shared backdrop inputs keep their semantics.
+  bool is_window_backdrop() const;
+
   // Return a DlDilateImageFilter pointer to this object iff it is a Dilate
   // type of ImageFilter, otherwise return nullptr.
   virtual const DlDilateImageFilter* asDilate() const { return nullptr; }

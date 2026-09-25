@@ -16,9 +16,49 @@
 #include "impeller/entity/contents/filters/filter_contents.h"
 #include "impeller/entity/contents/filters/glass_filter_contents.h"
 #include "impeller/entity/contents/filters/inputs/filter_input.h"
+#include "impeller/entity/contents/texture_contents.h"
 #include "impeller/renderer/context.h"
 
 namespace impeller {
+
+std::optional<Snapshot> CropWindowBackdrop(
+    const ContentContext& renderer,
+    const std::shared_ptr<Texture>& texture,
+    const Rect& window_bounds) {
+  const auto intersection =
+      Rect::RoundOut(window_bounds)
+          .Intersection(Rect::MakeSize(texture->GetSize()));
+  if (!intersection || intersection->IsEmpty()) {
+    return std::nullopt;
+  }
+  const Rect bounds = *intersection;
+  auto commands = renderer.GetContext()->CreateCommandBuffer();
+  if (!commands) {
+    return std::nullopt;
+  }
+  auto target = renderer.MakeSubpass(
+      "Denial Window Backdrop Source", ISize::Ceil(bounds.GetSize()), commands,
+      [&](const ContentContext& context, RenderPass& pass) {
+        auto contents =
+            TextureContents::MakeRect(Rect::MakeSize(bounds.GetSize()));
+        contents->SetTexture(texture);
+        contents->SetSourceRect(bounds);
+        contents->SetStencilEnabled(false);
+        Entity copy;
+        copy.SetContents(std::move(contents));
+        copy.SetBlendMode(BlendMode::kSrc);
+        return copy.Render(context, pass);
+      },
+      /*msaa_enabled=*/false, /*depth_stencil_enabled=*/false);
+  if (!target.ok() ||
+      !renderer.GetContext()->EnqueueCommandBuffer(std::move(commands))) {
+    return std::nullopt;
+  }
+  return Snapshot{
+      .texture = target.value().GetRenderTargetTexture(),
+      .transform = Matrix::MakeTranslation(bounds.GetOrigin()),
+  };
+}
 
 std::shared_ptr<FilterContents> WrapInput(const ContentContext& renderer,
                                           const flutter::DlImageFilter* filter,

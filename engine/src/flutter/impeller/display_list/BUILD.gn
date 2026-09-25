@@ -4,6 +4,23 @@
 
 import("//flutter/impeller/tools/impeller.gni")
 
+# Mock GL only: no display, window, pixel readback, or playground.
+impeller_component("window_backdrop_unittests") {
+  target_type = "executable"
+  testonly = true
+  sources = [
+    "../renderer/backend/gles/test/mock_gles.cc",
+    "../renderer/backend/gles/test/mock_gles.h",
+    "window_backdrop_unittests.cc",
+  ]
+  deps = [
+    ":display_list",
+    "../renderer/backend/gles",
+    "//flutter/third_party/googletest:gmock",
+    "//flutter/third_party/googletest:gtest_main",
+  ]
+}
+
 impeller_component("skia_conversions") {
   sources = [
     "skia_conversions.cc",
