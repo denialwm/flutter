@@ -126,10 +126,40 @@ class IMockGLESImpl {
                                      const void* indices,
                                      GLsizei instancecount) {}
   virtual void VertexAttribDivisor(GLuint index, GLuint divisor) {}
+  virtual void UseProgram(GLuint program) {}
+  virtual void Enable(GLenum cap) {}
+  virtual void Disable(GLenum cap) {}
+  virtual void Scissor(GLint x, GLint y, GLsizei width, GLsizei height) {}
+  virtual void EnableVertexAttribArray(GLuint index) {}
+  virtual void DisableVertexAttribArray(GLuint index) {}
+  virtual void VertexAttribPointer(GLuint index,
+                                   GLint size,
+                                   GLenum type,
+                                   GLboolean normalized,
+                                   GLsizei stride,
+                                   const void* pointer) {}
 };
 
 class MockGLESImpl : public IMockGLESImpl {
  public:
+  MOCK_METHOD(void, UseProgram, (GLuint program), (override));
+  MOCK_METHOD(void, Enable, (GLenum cap), (override));
+  MOCK_METHOD(void, Disable, (GLenum cap), (override));
+  MOCK_METHOD(void,
+              Scissor,
+              (GLint x, GLint y, GLsizei width, GLsizei height),
+              (override));
+  MOCK_METHOD(void, EnableVertexAttribArray, (GLuint index), (override));
+  MOCK_METHOD(void, DisableVertexAttribArray, (GLuint index), (override));
+  MOCK_METHOD(void,
+              VertexAttribPointer,
+              (GLuint index,
+               GLint size,
+               GLenum type,
+               GLboolean normalized,
+               GLsizei stride,
+               const void* pointer),
+              (override));
   MOCK_METHOD(void,
               DeleteTextures,
               (GLsizei size, const GLuint* queries),

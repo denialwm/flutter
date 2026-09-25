@@ -419,6 +419,34 @@ void mockVertexAttribDivisor(GLuint index, GLuint divisor) {
 static_assert(CheckSameSignature<decltype(mockVertexAttribDivisor),  //
                                  decltype(glVertexAttribDivisor)>::value);
 
+void mockUseProgram(GLuint program) {
+  CallMockMethod(&IMockGLESImpl::UseProgram, program);
+}
+void mockEnable(GLenum cap) {
+  CallMockMethod(&IMockGLESImpl::Enable, cap);
+}
+void mockDisable(GLenum cap) {
+  CallMockMethod(&IMockGLESImpl::Disable, cap);
+}
+void mockScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
+  CallMockMethod(&IMockGLESImpl::Scissor, x, y, width, height);
+}
+void mockEnableVertexAttribArray(GLuint index) {
+  CallMockMethod(&IMockGLESImpl::EnableVertexAttribArray, index);
+}
+void mockDisableVertexAttribArray(GLuint index) {
+  CallMockMethod(&IMockGLESImpl::DisableVertexAttribArray, index);
+}
+void mockVertexAttribPointer(GLuint index,
+                             GLint size,
+                             GLenum type,
+                             GLboolean normalized,
+                             GLsizei stride,
+                             const void* pointer) {
+  CallMockMethod(&IMockGLESImpl::VertexAttribPointer, index, size, type,
+                 normalized, stride, pointer);
+}
+
 // static
 std::shared_ptr<MockGLES> MockGLES::Init(
     std::unique_ptr<MockGLESImpl> impl,
@@ -463,6 +491,21 @@ std::shared_ptr<MockGLES> MockGLES::Init(
 }
 
 const ProcTableGLES::Resolver kMockResolverGLES = [](const char* name) {
+  if (strcmp(name, "glUseProgram") == 0) {
+    return reinterpret_cast<void*>(mockUseProgram);
+  } else if (strcmp(name, "glEnable") == 0) {
+    return reinterpret_cast<void*>(mockEnable);
+  } else if (strcmp(name, "glDisable") == 0) {
+    return reinterpret_cast<void*>(mockDisable);
+  } else if (strcmp(name, "glScissor") == 0) {
+    return reinterpret_cast<void*>(mockScissor);
+  } else if (strcmp(name, "glEnableVertexAttribArray") == 0) {
+    return reinterpret_cast<void*>(mockEnableVertexAttribArray);
+  } else if (strcmp(name, "glDisableVertexAttribArray") == 0) {
+    return reinterpret_cast<void*>(mockDisableVertexAttribArray);
+  } else if (strcmp(name, "glVertexAttribPointer") == 0) {
+    return reinterpret_cast<void*>(mockVertexAttribPointer);
+  }
   if (strcmp(name, "glPopDebugGroupKHR") == 0) {
     return reinterpret_cast<void*>(&mockPopDebugGroupKHR);
   } else if (strcmp(name, "glPushDebugGroupKHR") == 0) {

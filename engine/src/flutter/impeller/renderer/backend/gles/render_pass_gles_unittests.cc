@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 #include <memory>
-#include "flutter/testing/testing.h"  // IWYU pragma: keep
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "impeller/core/device_buffer.h"
@@ -311,6 +310,16 @@ TEST(RenderPassGLESTest, ResolvingMultisampleTextureCachesResolveFBO) {
 
 class RenderPassGLESCommandTest : public ::testing::Test {
  protected:
+  static std::shared_ptr<PipelineGLES> CreatePipeline(
+      const std::shared_ptr<ReactorGLES>& reactor,
+      const PipelineDescriptor& descriptor) {
+    auto pipeline = std::shared_ptr<PipelineGLES>(new PipelineGLES(
+        reactor, std::weak_ptr<PipelineLibrary>(), descriptor,
+        std::make_shared<UniqueHandleGLES>(
+            reactor, reactor->CreateHandle(HandleType::kProgram))));
+    pipeline->buffer_bindings_ = std::make_unique<BufferBindingsGLES>();
+    return pipeline;
+  }
   // Builds a mock OpenGL ES context with a render pass and a minimal
   // pipeline. The [resolver] controls which GL entry points the backend can
   // see, which is how a caller selects the hardware or emulated instancing
@@ -380,6 +389,10 @@ TEST_F(RenderPassGLESCommandTest, ProgramAndScissorCachedAcrossCommands) {
     ASSERT_TRUE(ctx.render_pass->Draw().ok());
   }
   EXPECT_CALL(ctx.mock_gl_impl_ref, UseProgram(_)).Times(1);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Enable(::testing::Ne(GL_SCISSOR_TEST)))
+      .Times(::testing::AnyNumber());
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Disable(::testing::Ne(GL_SCISSOR_TEST)))
+      .Times(::testing::AnyNumber());
   EXPECT_CALL(ctx.mock_gl_impl_ref, Enable(GL_SCISSOR_TEST)).Times(1);
   // One pass reset, then the final command removes the scissor.
   EXPECT_CALL(ctx.mock_gl_impl_ref, Disable(GL_SCISSOR_TEST)).Times(2);
@@ -392,12 +405,7 @@ TEST_F(RenderPassGLESCommandTest, ProgramAndScissorCachedAcrossCommands) {
 
 TEST_F(RenderPassGLESCommandTest, ProgramReboundWhenPipelineChanges) {
   auto ctx = CreateRenderPassGLESContext();
-  auto other = std::shared_ptr<PipelineGLES>(new PipelineGLES(
-      ctx.reactor, std::weak_ptr<PipelineLibrary>(),
-      ctx.pipeline->GetDescriptor(),
-      std::make_shared<UniqueHandleGLES>(
-          ctx.reactor, ctx.reactor->CreateHandle(HandleType::kProgram))));
-  other->buffer_bindings_ = std::make_unique<BufferBindingsGLES>();
+  auto other = CreatePipeline(ctx.reactor, ctx.pipeline->GetDescriptor());
   for (const auto& pipeline :
        {ctx.pipeline, ctx.pipeline, other, other, ctx.pipeline}) {
     ctx.render_pass->SetPipeline(PipelineRef(pipeline));
@@ -424,7 +432,7 @@ TEST_F(RenderPassGLESCommandTest, ReusedAttributesStillUploadDirtyBuffers) {
       .columns = 1,
       .offset = 0,
   };
-  ASSERT_TRUE(ctx.pipeline->buffer_bindings_->RegisterVertexStageInput(
+  ASSERT_TRUE(ctx.pipeline->GetBufferBindings()->RegisterVertexStageInput(
       ctx.mock_gl->GetProcTable(), {position},
       {ShaderStageBufferLayout{
           .stride = 8, .binding = 0, .input_rate = VertexInputRate::kVertex}}));
