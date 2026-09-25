@@ -430,8 +430,10 @@ TEST_F(RenderPassGLESCommandTest, ScissorCachedOnlyWithinRenderPass) {
 
   // A wrapped FBO uses the opposite Y conversion from an offscreen pass.
   TextureDescriptor wrapped_desc;
+  wrapped_desc.storage_mode = StorageMode::kDevicePrivate;
   wrapped_desc.format = PixelFormat::kR8G8B8A8UNormInt;
   wrapped_desc.size = {100, 100};
+  wrapped_desc.usage = TextureUsage::kRenderTarget;
   RenderTarget wrapped_target;
   ColorAttachment wrapped_color;
   wrapped_color.texture = TextureGLES::WrapFBO(ctx.reactor, wrapped_desc, 1);
