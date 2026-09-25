@@ -16,6 +16,7 @@
 #include "flutter/flow/layers/layer_tree.h"
 #include "flutter/flow/layers/texture_layer.h"
 #include "flutter/flow/layers/transform_layer.h"
+#include "flutter/flow/layers/window_surface_layer.h"
 #include "gtest/gtest.h"
 
 namespace flutter {
@@ -591,7 +592,62 @@ TEST(FrameDamageTest,
   }
 }
 
+TEST(FrameDamageTest, ExplicitWindowKeepsVisibleTextureCacheDependencies) {
+  for (bool overlap : {false, true}) {
+    for (bool fresh_tree : {false, true}) {
+      SCOPED_TRACE(overlap);
+      SCOPED_TRACE(fresh_tree);
+      const auto lower_rect = DlRect::MakeLTRB(0, 0, overlap ? 65 : 45, 100);
+      const auto upper_rect = DlRect::MakeLTRB(55, 2, 96, 98);
+      auto lower = std::make_shared<WindowSurfaceLayer>(
+          DlWindowSurfaceFilter::Style{lower_rect, lower_rect, 8,
+                                       DlColor::kRed()},
+          nullptr, 7, DlRect::MakeLTRB(-10, -10, 90, 110), DlMatrix(),
+          DlImageSampling::kLinear, 1);
+      auto upper = std::make_shared<WindowSurfaceLayer>(
+          DlWindowSurfaceFilter::Style{upper_rect, upper_rect.Expand(-2), 8,
+                                       DlColor::kRed()},
+          DlBlurImageFilter::Make(6, 6, DlTileMode::kClamp, std::nullopt, 1,
+                                  0.65f),
+          8, DlRect::MakeLTRB(40, -10, 110, 110), DlMatrix(),
+          DlImageSampling::kLinear, 1);
+      auto make_tree = [&] {
+        auto root = std::make_shared<ContainerLayer>();
+        root->Add(lower);
+        root->Add(upper);
+        return std::make_unique<LayerTree>(root, kFrameSize);
+      };
+      auto first = make_tree();
+      FrameDamage initial;
+      initial.ComputeDamageRegion(*first, false, true);
+      ASSERT_EQ(first->backdrop_filter_caches().size(), 1u);
+      const auto state = first->backdrop_filter_caches().front().state;
+      const auto token = state->token();
+      EXPECT_EQ(first->backdrop_filter_caches().front().input_texture_ids,
+                overlap ? std::vector<int64_t>{7} : std::vector<int64_t>{});
+      auto next = fresh_tree ? make_tree() : nullptr;
+      LayerTree& tree = next ? *next : *first;
+      const std::unordered_set<int64_t> own_dirty = {8};
+      FrameDamage own;
+      own.SetPreviousLayerTree(first.get());
+      own.SetExistingDamage(DlRegion());
+      own.SetDirtyTextureIds(&own_dirty);
+      own.ComputeDamageRegion(tree, false, true);
+      EXPECT_EQ(state->token(), token);
+      const std::unordered_set<int64_t> lower_dirty = {7};
+      FrameDamage underneath;
+      underneath.SetPreviousLayerTree(&tree);
+      underneath.SetExistingDamage(DlRegion());
+      underneath.SetDirtyTextureIds(&lower_dirty);
+      underneath.ComputeDamageRegion(tree, false, true);
+      EXPECT_EQ(state->token() != token, overlap);
+    }
+  }
+}
+
 TEST(FrameDamageTest, FreshTreeWindowBackdropIgnoresClippedTextureDamage) {
+  // Existing generic-backdrop regression tests below remain independent of
+  // the explicit window primitive's own cache dependency tests.
   for (bool glass : {false, true}) {
     for (bool overlap : {false, true}) {
       SCOPED_TRACE(glass);
@@ -664,6 +720,7 @@ TEST(FrameDamageTest, FreshTreeWindowBackdropIgnoresClippedTextureDamage) {
 }
 
 TEST(FrameDamageTest, ClippedTextureDamagePreservesOldClipOnChangeAndRemoval) {
+  // Old-clip damage remains a separate invariant from window materials.
   const DlRect old_bounds = DlRect::MakeLTRB(10.25f, 10.5f, 40.75f, 40.5f);
   for (const DlRect new_bounds : {
            DlRect::MakeLTRB(20.25f, 20.5f, 30.75f, 30.5f),  // Shrink.

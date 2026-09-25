@@ -199,6 +199,11 @@ sk_sp<SkImageFilter> ToSk(const DlImageFilter* filter) {
                                   blur_filter->sigma_y(),
                                   ToSk(blur_filter->tile_mode()), nullptr);
     }
+    case DlImageFilterType::kWindowSurface: {
+      FML_LOG(FATAL)
+          << "WindowSurface requires Denial's Impeller GLES renderer";
+      return nullptr;
+    }
     case DlImageFilterType::kGlass: {
       const DlGlassImageFilter* glass_filter = filter->asGlass();
       FML_DCHECK(glass_filter != nullptr);

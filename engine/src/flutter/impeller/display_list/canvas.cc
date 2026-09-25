@@ -2149,6 +2149,20 @@ void Canvas::SaveLayer(const Paint& paint,
                        std::optional<int64_t> backdrop_id,
                        bool content_is_single_sample_compatible) {
   TRACE_EVENT0("flutter", "Canvas::saveLayer");
+  const auto* window_filter =
+      backdrop_filter ? backdrop_filter->asWindowSurface() : nullptr;
+  std::shared_ptr<CanvasStackEntry::WindowState> window;
+  if (window_filter) {
+    window = std::make_shared<CanvasStackEntry::WindowState>();
+    window->style = window_filter->style();
+    // Decorations extend the draw by an AA fringe, but the material's input
+    // and persistent-cache coverage remain exactly the window rectangle.
+    bounds = window->style.bounds;
+    window->transform = transform_stack_.back().transform;
+    window->opacity =
+        paint.color.alpha * transform_stack_.back().distributed_opacity;
+    backdrop_filter = window_filter->backdrop().get();
+  }
   if (IsSkipping()) {
     return SkipUntilMatchingRestore(total_content_depth);
   }
@@ -2184,7 +2198,7 @@ void Canvas::SaveLayer(const Paint& paint,
     }
   }
 
-  if (can_distribute_opacity && !backdrop_filter &&
+  if (can_distribute_opacity && !backdrop_filter && !window &&
       Paint::CanApplyOpacityPeephole(paint) &&
       bounds_promise != ContentBoundsPromise::kMayClipContents) {
     Save(total_content_depth);
@@ -2195,6 +2209,17 @@ void Canvas::SaveLayer(const Paint& paint,
   std::shared_ptr<FilterContents> filter_contents = paint.WithImageFilter(
       renderer_, Rect(), transform_stack_.back().transform,
       Entity::RenderingMode::kSubpassPrependSnapshotTransform);
+  if (window && !backdrop_filter && window_filter->direct_texture()) {
+    ++current_depth_;  // The explicit window SaveLayer's reserved depth.
+    Save(total_content_depth);
+    transform_stack_.back().distributed_opacity = 1;
+    transform_stack_.back().window = std::move(window);
+    return;
+  }
+
+  // WindowSurface's two input contracts select a physical plan explicitly.
+  // No rounded-clip/coverage/sampling heuristics participate in this decision.
+  const bool direct_window = window && window_filter->direct_texture();
 
   std::optional<Rect> maybe_subpass_coverage = ComputeSaveLayerCoverage(
       bounds.value_or(Rect::MakeMaximum()),
@@ -2300,9 +2325,9 @@ void Canvas::SaveLayer(const Paint& paint,
   const uint32_t direct_plan_rejections =
       GetBackdropLayerDirectRejections(direct_plan_inputs);
   const bool can_render_backdrop_directly =
-      direct_plan_rejections == 0u &&
-      (!backdrop_alpha_threshold.has_value() ||
-       backdrop_alpha_threshold_is_single_surface);
+      direct_window || (!window && direct_plan_rejections == 0u &&
+                        (!backdrop_alpha_threshold.has_value() ||
+                         backdrop_alpha_threshold_is_single_surface));
   if (backdrop_filter) {
     RecordBackdropDirectPredicate(direct_plan_rejections);
   }
@@ -2540,6 +2565,10 @@ void Canvas::SaveLayer(const Paint& paint,
   // When applying a save layer, absorb any pending distributed opacity.
   Paint paint_copy = paint;
   paint_copy.color.alpha *= transform_stack_.back().distributed_opacity;
+  if (window) {
+    paint_copy.color.alpha = 1;
+    window->threshold = backdrop_alpha_threshold.value_or(0);
+  }
   transform_stack_.back().distributed_opacity = 1.0;
 
   if (can_render_backdrop_directly &&
@@ -2616,6 +2645,17 @@ void Canvas::SaveLayer(const Paint& paint,
     // texture consumes it through BackdropSurfaceContents; every other child
     // causes the exact old draw to flush first.
     Save(total_content_depth);
+    if (direct_window) {
+      if (resolved_backdrop_entity && resolved_backdrop_contents) {
+        window->backdrop = {
+            resolved_backdrop_contents,
+            window->transform.Invert() *
+                Matrix::MakeTranslation(Vector3(GetGlobalPassPosition())) *
+                resolved_backdrop_entity->GetTransform()};
+      }
+      transform_stack_.back().window = std::move(window);
+      return;
+    }
     if (resolved_backdrop_entity.has_value() &&
         resolved_backdrop_contents != nullptr &&
         renderer_.GetContext()->GetBackendType() ==
@@ -2646,8 +2686,8 @@ void Canvas::SaveLayer(const Paint& paint,
 
   std::optional<SaveLayerState::AlphaThresholdBackdrop>
       alpha_threshold_backdrop;
-  if (backdrop_alpha_threshold.has_value() && !restore_has_effects &&
-      paint.blend_mode == BlendMode::kSrc &&
+  if ((window || backdrop_alpha_threshold.has_value()) &&
+      !restore_has_effects && paint.blend_mode == BlendMode::kSrc &&
       renderer_.GetContext()->GetBackendType() ==
           Context::BackendType::kOpenGLES) {
     std::optional<Entity> resolved_entity;
@@ -2675,7 +2715,7 @@ void Canvas::SaveLayer(const Paint& paint,
       alpha_threshold_backdrop = SaveLayerState::AlphaThresholdBackdrop{
           .entity = std::move(resolved_entity.value()),
           .contents = std::move(resolved_contents),
-          .threshold = backdrop_alpha_threshold.value(),
+          .threshold = backdrop_alpha_threshold.value_or(0),
       };
     }
   }
@@ -2720,7 +2760,7 @@ void Canvas::SaveLayer(const Paint& paint,
   save_layer_state_.push_back(SaveLayerState{
       paint_copy, subpass_coverage.Shift(-coverage_origin_adjustment),
       backdrop_filter != nullptr, std::move(alpha_threshold_backdrop),
-      texture_region});
+      texture_region, window});
 
   render_passes_.back().GetInlinePassContext()->GetRenderPass()->SetLabel(
       backdrop_filter ? "Denial Backdrop Layer Color"
@@ -2744,7 +2784,7 @@ void Canvas::SaveLayer(const Paint& paint,
   // the subpass will affect in the parent pass.
   clip_coverage_stack_.PushSubpass(subpass_coverage, GetClipHeight());
 
-  if (save_layer_state_.back().alpha_threshold_backdrop.has_value()) {
+  if (window || save_layer_state_.back().alpha_threshold_backdrop.has_value()) {
     return;
   }
 
@@ -2811,6 +2851,19 @@ bool Canvas::Restore() {
   FML_DCHECK(current_depth_ <= transform_stack_.back().clip_depth)
       << current_depth_ << " <=? " << transform_stack_.back().clip_depth;
   current_depth_ = transform_stack_.back().clip_depth;
+  if (const auto& direct = transform_stack_.back().window;
+      direct && !direct->drawn && !IsSkipping()) {
+    Entity frame;
+    frame.SetClipDepth(current_depth_);
+    frame.SetBlendMode(BlendMode::kSrcOver);
+    frame.SetTransform(
+        Matrix::MakeTranslation(Vector3(-GetGlobalPassPosition())) *
+        direct->transform);
+    frame.SetContents(std::make_shared<WindowSurfaceContents>(
+        direct->style, WindowSurfaceContents::Input{}, direct->backdrop,
+        direct->threshold, direct->opacity));
+    frame.Render(renderer_, GetCurrentRenderPass());
+  }
 
   if (IsSkipping()) {
     transform_stack_.pop_back();
@@ -2860,6 +2913,35 @@ bool Canvas::Restore() {
               .Round();
     }
 
+    // The explicit composed-input plan has the same final shader as a
+    // direct imported image. The intermediate only composes child content.
+    if (save_layer_state.window) {
+      const auto& state = *save_layer_state.window;
+      const Matrix window_to_pass =
+          Matrix::MakeTranslation(Vector3(-global_pass_position)) *
+          state.transform;
+      WindowSurfaceContents::Input backdrop;
+      if (save_layer_state.alpha_threshold_backdrop) {
+        const auto& alpha = *save_layer_state.alpha_threshold_backdrop;
+        backdrop = {alpha.contents,
+                    window_to_pass.Invert() * alpha.entity.GetTransform()};
+      }
+      Entity element;
+      element.SetClipDepth(++current_depth_);
+      element.SetTransform(window_to_pass);
+      element.SetBlendMode(BlendMode::kSrcOver);
+      element.SetContents(std::make_shared<WindowSurfaceContents>(
+          state.style,
+          WindowSurfaceContents::Input{
+              std::static_pointer_cast<TextureContents>(contents),
+              window_to_pass.Invert() *
+                  Matrix::MakeTranslation(Vector3(subpass_texture_position))},
+          std::move(backdrop), state.threshold, state.opacity));
+      element.Render(renderer_, GetCurrentRenderPass());
+      clip_coverage_stack_.PopSubpass();
+      transform_stack_.pop_back();
+      return true;
+    }
     if (save_layer_state.alpha_threshold_backdrop.has_value()) {
       auto alpha_threshold_backdrop =
           std::move(save_layer_state.alpha_threshold_backdrop.value());
@@ -3343,7 +3425,23 @@ void Canvas::AddRenderEntityToCurrentPass(
       Matrix::MakeTranslation(Vector3(-GetGlobalPassPosition())) *
       entity.GetTransform());
   entity.SetInheritedOpacity(transform_stack_.back().distributed_opacity);
-  if (!TryBackdropSurfaceComposite(entity, texture_contents)) {
+  auto direct_window = transform_stack_.back().window;
+  if (direct_window && texture_contents) {
+    FML_CHECK(!direct_window->drawn)
+        << "WindowSurface direct input must be one image";
+    const Matrix window_to_pass =
+        Matrix::MakeTranslation(Vector3(-GetGlobalPassPosition())) *
+        direct_window->transform;
+    entity.SetContents(std::make_shared<WindowSurfaceContents>(
+        direct_window->style,
+        WindowSurfaceContents::Input{
+            texture_contents, window_to_pass.Invert() * entity.GetTransform()},
+        direct_window->backdrop, direct_window->threshold,
+        direct_window->opacity));
+    entity.SetTransform(window_to_pass);
+    entity.SetBlendMode(BlendMode::kSrcOver);
+    direct_window->drawn = true;
+  } else if (!TryBackdropSurfaceComposite(entity, texture_contents)) {
     if (FindPendingBackdropComposite() != nullptr) {
       FlushPendingBackdropComposite();
     } else {

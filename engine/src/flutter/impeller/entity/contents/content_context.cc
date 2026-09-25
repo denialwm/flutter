@@ -317,6 +317,8 @@ struct ContentContext::Pipelines {
 // Web doesn't support external texture OpenGL extensions
 #if defined(IMPELLER_ENABLE_OPENGLES) && !defined(FML_OS_EMSCRIPTEN)
   Variants<BackdropSurfaceCompositePipeline> backdrop_surface_composite;
+  Variants<WindowSurfacePipeline> window_surface;
+  Variants<WindowSurfaceTexturePipeline> window_surface_texture;
   Variants<BackdropSurfaceCompositeTexturePipeline>
       backdrop_surface_composite_texture;
   Variants<TiledTextureExternalPipeline> tiled_texture_external;
@@ -879,6 +881,9 @@ ContentContext::ContentContext(
     !defined(FML_OS_EMSCRIPTEN)
     // GLES only shader that is unsupported on macOS and web.
     pipelines_->backdrop_surface_composite.CreateDefault(*context_, options);
+    pipelines_->window_surface.CreateDefault(*context_, options_trianglestrip);
+    pipelines_->window_surface_texture.CreateDefault(*context_,
+                                                     options_trianglestrip);
     pipelines_->backdrop_surface_composite_texture.CreateDefault(*context_,
                                                                  options);
     pipelines_->tiled_texture_external.CreateDefault(*context_, options);
@@ -1732,6 +1737,14 @@ PipelineRef ContentContext::GetLinePipeline(ContentContextOptions opts) const {
 #ifdef IMPELLER_ENABLE_OPENGLES
 
 #if !defined(FML_OS_EMSCRIPTEN)
+PipelineRef ContentContext::GetWindowSurfacePipeline(
+    ContentContextOptions opts) const {
+  return GetPipeline(this, pipelines_->window_surface, opts);
+}
+PipelineRef ContentContext::GetWindowSurfaceTexturePipeline(
+    ContentContextOptions opts) const {
+  return GetPipeline(this, pipelines_->window_surface_texture, opts);
+}
 PipelineRef ContentContext::GetBackdropSurfaceCompositePipeline(
     ContentContextOptions opts) const {
   FML_DCHECK(GetContext()->GetBackendType() == Context::BackendType::kOpenGLES);

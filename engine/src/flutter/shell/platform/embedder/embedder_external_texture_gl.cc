@@ -46,10 +46,8 @@ EmbedderExternalTextureGL::EmbedderExternalTextureGL(
 EmbedderExternalTextureGL::~EmbedderExternalTextureGL() = default;
 
 // |flutter::Texture|
-void EmbedderExternalTextureGL::Paint(PaintContext& context,
-                                      const DlRect& bounds,
-                                      bool freeze,
-                                      const DlImageSampling sampling) {
+void EmbedderExternalTextureGL::PrepareImage(PaintContext& context,
+                                             const DlRect& bounds) {
   if (last_image_ == nullptr) {
     last_image_ =
         ResolveTexture(Id(),                                                 //
@@ -96,7 +94,43 @@ void EmbedderExternalTextureGL::Paint(PaintContext& context,
       }
     }
   }
+}
 
+void EmbedderExternalTextureGL::PaintWindow(PaintContext& context,
+                                            const DlRect& texture_bounds,
+                                            const DlMatrix& texture_transform,
+                                            const DlWindowSurfaceFilter& window,
+                                            std::optional<int64_t> backdrop_id,
+                                            DlImageSampling sampling,
+                                            DlScalar surface_opacity) {
+  PrepareImage(context, texture_bounds);
+  // Some mobile clients use the embedder's content-inset presentation, which
+  // paints a sampled backing strip as well as the client. That is explicitly
+  // a composed input, not an attempted direct draw that can silently decline.
+  const bool direct = presentation_.width <= 0;
+  const DlWindowSurfaceFilter material(window.style(), window.backdrop(),
+                                       direct);
+  DlPaint restore = context.paint ? *context.paint : DlPaint();
+  restore.setBlendMode(DlBlendMode::kSrc);
+  context.canvas->SaveLayer(window.style().bounds, &restore, &material,
+                            backdrop_id);
+  if (!direct) {
+    context.canvas->ClipRect(window.style().content_bounds);
+  }
+  context.canvas->Transform(texture_transform);
+  DlPaint surface;
+  surface.setOpacity(surface_opacity);
+  auto child = context;
+  child.paint = &surface;
+  Paint(child, texture_bounds, false, sampling);
+  context.canvas->Restore();
+}
+
+void EmbedderExternalTextureGL::Paint(PaintContext& context,
+                                      const DlRect& bounds,
+                                      bool freeze,
+                                      const DlImageSampling sampling) {
+  PrepareImage(context, bounds);
   DlCanvas* canvas = context.canvas;
   const DlPaint* paint = context.paint;
 

@@ -78,6 +78,9 @@
 #include "impeller/entity/backdrop_surface_composite_texture.frag.h"
 #include "impeller/entity/texture_downsample_gles.frag.h"
 #include "impeller/entity/tiled_texture_fill_external.frag.h"
+#include "impeller/entity/window_surface.frag.h"
+#include "impeller/entity/window_surface.vert.h"
+#include "impeller/entity/window_surface_texture.frag.h"
 #endif  // IMPELLER_ENABLE_OPENGLES
 
 // TODO(gaaclarke): These should be split up into different files.
@@ -177,6 +180,11 @@ using YUVToRGBFilterPipeline = RenderPipelineHandle<FilterPositionVertexShader, 
 
 // Web doesn't support external texture OpenGL extensions
 #if !defined(FML_OS_EMSCRIPTEN)
+using WindowSurfacePipeline = RenderPipelineHandle<WindowSurfaceVertexShader,
+                                                   WindowSurfaceFragmentShader>;
+using WindowSurfaceTexturePipeline =
+    RenderPipelineHandle<WindowSurfaceVertexShader,
+                         WindowSurfaceTextureFragmentShader>;
 using BackdropSurfaceCompositePipeline =
     RenderPipelineHandle<BackdropSurfaceCompositeVertexShader,
                          BackdropSurfaceCompositeFragmentShader>;

@@ -300,6 +300,7 @@ typedef CanvasPath Path;
   V(SceneBuilder, build)                         \
   V(SceneBuilder, pop)                           \
   V(SceneBuilder, pushBackdropFilter)            \
+  V(SceneBuilder, pushWindowSurface)             \
   V(SceneBuilder, pushClipPath)                  \
   V(SceneBuilder, pushClipRect)                  \
   V(SceneBuilder, pushClipRRect)                 \

@@ -22,6 +22,7 @@
 #include "flutter/flow/layers/shader_mask_layer.h"
 #include "flutter/flow/layers/texture_layer.h"
 #include "flutter/flow/layers/transform_layer.h"
+#include "flutter/flow/layers/window_surface_layer.h"
 #include "flutter/fml/build_config.h"
 #include "flutter/lib/ui/compositing/scene.h"
 #include "flutter/lib/ui/floating_point.h"
@@ -55,6 +56,34 @@ void SceneBuilder::pushTransform(Dart_Handle layer_handle,
   }
 }
 
+void SceneBuilder::pushWindowSurface(
+    Dart_Handle layer_handle,
+    Dart_Handle geometry_handle,
+    ImageFilter* backdrop,
+    int64_t texture_id,
+    int64_t frame_color,
+    int sampling,
+    const fml::RefPtr<EngineLayer>& old_layer) {
+  tonic::Float64List geometry(geometry_handle);
+  FML_CHECK(geometry.num_elements() == 30);
+  const auto g = [&](size_t i) { return SafeNarrow(geometry[i]); };
+  const DlWindowSurfaceFilter::Style style{
+      DlRect::MakeLTRB(g(0), g(1), g(2), g(3)),
+      DlRect::MakeLTRB(g(4), g(5), g(6), g(7)), g(8), DlColor(frame_color)};
+  const auto matrix = DlMatrix::MakeColumn(
+      g(14), g(15), g(16), g(17), g(18), g(19), g(20), g(21), g(22), g(23),
+      g(24), g(25), g(26), g(27), g(28), g(29));
+  auto layer = std::make_shared<WindowSurfaceLayer>(
+      style, backdrop ? backdrop->filter(DlTileMode::kClamp) : nullptr,
+      texture_id, DlRect::MakeLTRB(g(9), g(10), g(11), g(12)), matrix,
+      ImageFilter::SamplingFromIndex(sampling), g(13));
+  geometry.Release();
+  PushLayer(layer);
+  EngineLayer::MakeRetained(layer_handle, layer);
+  if (old_layer && old_layer->Layer()) {
+    layer->AssignOldLayer(old_layer->Layer().get());
+  }
+}
 void SceneBuilder::pushOffset(Dart_Handle layer_handle,
                               double dx,
                               double dy,

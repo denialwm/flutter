@@ -387,6 +387,7 @@ void DisplayListBuilder::onSetImageFilter(const DlImageFilter* filter) {
         break;
       }
       case DlImageFilterType::kCompose:
+      case DlImageFilterType::kWindowSurface:
       case DlImageFilterType::kGlass:
       case DlImageFilterType::kLocalMatrix:
       case DlImageFilterType::kColorFilter:
@@ -529,7 +530,8 @@ void DisplayListBuilder::saveLayer(const DlRect& bounds,
     return;
   }
 
-  if (backdrop != nullptr) {
+  if (backdrop != nullptr && (!backdrop->asWindowSurface() ||
+                              backdrop->asWindowSurface()->backdrop())) {
     current_layer().contains_backdrop_filter = true;
   }
 

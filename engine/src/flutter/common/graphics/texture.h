@@ -8,6 +8,7 @@
 #include <map>
 
 #include "flutter/display_list/dl_canvas.h"
+#include "flutter/display_list/effects/image_filters/dl_window_surface_filter.h"
 #include "flutter/fml/macros.h"
 #include "flutter/fml/synchronization/waitable_event.h"
 
@@ -54,6 +55,16 @@ class Texture : public ContextListener {
 
   // Called on raster thread.
   virtual void MarkNewFrameAvailable() = 0;
+
+  // Explicit window input. The generic implementation composes a texture's
+  // paint program; imported GL images implement the direct one-image contract.
+  virtual void PaintWindow(PaintContext& context,
+                           const DlRect& texture_bounds,
+                           const DlMatrix& texture_transform,
+                           const DlWindowSurfaceFilter& window,
+                           std::optional<int64_t> backdrop_id,
+                           DlImageSampling sampling,
+                           DlScalar surface_opacity);
 
   // Called on raster thread.
   virtual void OnTextureUnregistered() = 0;

@@ -10,6 +10,9 @@
 namespace flutter {
 
 bool DlImageFilter::is_window_backdrop() const {
+  if (asWindowSurface()) {
+    return true;
+  }
   if (const auto* blur = asBlur()) {
     return blur->backdrop_alpha_threshold() >= 0;
   }

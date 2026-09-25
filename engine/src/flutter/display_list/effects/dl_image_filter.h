@@ -24,6 +24,7 @@ namespace flutter {
 
 // An enumerated type for the supported ImageFilter operations.
 enum class DlImageFilterType {
+  kWindowSurface,
   kBlur,
   kGlass,
   kDilate,
@@ -36,6 +37,7 @@ enum class DlImageFilterType {
 };
 
 class DlBlurImageFilter;
+class DlWindowSurfaceFilter;
 class DlGlassImageFilter;
 class DlDilateImageFilter;
 class DlErodeImageFilter;
@@ -83,6 +85,9 @@ class DlImageFilter : public DlAttribute<DlImageFilter, DlImageFilterType> {
   virtual const DlBlurImageFilter* asBlur() const { return nullptr; }
 
   virtual const DlGlassImageFilter* asGlass() const { return nullptr; }
+  virtual const DlWindowSurfaceFilter* asWindowSurface() const {
+    return nullptr;
+  }
 
   // Denial's alpha-threshold filters are window materials. When used as an
   // ungrouped backdrop, their source is the window's pixel rectangle with

@@ -14,6 +14,29 @@ Texture::Texture(int64_t id) : id_(id) {}
 
 Texture::~Texture() = default;
 
+void Texture::PaintWindow(PaintContext& context,
+                          const DlRect& texture_bounds,
+                          const DlMatrix& texture_transform,
+                          const DlWindowSurfaceFilter& window,
+                          std::optional<int64_t> backdrop_id,
+                          DlImageSampling sampling,
+                          DlScalar surface_opacity) {
+  DlPaint restore = context.paint ? *context.paint : DlPaint();
+  restore.setBlendMode(DlBlendMode::kSrc);
+  const DlWindowSurfaceFilter composed(window.style(), window.backdrop(),
+                                       false);
+  context.canvas->SaveLayer(window.style().bounds, &restore, &composed,
+                            backdrop_id);
+  context.canvas->ClipRect(window.style().content_bounds);
+  context.canvas->Transform(texture_transform);
+  DlPaint surface;
+  surface.setOpacity(surface_opacity);
+  auto child = context;
+  child.paint = &surface;
+  Paint(child, texture_bounds, false, sampling);
+  context.canvas->Restore();
+}
+
 TextureRegistry::TextureRegistry() = default;
 
 void TextureRegistry::RegisterTexture(const std::shared_ptr<Texture>& texture) {

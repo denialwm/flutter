@@ -317,6 +317,7 @@ class DisplayListGeneralReceiver : public DlOpReceiver {
           RecordByType(DisplayListOpType::kSetPodImageFilter);
           break;
         case DlImageFilterType::kGlass:
+        case DlImageFilterType::kWindowSurface:
         case DlImageFilterType::kCompose:
         case DlImageFilterType::kLocalMatrix:
         case DlImageFilterType::kColorFilter:

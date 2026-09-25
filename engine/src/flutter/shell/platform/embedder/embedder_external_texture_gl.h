@@ -38,6 +38,13 @@ class EmbedderExternalTextureGL : public flutter::Texture {
 
   // |flutter::Texture|
   void OnGrContextCreated() override;
+  void PaintWindow(PaintContext& context,
+                   const DlRect& texture_bounds,
+                   const DlMatrix& texture_transform,
+                   const DlWindowSurfaceFilter& window,
+                   std::optional<int64_t> backdrop_id,
+                   DlImageSampling sampling,
+                   DlScalar surface_opacity) override;
 
   // |flutter::Texture|
   void OnGrContextDestroyed() override;
@@ -55,6 +62,7 @@ class EmbedderExternalTextureGL : public flutter::Texture {
   ExternalTexturePresentationCallback presentation_callback_;
   DenialFlutterExternalTexturePresentation presentation_ = {};
   DlRect background_sample_;
+  void PrepareImage(PaintContext& context, const DlRect& bounds);
 
   sk_sp<DlImage> ResolveTexture(int64_t texture_id,
                                 GrDirectContext* context,

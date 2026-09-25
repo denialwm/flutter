@@ -23,6 +23,7 @@
 #include "impeller/entity/contents/solid_rrect_like_blur_contents.h"
 #include "impeller/entity/contents/text_contents.h"
 #include "impeller/entity/contents/uber_sdf_parameters.h"
+#include "impeller/entity/contents/window_surface_contents.h"
 #include "impeller/entity/entity.h"
 #include "impeller/entity/entity_pass_clip_stack.h"
 #include "impeller/entity/geometry/geometry.h"
@@ -68,6 +69,15 @@ struct DeferredRRectClip {
 };
 
 struct CanvasStackEntry {
+  struct WindowState {
+    flutter::DlWindowSurfaceFilter::Style style;
+    Matrix transform;
+    WindowSurfaceContents::Input backdrop;
+    Scalar threshold = 0;
+    Scalar opacity = 1;
+    bool drawn = false;
+  };
+  std::shared_ptr<WindowState> window;
   Matrix transform;
   uint32_t clip_depth = 0u;
   size_t clip_height = 0u;
@@ -301,9 +311,13 @@ class Canvas {
     // A pooled target may include unused padding. Restore only the original
     // pixel region so allocation granularity cannot expand the visible layer.
     std::optional<ISize> texture_region;
+    std::shared_ptr<CanvasStackEntry::WindowState> window;
   };
 
   // Visible for testing.
+  const RenderPass& GetRenderPassForTesting() const {
+    return GetCurrentRenderPass();
+  }
   bool RequiresReadback() const { return requires_readback_; }
 
   // Whether the current device has the capabilities to blit an offscreen

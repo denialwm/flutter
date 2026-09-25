@@ -1015,6 +1015,12 @@ void FirstPassDispatcher::saveLayer(const DlRect& bounds,
                                     const flutter::SaveLayerOptions options,
                                     const flutter::DlImageFilter* backdrop,
                                     std::optional<int64_t> backdrop_id) {
+  // A disabled window material is still an explicit composition operation,
+  // but it must not request a framebuffer readback or consume an epoch.
+  if (backdrop && backdrop->asWindowSurface() &&
+      !backdrop->asWindowSurface()->backdrop()) {
+    backdrop = nullptr;
+  }
   const bool is_root_layer = save_layer_depth_ == 0u;
   save();
   saved_scope_types_.back() = backdrop == nullptr

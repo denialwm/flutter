@@ -66,6 +66,9 @@ std::shared_ptr<FilterContents> WrapInput(const ContentContext& renderer,
   FML_DCHECK(filter);
 
   switch (filter->type()) {
+    case flutter::DlImageFilterType::kWindowSurface:
+      FML_LOG(FATAL) << "WindowSurface must be consumed by Canvas::SaveLayer";
+      return nullptr;
     case flutter::DlImageFilterType::kBlur: {
       auto blur_filter = filter->asBlur();
       FML_DCHECK(blur_filter);

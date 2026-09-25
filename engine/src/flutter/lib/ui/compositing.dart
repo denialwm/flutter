@@ -238,6 +238,11 @@ class BackdropFilterEngineLayer extends _EngineLayerWrapper {
   BackdropFilterEngineLayer._(super.nativeLayer) : super._();
 }
 
+/// A retained Denial window material and its direct or composed input.
+class WindowSurfaceEngineLayer extends _EngineLayerWrapper {
+  WindowSurfaceEngineLayer._(super.nativeLayer) : super._();
+}
+
 /// An opaque handle to a shader mask engine layer.
 ///
 /// Instances of this class are created by [SceneBuilder.pushShaderMask].
@@ -469,6 +474,30 @@ abstract class SceneBuilder {
     BlendMode blendMode = BlendMode.srcOver,
     BackdropFilterEngineLayer? oldLayer,
     int? backdropId,
+  });
+
+  /// Pushes a window rendered by Denial's dedicated Impeller GLES shader.
+  ///
+  /// A non-negative [textureId] supplies a direct imported client texture;
+  /// leave it at -1 to compose child layers into an input texture. Both input
+  /// contracts use the window shader for the final rounded coverage, frame,
+  /// client transparency and optional cached blur/glass [backdrop] material.
+  /// [frameColor] is the already-composited frame/border color. The interval
+  /// between [bounds] and [contentBounds] defines the frame thickness.
+  /// [textureTransform] maps [textureBounds] into the window's coordinate
+  /// space; it supports Wayland rotations/reflections as well as scaling.
+  WindowSurfaceEngineLayer pushWindowSurface(
+    Rect bounds, {
+    required Rect contentBounds,
+    double radius = 0,
+    Color frameColor = const Color(0x00000000),
+    ImageFilter? backdrop,
+    int textureId = -1,
+    Rect textureBounds = Rect.zero,
+    Float64List? textureTransform,
+    double textureOpacity = 1,
+    FilterQuality filterQuality = FilterQuality.none,
+    WindowSurfaceEngineLayer? oldLayer,
   });
 
   /// Pushes a shader mask operation onto the operation stack.
@@ -930,6 +959,74 @@ base class _NativeSceneBuilder extends NativeFieldWrapperClass1 implements Scene
     _ImageFilter filter,
     double dx,
     double dy,
+    EngineLayer? oldLayer,
+  );
+
+  @override
+  WindowSurfaceEngineLayer pushWindowSurface(
+    Rect bounds, {
+    required Rect contentBounds,
+    double radius = 0,
+    Color frameColor = const Color(0x00000000),
+    ImageFilter? backdrop,
+    int textureId = -1,
+    Rect textureBounds = Rect.zero,
+    Float64List? textureTransform,
+    double textureOpacity = 1,
+    FilterQuality filterQuality = FilterQuality.none,
+    WindowSurfaceEngineLayer? oldLayer,
+  }) {
+    assert(bounds.isFinite && contentBounds.isFinite && radius.isFinite && radius >= 0);
+    assert(textureOpacity >= 0 && textureOpacity <= 1);
+    assert(textureTransform == null || textureTransform.length == 16);
+    assert(_debugCheckCanBeUsedAsOldLayer(oldLayer, 'pushWindowSurface'));
+    final geometry = Float64List(30);
+    geometry.setRange(0, 14, <double>[
+      bounds.left,
+      bounds.top,
+      bounds.right,
+      bounds.bottom,
+      contentBounds.left,
+      contentBounds.top,
+      contentBounds.right,
+      contentBounds.bottom,
+      radius,
+      textureBounds.left,
+      textureBounds.top,
+      textureBounds.right,
+      textureBounds.bottom,
+      textureOpacity,
+    ]);
+    if (textureTransform != null) {
+      geometry.setRange(14, 30, textureTransform);
+    } else {
+      geometry[14] = geometry[19] = geometry[24] = geometry[29] = 1;
+    }
+    final EngineLayer engineLayer = _NativeEngineLayer._();
+    _pushWindowSurface(
+      engineLayer,
+      geometry,
+      backdrop?._toNativeImageFilter(),
+      textureId,
+      frameColor.toARGB32(),
+      filterQuality.index,
+      oldLayer?._nativeLayer,
+    );
+    final layer = WindowSurfaceEngineLayer._(engineLayer);
+    assert(_debugPushLayer(layer));
+    return layer;
+  }
+
+  @Native<Void Function(Pointer<Void>, Handle, Handle, Pointer<Void>, Int64, Int64, Int32, Handle)>(
+    symbol: 'SceneBuilder::pushWindowSurface',
+  )
+  external void _pushWindowSurface(
+    EngineLayer layer,
+    Float64List geometry,
+    _ImageFilter? backdrop,
+    int textureId,
+    int frameColor,
+    int sampling,
     EngineLayer? oldLayer,
   );
 

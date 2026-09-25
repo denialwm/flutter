@@ -45,6 +45,13 @@ class SceneBuilder : public RefCountedDartWrappable<SceneBuilder> {
   void pushTransform(Dart_Handle layer_handle,
                      tonic::Float64List& matrix4,
                      const fml::RefPtr<EngineLayer>& old_layer);
+  void pushWindowSurface(Dart_Handle layer_handle,
+                         Dart_Handle geometry,
+                         ImageFilter* backdrop,
+                         int64_t texture_id,
+                         int64_t frame_color,
+                         int sampling,
+                         const fml::RefPtr<EngineLayer>& old_layer);
   void pushOffset(Dart_Handle layer_handle,
                   double dx,
                   double dy,

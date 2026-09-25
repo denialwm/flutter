@@ -4,9 +4,11 @@
 
 #include "flutter/display_list/effects/image_filters/dl_blur_image_filter.h"
 #include "flutter/display_list/effects/image_filters/dl_glass_image_filter.h"
+#include "impeller/display_list/canvas.h"
 #include "impeller/display_list/image_filter.h"
 #include "impeller/entity/contents/filters/gaussian_blur_filter_contents.h"
 #include "impeller/entity/contents/filters/glass_filter_contents.h"
+#include "impeller/entity/window_surface_texture.frag.h"
 
 #include "gtest/gtest.h"
 #include "impeller/core/allocator.h"
@@ -84,6 +86,60 @@ class WindowBackdropTest : public ::testing::Test {
   std::unique_ptr<ContentContext> renderer_;
   std::shared_ptr<Texture> texture_;
 };
+
+TEST_F(WindowBackdropTest, ExplicitWindowNeverUsesClipOrBorderDraws) {
+  for (bool direct : {true, false}) {
+    for (bool image : {true, false}) {
+      for (bool blur : {true, false}) {
+        SCOPED_TRACE(direct);
+        SCOPED_TRACE(image);
+        SCOPED_TRACE(blur);
+        TextureDescriptor desc;
+        desc.size = {200, 100};
+        desc.format = PixelFormat::kR8G8B8A8UNormInt;
+        desc.usage = TextureUsage::kRenderTarget;
+        desc.storage_mode = StorageMode::kDevicePrivate;
+        ColorAttachment color;
+        color.texture =
+            renderer_->GetContext()->GetResourceAllocator()->CreateTexture(
+                desc);
+        ASSERT_TRUE(color.texture);
+        color.load_action = LoadAction::kClear;
+        RenderTarget target;
+        target.SetColorAttachment(color, 0);
+        Canvas canvas(*renderer_, target, false, blur);
+        canvas.SetBackdropData({}, blur ? 1 : 0);
+        flutter::DlWindowSurfaceFilter::Style style{
+            Rect::MakeLTRB(20, 10, 180, 90), Rect::MakeLTRB(22, 12, 178, 88),
+            18, flutter::DlColor::kRed()};
+        auto backdrop = blur ? flutter::DlBlurImageFilter::Make(
+                                   4, 4, flutter::DlTileMode::kClamp,
+                                   std::nullopt, 1, 0.6f, false)
+                             : nullptr;
+        flutter::DlWindowSurfaceFilter window(style, backdrop, direct);
+        Paint restore;
+        restore.blend_mode = BlendMode::kSrc;
+        canvas.SaveLayer(restore, style.bounds, &window,
+                         ContentBoundsPromise::kUnknown, image ? 1 : 0);
+        if (image) {
+          // Strict source + oversized buffer deliberately rejected the old
+          // opportunistic fusion. Neither can reject an explicit WindowSurface.
+          canvas.DrawImageRect(texture_, Rect::MakeSize(texture_->GetSize()),
+                               Rect::MakeLTRB(-10, -20, 210, 110), {}, {},
+                               SourceRectConstraint::kStrict, true);
+        }
+        canvas.Restore();
+        const auto& commands = canvas.GetRenderPassForTesting().GetCommands();
+        ASSERT_EQ(commands.size(), 1u);
+        EXPECT_EQ(commands[0].audit_category,
+                  CommandAuditCategory::kBackdropSurfaceComposite);
+        EXPECT_EQ(commands[0].element_count, 4u);
+        EXPECT_EQ(commands[0].bound_textures.length, 2u);
+        canvas.EndReplay();
+      }
+    }
+  }
+}
 
 TEST_F(WindowBackdropTest, SourceTextureContainsOnlyWindowPixels) {
   const Rect window = Rect::MakeLTRB(55, 10, 96, 90);
