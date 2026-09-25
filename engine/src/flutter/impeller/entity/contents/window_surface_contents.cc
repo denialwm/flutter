@@ -27,7 +27,7 @@ Matrix UVTransform(const WindowSurfaceContents::Input& input) {
               Matrix::MakeScale(Vector2(source.GetSize()) /
                                 Vector2(destination.GetSize())) *
               Matrix::MakeTranslation(-destination.GetOrigin()) *
-              input.transform.Invert();
+              input.window_to_input;
   if (texture->GetYCoordScale() < 0) {
     uv = Matrix::MakeTranslation(Vector2(0, 1)) *
          Matrix::MakeScale(Vector2(1, -1)) * uv;
@@ -66,23 +66,21 @@ void BindFragment(RenderPass& pass,
                   const std::shared_ptr<Texture>& backdrop_texture,
                   raw_ptr<const Sampler> backdrop_sampler) {
   typename FS::FragInfo info;
-  info.bounds = Vector4(style.bounds.GetLTRB());
-  info.content_bounds = Vector4(style.content_bounds.GetLTRB());
-  info.source_limits = Vector4(SourceLimits(surface).GetLTRB());
-  info.source_coverage = Vector4(SourceLimits(surface, false).GetLTRB());
+  info.data[0] = Vector4(style.bounds.GetLTRB());
+  info.data[1] = Vector4(style.content_bounds.GetLTRB());
+  info.data[2] = Vector4(SourceLimits(surface).GetLTRB());
+  info.data[3] = Vector4(SourceLimits(surface, false).GetLTRB());
   const auto color = style.frame_color;
-  info.frame_color =
+  info.data[4] =
       Vector4(color.getRedF() * color.getAlphaF(),
               color.getGreenF() * color.getAlphaF(),
               color.getBlueF() * color.getAlphaF(), color.getAlphaF());
-  info.radius = style.radius;
-  info.opacity = opacity;
-  info.surface_opacity = surface.contents ? surface.contents->GetOpacity() : 0;
-  info.backdrop_opacity =
-      backdrop.contents ? backdrop.contents->GetOpacity() : 0;
-  info.alpha_threshold = threshold;
-  info.has_backdrop = backdrop.contents ? 1 : 0;
-  info.has_surface = surface.contents ? 1 : 0;
+  info.data[5] =
+      Vector4(style.radius, opacity,
+              surface.contents ? surface.contents->GetOpacity() : 0,
+              backdrop.contents ? backdrop.contents->GetOpacity() : 0);
+  info.data[6] = Vector4(threshold, backdrop.contents ? 1 : 0,
+                         surface.contents ? 1 : 0, 0);
   FS::BindFragInfo(pass, data.EmplaceUniform(info));
   FS::BindBackdropTextureSampler(pass, backdrop_texture, backdrop_sampler);
 }

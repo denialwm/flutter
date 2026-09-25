@@ -22,6 +22,8 @@ class WindowSurfaceLayer final : public ContainerLayer {
  private:
   DlWindowSurfaceFilter::Style style_;
   std::shared_ptr<DlImageFilter> backdrop_;
+  // Immutable across retained texture-only frames.
+  std::shared_ptr<DlWindowSurfaceFilter> material_;
   int64_t texture_id_;
   DlRect texture_bounds_;
   DlMatrix texture_transform_;

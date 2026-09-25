@@ -13,6 +13,9 @@ WindowSurfaceLayer::WindowSurfaceLayer(DlWindowSurfaceFilter::Style style,
                                        DlScalar surface_opacity)
     : style_(style),
       backdrop_(std::move(backdrop)),
+      material_(std::make_shared<DlWindowSurfaceFilter>(style_,
+                                                        backdrop_,
+                                                        texture_id >= 0)),
       texture_id_(texture_id),
       texture_bounds_(texture_bounds),
       texture_transform_(texture_transform),
@@ -89,8 +92,6 @@ void WindowSurfaceLayer::Paint(PaintContext& context) const {
       cache_prepared_ ? std::make_optional(cache_->token()) : std::nullopt;
   auto applied = context.state_stack.applyState(
       paint_bounds(), LayerStateStack::kCallerCanApplyOpacity);
-  auto material = std::make_shared<DlWindowSurfaceFilter>(style_, backdrop_,
-                                                          texture_id_ >= 0);
   if (texture_id_ >= 0) {
     DlPaint paint;
     context.state_stack.fill(paint);
@@ -100,16 +101,16 @@ void WindowSurfaceLayer::Paint(PaintContext& context) const {
     if (texture) {
       Texture::PaintContext ctx{context.canvas, context.gr_context,
                                 context.aiks_context, &paint};
-      texture->PaintWindow(ctx, texture_bounds_, texture_transform_, *material,
+      texture->PaintWindow(ctx, texture_bounds_, texture_transform_, *material_,
                            token, sampling_, surface_opacity_);
     } else {
       paint.setBlendMode(DlBlendMode::kSrc);
-      context.canvas->SaveLayer(style_.bounds, &paint, material.get(), token);
+      context.canvas->SaveLayer(style_.bounds, &paint, material_.get(), token);
       context.canvas->Restore();
     }
   } else {
     auto state = context.state_stack.save();
-    state.applyBackdropFilter(paint_bounds(), material, DlBlendMode::kSrc,
+    state.applyBackdropFilter(paint_bounds(), material_, DlBlendMode::kSrc,
                               token);
     state.clipRect(style_.content_bounds, false);
     PaintChildren(context);

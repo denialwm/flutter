@@ -2655,9 +2655,9 @@ void Canvas::SaveLayer(const Paint& paint,
       if (resolved_backdrop_entity && resolved_backdrop_contents) {
         window->backdrop = {
             resolved_backdrop_contents,
-            window->transform.Invert() *
-                Matrix::MakeTranslation(Vector3(GetGlobalPassPosition())) *
-                resolved_backdrop_entity->GetTransform()};
+            resolved_backdrop_entity->GetTransform().Invert() *
+                Matrix::MakeTranslation(Vector3(-GetGlobalPassPosition())) *
+                window->transform};
       }
       transform_stack_.back().window = std::move(window);
       return;
@@ -2930,7 +2930,7 @@ bool Canvas::Restore() {
       if (save_layer_state.alpha_threshold_backdrop) {
         const auto& alpha = *save_layer_state.alpha_threshold_backdrop;
         backdrop = {alpha.contents,
-                    window_to_pass.Invert() * alpha.entity.GetTransform()};
+                    alpha.entity.GetTransform().Invert() * window_to_pass};
       }
       Entity element;
       element.SetClipDepth(++current_depth_);
@@ -2940,8 +2940,8 @@ bool Canvas::Restore() {
           state.style,
           WindowSurfaceContents::Input{
               std::static_pointer_cast<TextureContents>(contents),
-              window_to_pass.Invert() *
-                  Matrix::MakeTranslation(Vector3(subpass_texture_position))},
+              Matrix::MakeTranslation(Vector3(-subpass_texture_position)) *
+                  window_to_pass},
           std::move(backdrop), state.threshold, state.opacity));
       element.Render(renderer_, GetCurrentRenderPass());
       clip_coverage_stack_.PopSubpass();
@@ -3441,7 +3441,7 @@ void Canvas::AddRenderEntityToCurrentPass(
     entity.SetContents(std::make_shared<WindowSurfaceContents>(
         direct_window->style,
         WindowSurfaceContents::Input{
-            texture_contents, window_to_pass.Invert() * entity.GetTransform()},
+            texture_contents, entity.GetTransform().Invert() * window_to_pass},
         direct_window->backdrop, direct_window->threshold,
         direct_window->opacity));
     entity.SetTransform(window_to_pass);

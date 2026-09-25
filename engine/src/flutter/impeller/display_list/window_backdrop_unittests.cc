@@ -8,7 +8,11 @@
 #include "impeller/display_list/image_filter.h"
 #include "impeller/entity/contents/filters/gaussian_blur_filter_contents.h"
 #include "impeller/entity/contents/filters/glass_filter_contents.h"
+#include "impeller/entity/window_surface.frag.h"
+#include "impeller/entity/window_surface.vert.h"
 #include "impeller/entity/window_surface_texture.frag.h"
+#include "impeller/renderer/backend/gles/device_buffer_gles.h"
+#include "impeller/renderer/backend/gles/texture_gles.h"
 
 #include "gtest/gtest.h"
 #include "impeller/core/allocator.h"
@@ -141,6 +145,115 @@ TEST_F(WindowBackdropTest, ExplicitWindowNeverUsesClipOrBorderDraws) {
   }
 }
 
+TEST_F(WindowBackdropTest, WindowMaterialIsOneUnpaddedUniformUpload) {
+  for (const auto* metadata :
+       {&WindowSurfaceFragmentShader::kMetadataFragInfo,
+        &WindowSurfaceTextureFragmentShader::kMetadataFragInfo}) {
+    ASSERT_EQ(metadata->members.size(), 1u);
+    const auto& data = metadata->members[0];
+    EXPECT_EQ(data.type, ShaderType::kFloat);
+    EXPECT_EQ(data.float_type, ShaderFloatType::kVec4);
+    EXPECT_EQ(data.array_elements, 7u);
+    EXPECT_EQ(data.size, 16u);
+    EXPECT_EQ(data.offset, 0u);
+    EXPECT_EQ(data.byte_length, 112u);
+  }
+  EXPECT_EQ(sizeof(WindowSurfaceFragmentShader::FragInfo), 112u);
+  EXPECT_EQ(sizeof(WindowSurfaceTextureFragmentShader::FragInfo), 112u);
+}
+
+TEST_F(WindowBackdropTest, WindowSamplingSurvivesAllBufferTransforms) {
+  using VS = WindowSurfaceVertexShader;
+  using FS = WindowSurfaceTextureFragmentShader;
+  const auto read_buffer = [](const BufferView& view) {
+    return DeviceBufferGLES::Cast(*view.GetBuffer()).GetBufferData() +
+           view.GetRange().offset;
+  };
+  for (bool flip_y : {false, true}) {
+    const std::shared_ptr<Texture> sampled_texture =
+        flip_y ? TextureGLES::WrapFBOTexture(context_->GetReactor(),
+                                             texture_->GetTextureDescriptor(),
+                                             1, 2)
+               : texture_;
+    for (int orientation = 0; orientation < 8; ++orientation) {
+      SCOPED_TRACE(flip_y);
+      SCOPED_TRACE(orientation);
+      TextureDescriptor desc;
+      desc.size = {200, 100};
+      desc.format = PixelFormat::kR8G8B8A8UNormInt;
+      desc.usage = TextureUsage::kRenderTarget;
+      desc.storage_mode = StorageMode::kDevicePrivate;
+      ColorAttachment color;
+      color.texture =
+          renderer_->GetContext()->GetResourceAllocator()->CreateTexture(desc);
+      ASSERT_TRUE(color.texture);
+      color.load_action = LoadAction::kClear;
+      RenderTarget target;
+      target.SetColorAttachment(color, 0);
+      Canvas canvas(*renderer_, target, false, false);
+      flutter::DlWindowSurfaceFilter::Style style{
+          Rect::MakeLTRB(20, 10, 180, 90), Rect::MakeLTRB(22, 12, 178, 88), 18,
+          flutter::DlColor::kRed()};
+      const Matrix window_to_scene =
+          Matrix::MakeTranslation(Vector2(3.25f, 90.5f)) *
+          Matrix::MakeScale(Vector2(0.8f, -0.9f));
+      const Matrix buffer_to_window =
+          Matrix::MakeTranslation(Vector2(100, 50)) *
+          Matrix::MakeRotationZ(Radians((orientation & 3) * kPiOver2)) *
+          Matrix::MakeScale(Vector2(orientation & 4 ? -1.25f : 1.25f, 0.75f)) *
+          Matrix::MakeTranslation(Vector2(-100, -50));
+      const Rect source = Rect::MakeLTRB(8, 4, 190, 96);
+      const Rect destination = Rect::MakeLTRB(-10, -20, 210, 110);
+      flutter::DlWindowSurfaceFilter window(style, nullptr, true);
+      Paint restore;
+      restore.blend_mode = BlendMode::kSrc;
+      restore.color.alpha = 0.8f;
+      canvas.Transform(window_to_scene);
+      canvas.SaveLayer(restore, style.bounds, &window,
+                       ContentBoundsPromise::kUnknown, 1);
+      canvas.Transform(buffer_to_window);
+      Paint surface;
+      surface.color.alpha = 0.6f;
+      canvas.DrawImageRect(sampled_texture, source, destination, surface, {},
+                           SourceRectConstraint::kStrict, true);
+      canvas.Restore();
+      const auto& pass = canvas.GetRenderPassForTesting();
+      ASSERT_EQ(pass.GetCommands().size(), 1u);
+      const auto& command = pass.GetCommands()[0];
+      const auto* vertices = reinterpret_cast<
+          const VS::PerVertexData*>(read_buffer(
+          pass.GetVertexBuffersForTesting()[command.vertex_buffers.offset]));
+      for (size_t i = 0; i < 4; ++i) {
+        const Point input = buffer_to_window.Invert() * vertices[i].position;
+        const Point pixel =
+            source.GetOrigin() + (input - destination.GetOrigin()) *
+                                     (source.GetSize() / destination.GetSize());
+        EXPECT_NEAR(vertices[i].surface_uv.x, pixel.x / 200, 0.00001f);
+        EXPECT_NEAR(vertices[i].surface_uv.y,
+                    flip_y ? 1 - pixel.y / 100 : pixel.y / 100, 0.00001f);
+      }
+      bool checked_material = false;
+      for (const auto& binding : pass.GetBoundBuffersForTesting()) {
+        if (binding.GetMetadata() != &FS::kMetadataFragInfo) {
+          continue;
+        }
+        const auto* material = reinterpret_cast<const FS::FragInfo*>(
+            read_buffer(binding.resource));
+        EXPECT_EQ(material->data[0], Vector4(style.bounds.GetLTRB()));
+        EXPECT_EQ(material->data[1], Vector4(style.content_bounds.GetLTRB()));
+        EXPECT_EQ(material->data[4], Vector4(1, 0, 0, 1));
+        EXPECT_NEAR(material->data[5].x, 18, 0.00001f);
+        EXPECT_NEAR(material->data[5].y, 0.8f, 0.00001f);
+        EXPECT_NEAR(material->data[5].z, 0.6f, 0.00001f);
+        EXPECT_EQ(material->data[6], Vector4(0, 0, 1, 0));
+        checked_material = true;
+      }
+      EXPECT_TRUE(checked_material);
+      canvas.EndReplay();
+    }
+  }
+}
+
 TEST_F(WindowBackdropTest, ExplicitWindowReusesInsetGlassAndBlurAcrossFrames) {
   int64_t key = 100;
   for (bool glass : {false, true}) {
@@ -200,12 +313,35 @@ TEST_F(WindowBackdropTest, ExplicitWindowReusesInsetGlassAndBlurAcrossFrames) {
                                  Rect::MakeLTRB(-10, -20, 210, 110), {}, {},
                                  SourceRectConstraint::kStrict, true);
             canvas.Restore();
-            canvas.EndReplay();
             auto cached = renderer_->GetCachedBackdropSnapshot(key);
             ASSERT_TRUE(cached);
             ASSERT_TRUE(cached->GetCoverage());
             const Rect needed = style.content_bounds.TransformBounds(transform);
             EXPECT_TRUE(cached->GetCoverage()->Contains(needed));
+            const auto& pass = canvas.GetRenderPassForTesting();
+            const auto& command = pass.GetCommands().back();
+            ASSERT_EQ(command.audit_category,
+                      CommandAuditCategory::kBackdropSurfaceComposite);
+            const auto& view =
+                pass.GetVertexBuffersForTesting()[command.vertex_buffers
+                                                      .offset];
+            const auto* vertices = reinterpret_cast<
+                const WindowSurfaceVertexShader::PerVertexData*>(
+                DeviceBufferGLES::Cast(*view.GetBuffer()).GetBufferData() +
+                view.GetRange().offset);
+            const Matrix window_to_snapshot =
+                cached->transform.Invert() * transform;
+            const auto snapshot_size = cached->texture->GetSize();
+            for (size_t i = 0; i < 4; ++i) {
+              const Point pixel = window_to_snapshot * vertices[i].position;
+              EXPECT_NEAR(vertices[i].backdrop_uv.x,
+                          pixel.x / snapshot_size.width, 0.00001f);
+              const Scalar y = pixel.y / snapshot_size.height;
+              EXPECT_NEAR(vertices[i].backdrop_uv.y,
+                          cached->texture->GetYCoordScale() < 0 ? 1 - y : y,
+                          0.00001f);
+            }
+            canvas.EndReplay();
             if (cached_texture) {
               EXPECT_EQ(cached->texture, cached_texture)
                   << "Unchanged glass must not be rebuilt for the outer frame";

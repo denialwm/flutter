@@ -218,6 +218,14 @@ class RenderPass : public ResourceBinder {
   ///
   virtual const std::vector<Command>& GetCommands() const { return commands_; }
 
+  // Visible for testing recorded geometry and shader parameter contracts.
+  const std::vector<BufferView>& GetVertexBuffersForTesting() const {
+    return vertex_buffers_;
+  }
+  const std::vector<BufferResource>& GetBoundBuffersForTesting() const {
+    return bound_buffers_;
+  }
+
   //----------------------------------------------------------------------------
   /// @brief      The sample count of the attached render target.
   SampleCount GetSampleCount() const;

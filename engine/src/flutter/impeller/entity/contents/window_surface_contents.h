@@ -15,7 +15,10 @@ class WindowSurfaceContents final : public Contents {
  public:
   struct Input {
     std::shared_ptr<TextureContents> contents;
-    Matrix transform;
+    // Sampling consumes window -> input, never the opposite direction. Keep
+    // this form so Canvas does not invert a mapping only for Render to invert
+    // it again for both textures on every frame.
+    Matrix window_to_input;
   };
   WindowSurfaceContents(flutter::DlWindowSurfaceFilter::Style style,
                         Input surface,
