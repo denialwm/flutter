@@ -22,6 +22,18 @@ executable("window_damage_unittests") {
   ]
 }
 
+# Headless state traversal and allocation tests for the release engine.
+executable("layer_state_stack_unittests") {
+  testonly = true
+  sources = [ "layers/layer_state_stack_unittests.cc" ]
+  deps = [
+    ":flow",
+    "$dart_src/runtime:libdart_jit",
+    "//flutter/testing:testing_lib",
+    "//flutter/third_party/googletest:gtest_main",
+  ]
+}
+
 source_set("flow") {
   sources = [
     "compositor_context.cc",

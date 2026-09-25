@@ -620,7 +620,23 @@ void MutatorContext::clipPath(const DlPath& path, bool is_aa) {
 // LayerStateStack methods
 // ==============================================================
 
-LayerStateStack::LayerStateStack() : delegate_(DummyDelegate::kInstance) {}
+LayerStateStack::LayerStateStack(std::pmr::memory_resource* upstream)
+    : entry_storage_(inline_entry_storage_.data(),
+                     inline_entry_storage_.size(),
+                     upstream),
+      entry_pool_(&entry_storage_),
+      delegate_(DummyDelegate::kInstance) {}
+
+LayerStateStack::~LayerStateStack() {
+  for (const EntrySlot& slot : state_stack_) {
+    destroy_entry(slot);
+  }
+}
+
+void LayerStateStack::destroy_entry(const EntrySlot& slot) {
+  slot.entry->~StateEntry();
+  entry_pool_.deallocate(slot.entry, slot.size, slot.alignment);
+}
 
 void LayerStateStack::clear_delegate() {
   delegate_->decommission();
@@ -662,47 +678,43 @@ void LayerStateStack::reapply_all() {
   RenderingAttributes attributes = outstanding_;
   outstanding_ = {};
   for (auto& state : state_stack_) {
-    state->reapply(this);
+    state.entry->reapply(this);
   }
   FML_DCHECK(attributes == outstanding_);
 }
 
 void LayerStateStack::fill(MutatorsStack* mutators) {
   for (auto& state : state_stack_) {
-    state->update_mutators(mutators);
+    state.entry->update_mutators(mutators);
   }
 }
 
 void LayerStateStack::restore_to_count(size_t restore_count) {
   while (state_stack_.size() > restore_count) {
-    state_stack_.back()->restore(this);
+    const EntrySlot slot = state_stack_.back();
+    slot.entry->restore(this);
+    destroy_entry(slot);
     state_stack_.pop_back();
   }
 }
 
 void LayerStateStack::push_opacity(const DlRect& bounds, DlScalar opacity) {
   maybe_save_layer(opacity);
-  state_stack_.emplace_back(
-      std::make_unique<OpacityEntry>(bounds, opacity, outstanding_));
-  apply_last_entry();
+  emplace_entry<OpacityEntry>(bounds, opacity, outstanding_);
 }
 
 void LayerStateStack::push_color_filter(
     const DlRect& bounds,
     const std::shared_ptr<const DlColorFilter>& filter) {
   maybe_save_layer(filter);
-  state_stack_.emplace_back(
-      std::make_unique<ColorFilterEntry>(bounds, filter, outstanding_));
-  apply_last_entry();
+  emplace_entry<ColorFilterEntry>(bounds, filter, outstanding_);
 }
 
 void LayerStateStack::push_image_filter(
     const DlRect& bounds,
     const std::shared_ptr<DlImageFilter>& filter) {
   maybe_save_layer(filter);
-  state_stack_.emplace_back(
-      std::make_unique<ImageFilterEntry>(bounds, filter, outstanding_));
-  apply_last_entry();
+  emplace_entry<ImageFilterEntry>(bounds, filter, outstanding_);
 }
 
 void LayerStateStack::push_backdrop(
@@ -710,46 +722,37 @@ void LayerStateStack::push_backdrop(
     const std::shared_ptr<DlImageFilter>& filter,
     DlBlendMode blend_mode,
     std::optional<int64_t> backdrop_id) {
-  state_stack_.emplace_back(std::make_unique<BackdropFilterEntry>(
-      bounds, filter, blend_mode, backdrop_id, outstanding_));
-  apply_last_entry();
+  emplace_entry<BackdropFilterEntry>(bounds, filter, blend_mode, backdrop_id,
+                                     outstanding_);
 }
 
 void LayerStateStack::push_translate(SkScalar tx, SkScalar ty) {
-  state_stack_.emplace_back(std::make_unique<TranslateEntry>(tx, ty));
-  apply_last_entry();
+  emplace_entry<TranslateEntry>(tx, ty);
 }
 
 void LayerStateStack::push_transform(const DlMatrix& matrix) {
-  state_stack_.emplace_back(std::make_unique<TransformMatrixEntry>(matrix));
-  apply_last_entry();
+  emplace_entry<TransformMatrixEntry>(matrix);
 }
 
 void LayerStateStack::push_integral_transform() {
-  state_stack_.emplace_back(std::make_unique<IntegralTransformEntry>());
-  apply_last_entry();
+  emplace_entry<IntegralTransformEntry>();
 }
 
 void LayerStateStack::push_clip_rect(const DlRect& rect, bool is_aa) {
-  state_stack_.emplace_back(std::make_unique<ClipRectEntry>(rect, is_aa));
-  apply_last_entry();
+  emplace_entry<ClipRectEntry>(rect, is_aa);
 }
 
 void LayerStateStack::push_clip_rrect(const DlRoundRect& rrect, bool is_aa) {
-  state_stack_.emplace_back(std::make_unique<ClipRRectEntry>(rrect, is_aa));
-  apply_last_entry();
+  emplace_entry<ClipRRectEntry>(rrect, is_aa);
 }
 
 void LayerStateStack::push_clip_rsuperellipse(const DlRoundSuperellipse& rse,
                                               bool is_aa) {
-  state_stack_.emplace_back(
-      std::make_unique<ClipRSuperellipseEntry>(rse, is_aa));
-  apply_last_entry();
+  emplace_entry<ClipRSuperellipseEntry>(rse, is_aa);
 }
 
 void LayerStateStack::push_clip_path(const DlPath& path, bool is_aa) {
-  state_stack_.emplace_back(std::make_unique<ClipPathEntry>(path, is_aa));
-  apply_last_entry();
+  emplace_entry<ClipPathEntry>(path, is_aa);
 }
 
 bool LayerStateStack::needs_save_layer(int flags) const {
@@ -769,14 +772,11 @@ bool LayerStateStack::needs_save_layer(int flags) const {
 }
 
 void LayerStateStack::do_save() {
-  state_stack_.emplace_back(std::make_unique<SaveEntry>());
-  apply_last_entry();
+  emplace_entry<SaveEntry>();
 }
 
 void LayerStateStack::save_layer(const DlRect& bounds) {
-  state_stack_.emplace_back(std::make_unique<SaveLayerEntry>(
-      bounds, DlBlendMode::kSrcOver, outstanding_));
-  apply_last_entry();
+  emplace_entry<SaveLayerEntry>(bounds, DlBlendMode::kSrcOver, outstanding_);
 }
 
 void LayerStateStack::maybe_save_layer_for_transform(bool save_needed) {

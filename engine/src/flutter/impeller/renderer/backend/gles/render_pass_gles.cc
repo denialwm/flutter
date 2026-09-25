@@ -393,6 +393,10 @@ static void EncodeViewport(const ProcTableGLES& gl,
   std::optional<StencilAttachmentDescriptor> current_back_stencil;
   uint32_t current_stencil_reference = 0u;
   std::optional<Viewport> current_viewport;
+  // ResetGLState disables scissoring at the start of every pass. Keep this
+  // cache local to the pass because an embedder callback may change GL state
+  // between passes.
+  std::optional<IRect32> current_scissor;
   CullMode current_cull_mode = CullMode::kNone;
   WindingOrder current_winding_order = WindingOrder::kClockwise;
   // Inverted to keep front-facing consistent under the vertex y-flip.
@@ -469,14 +473,19 @@ static void EncodeViewport(const ProcTableGLES& gl,
     ///
     if (command.scissor.has_value()) {
       const auto& scissor = command.scissor.value();
-      gl.Enable(GL_SCISSOR_TEST);
-      // Same flip handling as the viewport above.
-      const auto scissor_y_gl =
-          flip_y ? scissor.GetY()
-                 : target_size.height - scissor.GetY() - scissor.GetHeight();
-      gl.Scissor(scissor.GetX(),  // x
-                 scissor_y_gl,    // y
-                 scissor.GetWidth(), scissor.GetHeight());
+      if (!current_scissor.has_value()) {
+        gl.Enable(GL_SCISSOR_TEST);
+      }
+      if (current_scissor != scissor) {
+        // Same flip handling as the viewport above.
+        const auto scissor_y_gl =
+            flip_y ? scissor.GetY()
+                   : target_size.height - scissor.GetY() - scissor.GetHeight();
+        gl.Scissor(scissor.GetX(),  // x
+                   scissor_y_gl,    // y
+                   scissor.GetWidth(), scissor.GetHeight());
+        current_scissor = scissor;
+      }
     }
 
     //--------------------------------------------------------------------------

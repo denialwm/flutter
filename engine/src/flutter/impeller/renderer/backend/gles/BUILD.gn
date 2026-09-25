@@ -11,6 +11,24 @@ config("gles_config") {
   include_dirs = [ "//flutter/third_party/angle/include" ]
 }
 
+# Mock GL only: no playground, display server, or pixel readback.
+impeller_component("gles_render_pass_unittests") {
+  target_type = "executable"
+  testonly = true
+  sources = [
+    "render_pass_gles_unittests.cc",
+    "test/mock_gles.cc",
+    "test/mock_gles.h",
+  ]
+  deps = [
+    ":gles",
+    "//flutter/impeller/entity",
+    "//flutter/testing:testing_lib",
+    "//flutter/third_party/googletest:gmock",
+    "//flutter/third_party/googletest:gtest_main",
+  ]
+}
+
 impeller_component("gles_unittests") {
   testonly = true
   sources = [

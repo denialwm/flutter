@@ -402,6 +402,56 @@ TEST_F(RenderPassGLESCommandTest, ViewportCachedAcrossCommands) {
   EXPECT_TRUE(reactor->React());
 }
 
+TEST_F(RenderPassGLESCommandTest, ScissorCachedOnlyWithinRenderPass) {
+  auto ctx = CreateRenderPassGLESContext();
+  auto& gl = ctx.mock_gl_impl_ref;
+  const auto& pipeline = ctx.pipeline;
+  const IRect32 first = IRect32::MakeXYWH(10, 20, 30, 40);
+  const IRect32 second = IRect32::MakeXYWH(12, 20, 30, 40);
+
+  const auto draw = [&](const std::shared_ptr<RenderPass>& pass,
+                        const IRect32& scissor) {
+    pass->SetPipeline(PipelineRef(pipeline));
+    pass->SetElementCount(1);
+    pass->SetIndexBuffer({}, IndexType::kNone);
+    pass->SetScissor(scissor);
+    EXPECT_TRUE(pass->Draw().ok());
+  };
+
+  draw(ctx.render_pass, first);
+  draw(ctx.render_pass, first);
+  draw(ctx.render_pass, second);
+
+  // A new pass starts with disabled scissoring, even when its first rectangle
+  // matches the previous pass's last rectangle.
+  auto next_pass =
+      ctx.command_buffer->CreateRenderPass(ctx.render_pass->GetRenderTarget());
+  draw(next_pass, second);
+
+  // A wrapped FBO uses the opposite Y conversion from an offscreen pass.
+  TextureDescriptor wrapped_desc;
+  wrapped_desc.format = PixelFormat::kR8G8B8A8UNormInt;
+  wrapped_desc.size = {100, 100};
+  RenderTarget wrapped_target;
+  ColorAttachment wrapped_color;
+  wrapped_color.texture = TextureGLES::WrapFBO(ctx.reactor, wrapped_desc, 1);
+  wrapped_target.SetColorAttachment(wrapped_color, 0);
+  auto wrapped_pass = ctx.command_buffer->CreateRenderPass(wrapped_target);
+  draw(wrapped_pass, first);
+
+  EXPECT_CALL(gl, Enable(_)).Times(::testing::AnyNumber());
+  EXPECT_CALL(gl, Enable(GL_SCISSOR_TEST)).Times(3);
+  EXPECT_CALL(gl, Scissor(_, _, _, _)).Times(0);
+  EXPECT_CALL(gl, Scissor(10, 20, 30, 40)).Times(1);
+  EXPECT_CALL(gl, Scissor(12, 20, 30, 40)).Times(2);
+  EXPECT_CALL(gl, Scissor(10, 40, 30, 40)).Times(1);
+
+  EXPECT_TRUE(ctx.render_pass->EncodeCommands());
+  EXPECT_TRUE(next_pass->EncodeCommands());
+  EXPECT_TRUE(wrapped_pass->EncodeCommands());
+  EXPECT_TRUE(ctx.reactor->React());
+}
+
 TEST_F(RenderPassGLESCommandTest,
        CommandsWithoutViewportGetRenderPassViewport) {
   auto ctx = CreateRenderPassGLESContext();

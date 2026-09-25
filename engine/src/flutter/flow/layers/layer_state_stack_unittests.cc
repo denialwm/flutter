@@ -4,6 +4,8 @@
 
 #include "gtest/gtest.h"
 
+#include <memory_resource>
+
 #include "flutter/display_list/effects/dl_color_filter.h"
 #include "flutter/display_list/effects/dl_image_filter.h"
 #include "flutter/flow/layers/layer.h"
@@ -12,6 +14,80 @@
 
 namespace flutter {
 namespace testing {
+
+namespace {
+class CountingMemoryResource final : public std::pmr::memory_resource {
+ public:
+  size_t allocations = 0;
+  size_t deallocations = 0;
+
+ private:
+  void* do_allocate(size_t bytes, size_t alignment) override {
+    ++allocations;
+    return std::pmr::get_default_resource()->allocate(bytes, alignment);
+  }
+  void do_deallocate(void* ptr, size_t bytes, size_t alignment) override {
+    ++deallocations;
+    std::pmr::get_default_resource()->deallocate(ptr, bytes, alignment);
+  }
+  bool do_is_equal(
+      const std::pmr::memory_resource& other) const noexcept override {
+    return this == &other;
+  }
+};
+}  // namespace
+
+TEST(LayerStateStack, RecyclesEntriesUnderRetainedParent) {
+  CountingMemoryResource upstream;
+  {
+    LayerStateStack state_stack(&upstream);
+    state_stack.set_preroll_delegate(DlRect::MakeWH(100, 100));
+    const DlRect rect = DlRect::MakeWH(50, 50);
+    const DlPath path = DlPath::MakeRect(rect);
+    {
+      auto parent = state_stack.save();
+      parent.translate(3, 4);
+      for (int i = 0; i < 12; ++i) {
+        auto child = state_stack.save();
+        child.translate(1, 2);
+        child.clipRect(rect, false);
+        EXPECT_EQ(state_stack.matrix(), DlMatrix::MakeTranslation({4, 6}));
+      }
+      const size_t warm_allocations = upstream.allocations;
+      for (int i = 0; i < 512; ++i) {
+        auto child = state_stack.save();
+        child.translate(1, 2);
+        child.clipRect(rect, false);
+      }
+      EXPECT_EQ(upstream.allocations, warm_allocations);
+
+      auto filter = DlImageFilter::MakeBlur(2, 2, DlTileMode::kClamp);
+      ASSERT_TRUE(filter);
+      const long filter_refs = filter.use_count();
+      {
+        auto child = state_stack.save();
+        child.applyImageFilter(rect, filter);
+        child.clipPath(path, false);
+        EXPECT_GT(filter.use_count(), filter_refs);
+      }
+      EXPECT_EQ(filter.use_count(), filter_refs);
+
+      // Force fallback at large simultaneous depth, then verify it releases
+      // all upstream allocations when the stack goes out of scope.
+      auto nest = [&](auto&& self, int depth) -> void {
+        auto child = state_stack.save();
+        child.clipPath(path, false);
+        if (depth > 0) {
+          self(self, depth - 1);
+        }
+      };
+      nest(nest, 128);
+      EXPECT_GT(upstream.allocations, warm_allocations);
+    }
+    EXPECT_TRUE(state_stack.is_empty());
+  }
+  EXPECT_EQ(upstream.deallocations, upstream.allocations);
+}
 
 #ifndef NDEBUG
 TEST(LayerStateStack, AccessorsDieWithoutDelegate) {

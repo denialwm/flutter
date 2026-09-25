@@ -359,6 +359,18 @@ void mockViewport(GLint x, GLint y, GLsizei width, GLsizei height) {
   return CallMockMethod(&IMockGLESImpl::Viewport, x, y, width, height);
 }
 
+void mockEnable(GLenum capability) {
+  CallMockMethod(&IMockGLESImpl::Enable, capability);
+}
+static_assert(
+    CheckSameSignature<decltype(mockEnable), decltype(glEnable)>::value);
+
+void mockScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
+  CallMockMethod(&IMockGLESImpl::Scissor, x, y, width, height);
+}
+static_assert(
+    CheckSameSignature<decltype(mockScissor), decltype(glScissor)>::value);
+
 static_assert(CheckSameSignature<decltype(mockDiscardFramebufferEXT),  //
                                  decltype(glDiscardFramebufferEXT)>::value);
 
@@ -535,6 +547,10 @@ const ProcTableGLES::Resolver kMockResolverGLES = [](const char* name) {
     return reinterpret_cast<void*>(mockInvalidateFramebuffer);
   } else if (strcmp(name, "glViewport") == 0) {
     return reinterpret_cast<void*>(mockViewport);
+  } else if (strcmp(name, "glEnable") == 0) {
+    return reinterpret_cast<void*>(mockEnable);
+  } else if (strcmp(name, "glScissor") == 0) {
+    return reinterpret_cast<void*>(mockScissor);
   } else if (strcmp(name, "glDrawArrays") == 0) {
     return reinterpret_cast<void*>(mockDrawArrays);
   } else if (strcmp(name, "glDrawElements") == 0) {

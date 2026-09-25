@@ -111,6 +111,8 @@ class IMockGLESImpl {
                                      const GLenum* attachments) {};
   virtual void GetIntegerv(GLenum name, GLint* attachments) {};
   virtual void Viewport(GLint x, GLint y, GLsizei width, GLsizei height) {}
+  virtual void Enable(GLenum capability) {}
+  virtual void Scissor(GLint x, GLint y, GLsizei width, GLsizei height) {}
   virtual void DrawArrays(GLenum mode, GLint first, GLsizei count) {}
   virtual void DrawElements(GLenum mode,
                             GLsizei count,
@@ -275,6 +277,11 @@ class MockGLESImpl : public IMockGLESImpl {
   MOCK_METHOD(void, GetIntegerv, (GLenum name, GLint* value), (override));
   MOCK_METHOD(void,
               Viewport,
+              (GLint x, GLint y, GLsizei width, GLsizei height),
+              (override));
+  MOCK_METHOD(void, Enable, (GLenum capability), (override));
+  MOCK_METHOD(void,
+              Scissor,
               (GLint x, GLint y, GLsizei width, GLsizei height),
               (override));
   MOCK_METHOD(void,
