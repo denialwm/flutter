@@ -343,6 +343,9 @@ class CanvasDlDispatcher : public DlDispatcherBase {
 
   void FinishRecording() { canvas_.EndReplay(); }
 
+  // Visible for focused command-path tests.
+  const Canvas& GetCanvasForTesting() const { return canvas_; }
+
   // |flutter::DlOpReceiver|
   void drawVertices(const std::shared_ptr<flutter::DlVertices>& vertices,
                     flutter::DlBlendMode dl_mode) override;

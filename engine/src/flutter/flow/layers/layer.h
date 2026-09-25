@@ -113,6 +113,13 @@ struct PaintContext {
   bool impeller_enabled = false;
   impeller::AiksContext* aiks_context;
 
+  // Most root canvases record directly in render-target coordinates. An
+  // embedder root canvas may instead defer this transform until Submit. A
+  // nullopt value means the eventual mapping is unknown and device-pixel
+  // caches must be bypassed.
+  std::optional<DlMatrix> impeller_canvas_to_render_target_transform =
+      std::nullopt;
+
   // See PrerollContext::denial_render_output_logical_size.
   std::optional<DlSize> denial_render_output_logical_size;
 };

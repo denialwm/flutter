@@ -16,6 +16,7 @@
 namespace impeller {
 
 struct Picture;
+class StaticPictureCache;
 
 class AiksContext {
  public:
@@ -43,9 +44,12 @@ class AiksContext {
 
   ContentContext& GetContentContext() const;
 
+  StaticPictureCache& GetStaticPictureCache() const;
+
  private:
   std::shared_ptr<Context> context_;
   std::unique_ptr<ContentContext> content_context_;
+  std::unique_ptr<StaticPictureCache> static_picture_cache_;
   bool is_valid_ = false;
 
   AiksContext(const AiksContext&) = delete;

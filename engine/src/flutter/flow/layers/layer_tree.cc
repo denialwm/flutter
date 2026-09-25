@@ -109,6 +109,13 @@ void LayerTree::Paint(CompositorContext::ScopedFrame& frame,
 
   SkColorSpace* color_space = GetColorSpace(frame.canvas());
 
+  std::optional<DlMatrix> impeller_canvas_to_render_target_transform =
+      DlMatrix();
+  if (frame.view_embedder() && frame.view_embedder()->GetRootCanvas()) {
+    impeller_canvas_to_render_target_transform =
+        frame.view_embedder()->GetRootCanvasToRenderTargetTransform();
+  }
+
 #if !SLIMPELLER
   RasterCache* cache =
       ignore_raster_cache ? nullptr : &frame.context().raster_cache();
@@ -129,6 +136,8 @@ void LayerTree::Paint(CompositorContext::ScopedFrame& frame,
 #endif  //  !SLIMPELLER
       .impeller_enabled              = !!frame.aiks_context(),
       .aiks_context                  = frame.aiks_context(),
+      .impeller_canvas_to_render_target_transform =
+          impeller_canvas_to_render_target_transform,
       // clang-format on
   };
 

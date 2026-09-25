@@ -55,6 +55,8 @@ class DisplayListLayer : public Layer {
 
   DlPoint offset_;
   DlRect bounds_;
+  const bool is_complex_;
+  const bool will_change_;
 
   sk_sp<DisplayList> display_list_;
 

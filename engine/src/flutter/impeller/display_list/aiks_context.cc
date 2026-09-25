@@ -4,6 +4,7 @@
 
 #include "impeller/display_list/aiks_context.h"
 
+#include "impeller/display_list/static_picture_cache.h"
 #include "impeller/typographer/typographer_context.h"
 
 namespace impeller {
@@ -25,6 +26,8 @@ AiksContext::AiksContext(
   if (!content_context_->IsValid()) {
     return;
   }
+  static_picture_cache_ =
+      std::make_unique<StaticPictureCache>(*content_context_);
 
   is_valid_ = true;
 }
@@ -41,6 +44,10 @@ std::shared_ptr<Context> AiksContext::GetContext() const {
 
 ContentContext& AiksContext::GetContentContext() const {
   return *content_context_;
+}
+
+StaticPictureCache& AiksContext::GetStaticPictureCache() const {
+  return *static_picture_cache_;
 }
 
 }  // namespace impeller

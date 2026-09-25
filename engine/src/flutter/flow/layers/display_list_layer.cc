@@ -12,13 +12,21 @@
 #include "flutter/flow/raster_cache.h"
 #include "flutter/flow/raster_cache_util.h"
 
+#ifdef IMPELLER_SUPPORTS_RENDERING
+#include "flutter/impeller/display_list/aiks_context.h"
+#include "flutter/impeller/display_list/static_picture_cache.h"
+#endif
+
 namespace flutter {
 
 DisplayListLayer::DisplayListLayer(const DlPoint& offset,
                                    sk_sp<DisplayList> display_list,
                                    bool is_complex,
                                    bool will_change)
-    : offset_(offset), display_list_(std::move(display_list)) {
+    : offset_(offset),
+      is_complex_(is_complex),
+      will_change_(will_change),
+      display_list_(std::move(display_list)) {
   if (display_list_) {
     bounds_ = display_list_->GetBounds().Shift(offset_.x, offset_.y);
 #if !SLIMPELLER
@@ -131,6 +139,17 @@ void DisplayListLayer::Paint(PaintContext& context) const {
 #endif  //  !SLIMPELLER
 
   DlScalar opacity = context.state_stack.outstanding_opacity();
+#ifdef IMPELLER_SUPPORTS_RENDERING
+  if (is_complex_ && !will_change_ && context.impeller_enabled &&
+      context.aiks_context &&
+      context.aiks_context->GetStaticPictureCache().Draw(
+          display_list_, context.state_stack.matrix(),
+          context.impeller_canvas_to_render_target_transform, opacity,
+          *context.canvas)) {
+    TRACE_EVENT_INSTANT0("flutter", "static picture cache draw");
+    return;
+  }
+#endif
   context.canvas->DrawDisplayList(display_list_, opacity);
 }
 

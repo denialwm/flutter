@@ -11,6 +11,7 @@ impeller_component("window_backdrop_unittests") {
   sources = [
     "../renderer/backend/gles/test/mock_gles.cc",
     "../renderer/backend/gles/test/mock_gles.h",
+    "static_picture_cache_unittests.cc",
     "window_backdrop_unittests.cc",
   ]
   deps = [
@@ -65,6 +66,8 @@ impeller_component("display_list") {
     "nine_patch_converter.h",
     "paint.cc",
     "paint.h",
+    "static_picture_cache.cc",
+    "static_picture_cache.h",
   ]
 
   public_deps = [
