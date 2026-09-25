@@ -386,6 +386,121 @@ TEST_F(StaticPictureCacheTest,
               0.00001f);
 }
 
+TEST_F(StaticPictureCacheTest,
+       DeferredGlesYFlipBuildsOnceAndReusesIntegerMovement) {
+  StaticPictureCache cache(*renderer_);
+  const auto shadow = MakeShadowPicture();
+  const std::optional<DlMatrix> deferred =
+      DlMatrix::MakeTranslation({0, 1080}) *
+      DlMatrix::MakeScale(Vector2(1, -1));
+  const DlMatrix placement = DlMatrix::MakeTranslation({619, 575});
+  DisplayListBuilder output;
+  EXPECT_FALSE(cache.Draw(shadow, placement, deferred, 1, output));
+  ASSERT_TRUE(cache.Draw(shadow, placement, deferred, 1, output));
+  EXPECT_TRUE(cache.Draw(shadow, placement, deferred, 1, output));
+  EXPECT_TRUE(cache.Draw(shadow, DlMatrix::MakeTranslation({620, 576}),
+                         deferred, 1, output));
+  EXPECT_EQ(cache.GetStatistics().generations, 1u);
+  EXPECT_EQ(cache.GetStatistics().hits, 2u);
+  EXPECT_EQ(cache.GetStatistics().rejected_transforms, 0u);
+  EXPECT_EQ(cache.GetEntryCount(), 1u);
+  EXPECT_GT(cache.GetResidentBytes(), 0u);
+}
+
+TEST_F(StaticPictureCacheTest,
+       ReflectionsPreserveSnapshotOrientationAndPixelPlacement) {
+  const auto shadow = MakeShadowPicture(DlRect::MakeLTRB(-64, -48, 136, 72),
+                                        DlRect::MakeLTRB(-28, -24, 100, 48));
+  for (float sign_x : {1.0f, -1.0f}) {
+    for (float sign_y : {1.0f, -1.0f}) {
+      SCOPED_TRACE(::testing::Message() << sign_x << ", " << sign_y);
+      std::optional<DlMatrix> snapshot_transform;
+      ISize snapshot_size;
+      StaticPictureCache cache(
+          *renderer_, StaticPictureCache::Limits(),
+          [&](const sk_sp<DisplayList>& snapshot, ISize size) {
+            DrawCounter ops;
+            snapshot->Dispatch(ops);
+            snapshot_transform = ops.last_transform;
+            snapshot_size = size;
+            EXPECT_EQ(ops.clip_paths, 1u);
+            EXPECT_EQ(ops.round_rects, 1u);
+            return MakeTexture(size);
+          });
+      const DlMatrix placement = DlMatrix::MakeTranslation({-7.25f, 13.5f});
+      const std::optional<DlMatrix> deferred =
+          DlMatrix::MakeTranslation({0.375f, 1080.625f}) *
+          DlMatrix::MakeScale(Vector2(1.5f * sign_x, 2.25f * sign_y));
+      const DlMatrix effective = deferred.value() * placement;
+      const DlIRect rounded =
+          DlIRect::RoundOut(shadow->GetBounds().TransformBounds(effective));
+      DisplayListBuilder output;
+      EXPECT_FALSE(cache.Draw(shadow, placement, deferred, 0.37f, output));
+      ASSERT_TRUE(cache.Draw(shadow, placement, deferred, 0.37f, output));
+      ASSERT_TRUE(snapshot_transform.has_value());
+      EXPECT_EQ(snapshot_size, ISize(rounded.GetSize()));
+      EXPECT_GT(snapshot_transform->m[0], 0);
+      EXPECT_GT(snapshot_transform->m[5], 0);
+
+      DrawCounter cached_ops;
+      output.Build()->Dispatch(cached_ops);
+      ASSERT_TRUE(cached_ops.last_image_destination.has_value());
+      const auto destination = cached_ops.last_image_destination.value();
+      // Follow asymmetric picture points through the snapshot, the image's
+      // source-to-destination mapping, and the deferred output transform.
+      // Comparing only bounding rectangles would miss a double reflection.
+      for (const DlPoint point :
+           {DlPoint(-64, -48), DlPoint(136, -48), DlPoint(136, 72),
+            DlPoint(-64, 72), DlPoint(11, 27)}) {
+        const DlPoint texel = snapshot_transform.value() * point;
+        const DlPoint replayed =
+            destination.GetOrigin() +
+            DlPoint(texel.x * destination.GetWidth() / snapshot_size.width,
+                    texel.y * destination.GetHeight() / snapshot_size.height);
+        const DlPoint actual = effective * replayed;
+        const DlPoint expected = effective * point;
+        EXPECT_NEAR(actual.x, expected.x, 0.0002f);
+        EXPECT_NEAR(actual.y, expected.y, 0.0002f);
+      }
+      ASSERT_TRUE(cached_ops.last_opacity.has_value());
+      EXPECT_NEAR(cached_ops.last_opacity.value(),
+                  DlColor::toAlpha(0.37f) / 255.0f, 0.00001f);
+    }
+  }
+}
+
+TEST_F(StaticPictureCacheTest,
+       ReflectedKeysTrackSignScaleAndPhaseButRejectDegenerateTransforms) {
+  StaticPictureCache::Limits limits;
+  limits.admission_threshold = 1u;
+  StaticPictureCache cache(
+      *renderer_, limits,
+      [&](const sk_sp<DisplayList>&, ISize size) { return MakeTexture(size); });
+  const auto shadow = MakeShadowPicture();
+  const std::optional<DlMatrix> flip = DlMatrix::MakeTranslation({0, 1080}) *
+                                       DlMatrix::MakeScale(Vector2(1, -1));
+  const std::optional<DlMatrix> identity = DlMatrix();
+  const DlMatrix placement = DlMatrix::MakeTranslation({10.25f, 4.5f});
+  DisplayListBuilder output;
+  EXPECT_TRUE(cache.Draw(shadow, placement, flip, 1, output));
+  EXPECT_TRUE(cache.Draw(shadow, DlMatrix::MakeTranslation({11.25f, 5.5f}),
+                         flip, 1, output));
+  EXPECT_EQ(cache.GetStatistics().generations, 1u);
+  EXPECT_EQ(cache.GetStatistics().hits, 1u);
+  EXPECT_TRUE(cache.Draw(shadow, DlMatrix::MakeTranslation({11.25f, 5.75f}),
+                         flip, 1, output));
+  EXPECT_TRUE(cache.Draw(shadow, placement, identity, 1, output));
+  EXPECT_TRUE(cache.Draw(shadow, placement * DlMatrix::MakeScale(Vector2(2, 2)),
+                         flip, 1, output));
+  EXPECT_EQ(cache.GetStatistics().generations, 4u);
+  EXPECT_FALSE(cache.Draw(shadow, DlMatrix::MakeScale(Vector2(0, -1)), identity,
+                          1, output));
+  EXPECT_FALSE(cache.Draw(shadow, DlMatrix::MakeScale(Vector2(-1, 0)), identity,
+                          1, output));
+  EXPECT_FALSE(cache.Draw(shadow, placement, std::nullopt, 1, output));
+  EXPECT_EQ(cache.GetStatistics().rejected_transforms, 3u);
+}
+
 TEST_F(StaticPictureCacheTest, EnforcesEntryAndByteBudgetsAndBacksOffFailure) {
   StaticPictureCache::Limits eviction_limits;
   eviction_limits.max_entries = 1u;

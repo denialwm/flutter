@@ -173,7 +173,7 @@ std::optional<StaticPictureCache::Plan> StaticPictureCache::MakePlan(
   if (!display_list || !transform.IsTranslationScaleOnly() ||
       !std::isfinite(transform.m[0]) || !std::isfinite(transform.m[5]) ||
       !std::isfinite(transform.m[12]) || !std::isfinite(transform.m[13]) ||
-      transform.m[0] <= 0.0f || transform.m[5] <= 0.0f) {
+      !std::isfinite(transform.m[10]) || !std::isfinite(transform.m[14])) {
     return std::nullopt;
   }
 
@@ -199,11 +199,21 @@ std::optional<StaticPictureCache::Plan> StaticPictureCache::MakePlan(
     return std::nullopt;
   }
 
-  const flutter::DlMatrix snapshot_transform =
-      flutter::DlMatrix::MakeTranslation(
-          {-static_cast<float>(rounded.GetLeft()),
-           -static_cast<float>(rounded.GetTop())}) *
-      transform;
+  // Denial's GLES target reflects Y. DrawImageRect replays the snapshot
+  // through that same transform, so rasterize in the picture's orientation:
+  // a reflected axis starts at the rounded far edge and advances backwards
+  // through device coordinates. Otherwise the output reflection would be
+  // baked into the image and then applied a second time when replaying it.
+  // IsTranslationScaleOnly already excludes zero scales, skew and perspective.
+  flutter::DlMatrix snapshot_transform = transform;
+  snapshot_transform.m[0] = std::abs(transform.m[0]);
+  snapshot_transform.m[5] = std::abs(transform.m[5]);
+  snapshot_transform.m[12] = transform.m[0] < 0
+                                 ? rounded.GetRight() - transform.m[12]
+                                 : transform.m[12] - rounded.GetLeft();
+  snapshot_transform.m[13] = transform.m[5] < 0
+                                 ? rounded.GetBottom() - transform.m[13]
+                                 : transform.m[13] - rounded.GetTop();
   const flutter::DlRect destination =
       flutter::DlRect::Make(rounded).TransformBounds(transform.Invert());
 
