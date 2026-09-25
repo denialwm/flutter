@@ -170,7 +170,8 @@ static bool BindVertexBuffer(const ProcTableGLES& gl,
                              BufferBindingsGLES* vertex_desc_gles,
                              const BufferView& vertex_buffer_view,
                              size_t buffer_index,
-                             size_t instance = 0) {
+                             size_t instance = 0,
+                             bool bind_attributes = true) {
   if (!vertex_buffer_view) {
     return false;
   }
@@ -190,6 +191,9 @@ static bool BindVertexBuffer(const ProcTableGLES& gl,
   //--------------------------------------------------------------------------
   /// Bind the vertex attributes associated with vertex buffer.
   ///
+  if (!bind_attributes) {
+    return true;
+  }
   if (!vertex_desc_gles->BindVertexAttributes(
           gl, buffer_index, vertex_buffer_view.GetRange().offset, instance)) {
     return false;
@@ -393,6 +397,18 @@ static void EncodeViewport(const ProcTableGLES& gl,
   std::optional<StencilAttachmentDescriptor> current_back_stencil;
   uint32_t current_stencil_reference = 0u;
   std::optional<Viewport> current_viewport;
+  std::optional<IRect32> current_scissor;
+  const PipelineGLES* current_pipeline = nullptr;
+  BufferBindingsGLES* current_vertex_descriptor = nullptr;
+  Range current_vertex_buffers;
+  // Host callbacks may change GL state between passes. Reuse state only
+  // while executing this command list, and retain the desktop VAO lifecycle.
+  const bool retain_vertex_attributes = gl.GetCapabilities()->IsES();
+  fml::ScopedCleanupClosure reset_vertex_attributes([&] {
+    if (current_vertex_descriptor) {
+      (void)current_vertex_descriptor->UnbindVertexAttributes(gl);
+    }
+  });
   CullMode current_cull_mode = CullMode::kNone;
   WindingOrder current_winding_order = WindingOrder::kClockwise;
   // Inverted to keep front-facing consistent under the vertex y-flip.
@@ -467,16 +483,23 @@ static void EncodeViewport(const ProcTableGLES& gl,
     //--------------------------------------------------------------------------
     /// Setup the scissor rect.
     ///
-    if (command.scissor.has_value()) {
-      const auto& scissor = command.scissor.value();
-      gl.Enable(GL_SCISSOR_TEST);
-      // Same flip handling as the viewport above.
-      const auto scissor_y_gl =
-          flip_y ? scissor.GetY()
-                 : target_size.height - scissor.GetY() - scissor.GetHeight();
-      gl.Scissor(scissor.GetX(),  // x
-                 scissor_y_gl,    // y
-                 scissor.GetWidth(), scissor.GetHeight());
+    if (command.scissor != current_scissor) {
+      if (!command.scissor.has_value()) {
+        gl.Disable(GL_SCISSOR_TEST);
+      } else {
+        const auto& scissor = command.scissor.value();
+        if (!current_scissor.has_value()) {
+          gl.Enable(GL_SCISSOR_TEST);
+        }
+        // Same flip handling as the viewport above.
+        const auto scissor_y_gl =
+            flip_y ? scissor.GetY()
+                   : target_size.height - scissor.GetY() - scissor.GetHeight();
+        gl.Scissor(scissor.GetX(),  // x
+                   scissor_y_gl,    // y
+                   scissor.GetWidth(), scissor.GetHeight());
+      }
+      current_scissor = command.scissor;
     }
 
     //--------------------------------------------------------------------------
@@ -526,10 +549,36 @@ static void EncodeViewport(const ProcTableGLES& gl,
     ///       `RenderPass::ValidateIndexBuffer` here, as validation already runs
     ///       when the vertex/index buffers are set on the command.
     ///
+    bool reuse_vertex_buffers =
+        retain_vertex_attributes &&
+        current_vertex_descriptor == vertex_desc_gles &&
+        current_vertex_buffers.length == command.vertex_buffers.length;
+    if (reuse_vertex_buffers) {
+      for (size_t i = 0; i < command.vertex_buffers.length; i++) {
+        const auto& previous =
+            vertex_buffers[current_vertex_buffers.offset + i];
+        const auto& next = vertex_buffers[command.vertex_buffers.offset + i];
+        if (previous.GetBuffer() != next.GetBuffer() ||
+            previous.GetRange() != next.GetRange()) {
+          reuse_vertex_buffers = false;
+          break;
+        }
+      }
+    }
+    if (!reuse_vertex_buffers) {
+      if (current_vertex_descriptor) {
+        if (!current_vertex_descriptor->UnbindVertexAttributes(gl)) {
+          return false;
+        }
+      }
+      current_vertex_descriptor = vertex_desc_gles;
+      current_vertex_buffers = command.vertex_buffers;
+    }
+    // Preserve dirty-buffer uploads even when attribute pointers are unchanged.
     for (size_t i = 0; i < command.vertex_buffers.length; i++) {
       if (!BindVertexBuffer(gl, vertex_desc_gles,
                             vertex_buffers[i + command.vertex_buffers.offset],
-                            i)) {
+                            i, 0, !reuse_vertex_buffers)) {
         return false;
       }
     }
@@ -537,15 +586,17 @@ static void EncodeViewport(const ProcTableGLES& gl,
     //--------------------------------------------------------------------------
     /// Bind the pipeline program.
     ///
-    if (!pipeline.BindProgram()) {
-      return false;
-    }
-
-    //--------------------------------------------------------------------------
-    /// Bind the y-flip uniform if the vertex shader declares it.
-    const GLint y_flip_loc = pipeline.GetYFlipUniformLocation();
-    if (y_flip_loc >= 0) {
-      gl.Uniform1fv(y_flip_loc, 1, &y_flip_value);
+    if (current_pipeline != &pipeline) {
+      if (!pipeline.BindProgram()) {
+        return false;
+      }
+      current_pipeline = &pipeline;
+      // This value is constant throughout the pass. Other per-draw uniforms
+      // are still uploaded below, even when the program did not change.
+      const GLint y_flip_loc = pipeline.GetYFlipUniformLocation();
+      if (y_flip_loc >= 0) {
+        gl.Uniform1fv(y_flip_loc, 1, &y_flip_value);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -734,10 +785,15 @@ static void EncodeViewport(const ProcTableGLES& gl,
     denial_gpu_audit.End(gl, command_audit_token);
 
     //--------------------------------------------------------------------------
-    /// Unbind vertex attribs.
+    /// Emulation changes attribute offsets. Invalidate the retained bindings
+    /// before the next command; desktop GL also retains its per-draw VAO
+    /// cleanup.
     ///
-    if (!vertex_desc_gles->UnbindVertexAttributes(gl)) {
-      return false;
+    if (!retain_vertex_attributes || emulate_instanced) {
+      if (!vertex_desc_gles->UnbindVertexAttributes(gl)) {
+        return false;
+      }
+      current_vertex_descriptor = nullptr;
     }
   }
 

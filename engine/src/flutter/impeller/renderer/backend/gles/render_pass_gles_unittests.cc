@@ -14,6 +14,7 @@
 #include "impeller/entity/gles/modern_shaders_gles.h"
 #include "impeller/renderer/backend/gles/command_buffer_gles.h"
 #include "impeller/renderer/backend/gles/context_gles.h"
+#include "impeller/renderer/backend/gles/device_buffer_gles.h"
 #include "impeller/renderer/backend/gles/pipeline_gles.h"
 #include "impeller/renderer/backend/gles/proc_table_gles.h"
 #include "impeller/renderer/backend/gles/reactor_gles.h"
@@ -365,6 +366,102 @@ class RenderPassGLESCommandTest : public ::testing::Test {
             std::move(render_pass), std::move(pipeline)};
   }
 };
+
+TEST_F(RenderPassGLESCommandTest, ProgramAndScissorCachedAcrossCommands) {
+  auto ctx = CreateRenderPassGLESContext();
+  for (int i = 0; i < 4; i++) {
+    ctx.render_pass->SetPipeline(PipelineRef(ctx.pipeline));
+    ctx.render_pass->SetElementCount(1);
+    ctx.render_pass->SetIndexBuffer({}, IndexType::kNone);
+    if (i < 3) {
+      ctx.render_pass->SetScissor(
+          IRect32::MakeXYWH(i == 2 ? 10 : 0, 0, 40, 40));
+    }
+    ASSERT_TRUE(ctx.render_pass->Draw().ok());
+  }
+  EXPECT_CALL(ctx.mock_gl_impl_ref, UseProgram(_)).Times(1);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Enable(GL_SCISSOR_TEST)).Times(1);
+  // One pass reset, then the final command removes the scissor.
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Disable(GL_SCISSOR_TEST)).Times(2);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Scissor(0, 0, 40, 40)).Times(1);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, Scissor(10, 0, 40, 40)).Times(1);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, DrawArrays(_, _, _)).Times(4);
+  ASSERT_TRUE(ctx.render_pass->EncodeCommands());
+  ASSERT_TRUE(ctx.reactor->React());
+}
+
+TEST_F(RenderPassGLESCommandTest, ProgramReboundWhenPipelineChanges) {
+  auto ctx = CreateRenderPassGLESContext();
+  auto other = std::shared_ptr<PipelineGLES>(new PipelineGLES(
+      ctx.reactor, std::weak_ptr<PipelineLibrary>(),
+      ctx.pipeline->GetDescriptor(),
+      std::make_shared<UniqueHandleGLES>(
+          ctx.reactor, ctx.reactor->CreateHandle(HandleType::kProgram))));
+  other->buffer_bindings_ = std::make_unique<BufferBindingsGLES>();
+  for (const auto& pipeline :
+       {ctx.pipeline, ctx.pipeline, other, other, ctx.pipeline}) {
+    ctx.render_pass->SetPipeline(PipelineRef(pipeline));
+    ctx.render_pass->SetElementCount(1);
+    ctx.render_pass->SetIndexBuffer({}, IndexType::kNone);
+    ASSERT_TRUE(ctx.render_pass->Draw().ok());
+  }
+  EXPECT_CALL(ctx.mock_gl_impl_ref, UseProgram(_)).Times(3);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, DrawArrays(_, _, _)).Times(5);
+  ASSERT_TRUE(ctx.render_pass->EncodeCommands());
+  ASSERT_TRUE(ctx.reactor->React());
+}
+
+TEST_F(RenderPassGLESCommandTest, ReusedAttributesStillUploadDirtyBuffers) {
+  auto ctx = CreateRenderPassGLESContext();
+  ShaderStageIOSlot position = {
+      .name = "position",
+      .location = 0,
+      .set = 0,
+      .binding = 0,
+      .type = ShaderType::kFloat,
+      .bit_width = 32,
+      .vec_size = 2,
+      .columns = 1,
+      .offset = 0,
+  };
+  ASSERT_TRUE(ctx.pipeline->buffer_bindings_->RegisterVertexStageInput(
+      ctx.mock_gl->GetProcTable(), {position},
+      {ShaderStageBufferLayout{
+          .stride = 8, .binding = 0, .input_rate = VertexInputRate::kVertex}}));
+  auto backing = std::make_unique<Allocation>();
+  ASSERT_TRUE(backing->Truncate(Bytes{64}));
+  auto buffer = std::make_shared<DeviceBufferGLES>(
+      DeviceBufferDescriptor{.size = 64}, ctx.reactor, std::move(backing));
+  for (size_t offset : {0u, 0u, 8u, 8u}) {
+    ctx.render_pass->SetPipeline(PipelineRef(ctx.pipeline));
+    ASSERT_TRUE(
+        ctx.render_pass->SetVertexBuffer(BufferView(buffer, Range{offset, 8})));
+    ctx.render_pass->SetElementCount(1);
+    ctx.render_pass->SetIndexBuffer({}, IndexType::kNone);
+    ASSERT_TRUE(ctx.render_pass->Draw().ok());
+  }
+  EXPECT_CALL(ctx.mock_gl_impl_ref, EnableVertexAttribArray(0)).Times(2);
+  EXPECT_CALL(ctx.mock_gl_impl_ref, DisableVertexAttribArray(0)).Times(2);
+  EXPECT_CALL(ctx.mock_gl_impl_ref,
+              VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, nullptr))
+      .Times(1);
+  EXPECT_CALL(ctx.mock_gl_impl_ref,
+              VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8,
+                                  reinterpret_cast<const void*>(8)))
+      .Times(1);
+  int draws = 0;
+  EXPECT_CALL(ctx.mock_gl_impl_ref, DrawArrays(_, _, _))
+      .Times(4)
+      .WillRepeatedly([&](GLenum, GLint, GLsizei) {
+        if (++draws == 1) {
+          buffer->Flush(Range{0, 4});
+        }
+      });
+  EXPECT_CALL(ctx.mock_gl_impl_ref, BufferSubData(GL_ARRAY_BUFFER, 0, 4, _))
+      .Times(1);
+  ASSERT_TRUE(ctx.render_pass->EncodeCommands());
+  ASSERT_TRUE(ctx.reactor->React());
+}
 
 TEST_F(RenderPassGLESCommandTest, ViewportCachedAcrossCommands) {
   auto ctx = CreateRenderPassGLESContext();
