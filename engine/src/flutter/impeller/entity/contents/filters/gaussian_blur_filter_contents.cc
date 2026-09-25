@@ -294,7 +294,6 @@ DownsamplePassArgs CalculateDownsamplePassArgs(
     const Snapshot& input_snapshot,
     const std::optional<Rect>& source_expanded_coverage_hint,
     const std::optional<Quad>& source_bounds,
-    const std::shared_ptr<FilterInput>& input,
     const Entity& snapshot_entity,
     Entity::TileMode tile_mode,
     Scalar downsample_scale) {
@@ -392,8 +391,8 @@ DownsamplePassArgs CalculateDownsamplePassArgs(
 
     Vector2 effective_scalar =
         Vector2(subpass_size) / source_rect_padded.GetSize();
-    Quad uvs = GaussianBlurFilterContents::CalculateUVs(
-        input, snapshot_entity, source_rect_padded, input_snapshot_size);
+    Quad uvs = GaussianBlurFilterContents::CalculateUVs(source_rect_padded,
+                                                        input_snapshot_size);
     std::optional<Quad> uv_bounds;
     if (source_bounds.has_value()) {
       uv_bounds = MakeReferenceUVs(
@@ -904,8 +903,8 @@ std::optional<Entity> GaussianBlurFilterContents::RenderFilter(
 
   DownsamplePassArgs downsample_pass_args = CalculateDownsamplePassArgs(
       blur_info.scaled_sigma, blur_info.padding, input_snapshot.value(),
-      source_expanded_coverage_hint, source_bounds, inputs[0], snapshot_entity,
-      tile_mode_, downsample_scale_);
+      source_expanded_coverage_hint, source_bounds, snapshot_entity, tile_mode_,
+      downsample_scale_);
 
   Vector2 downsampled_pixel_size =
       1.0 / Vector2(downsample_pass_args.subpass_size);
@@ -1076,17 +1075,15 @@ Scalar GaussianBlurFilterContents::CalculateBlurRadius(Scalar sigma) {
   return static_cast<Radius>(Sigma(sigma)).radius;
 }
 
-Quad GaussianBlurFilterContents::CalculateUVs(
-    const std::shared_ptr<FilterInput>& filter_input,
-    const Entity& entity,
-    const Rect& source_rect,
-    const ISize& texture_size) {
-  Matrix input_transform = filter_input->GetLocalTransform(entity);
-  Quad coverage_quad = source_rect.GetTransformedPoints(input_transform);
-
+Quad GaussianBlurFilterContents::CalculateUVs(const Rect& source_rect,
+                                              const ISize& texture_size) {
+  // source_rect is already in the snapshot texture's pixel coordinates.
+  // Its scene placement belongs only in the output transform. Applying it
+  // here again shifts translated crops outside [0, 1], causing the sampler
+  // to repeat an edge across valid interior pixels (including background).
   Matrix uv_transform = Matrix::MakeScale(
       {1.0f / texture_size.width, 1.0f / texture_size.height, 1.0f});
-  return uv_transform.Transform(coverage_quad);
+  return source_rect.GetTransformedPoints(uv_transform);
 }
 
 // This function was calculated by observing Skia's behavior. Its blur at 500

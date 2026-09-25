@@ -427,11 +427,8 @@ TEST_P(GaussianBlurFilterContentsTest,
 }
 
 TEST_P(GaussianBlurFilterContentsTest, CalculateUVsSimple) {
-  std::shared_ptr<Texture> texture = MakeTexture(ISize(100, 100));
-  auto filter_input = FilterInput::Make(texture);
-  Entity entity;
   Quad uvs = GaussianBlurFilterContents::CalculateUVs(
-      filter_input, entity, Rect::MakeSize(ISize(100, 100)), ISize(100, 100));
+      Rect::MakeSize(ISize(100, 100)), ISize(100, 100));
   std::optional<Rect> uvs_bounds = Rect::MakePointBounds(uvs);
   EXPECT_TRUE(uvs_bounds.has_value());
   if (uvs_bounds.has_value()) {

@@ -5,6 +5,7 @@
 #include "flutter/display_list/effects/image_filters/dl_blur_image_filter.h"
 #include "flutter/display_list/effects/image_filters/dl_glass_image_filter.h"
 #include "impeller/display_list/image_filter.h"
+#include "impeller/entity/contents/filters/gaussian_blur_filter_contents.h"
 #include "impeller/entity/contents/filters/glass_filter_contents.h"
 
 #include "gtest/gtest.h"
@@ -95,6 +96,28 @@ TEST_F(WindowBackdropTest, SourceTextureContainsOnlyWindowPixels) {
   Entity entity;
   entity.SetTransform(Matrix::MakeTranslation(Vector2(-5, -3)));
   EXPECT_EQ(input->GetCoverage(entity), window.Shift(Vector2(-5, -3)));
+}
+
+TEST_F(WindowBackdropTest,
+       TranslatedCropKeepsBlurSamplingInTextureCoordinates) {
+  auto cropped =
+      CropWindowBackdrop(*renderer_, texture_, Rect::MakeLTRB(55, 10, 96, 90));
+  ASSERT_TRUE(cropped);
+  const auto size = cropped->texture->GetSize();
+  for (const Rect source :
+       {Rect::MakeSize(size), Rect::MakeSize(size).Expand(Vector2(8, 8))}) {
+    const auto uvs = GaussianBlurFilterContents::CalculateUVs(source, size);
+    const auto points = source.GetPoints();
+    for (size_t i = 0; i < uvs.size(); i++) {
+      EXPECT_FLOAT_EQ(uvs[i].x, points[i].x / size.width);
+      EXPECT_FLOAT_EQ(uvs[i].y, points[i].y / size.height);
+    }
+  }
+  // A black pixel three quarters across the crop must still sample at 0.75,
+  // not beyond 1.0 where clamp repeats the crop's rightmost pixel.
+  const auto uvs =
+      GaussianBlurFilterContents::CalculateUVs(Rect::MakeSize(size), size);
+  EXPECT_FLOAT_EQ(uvs[0].x * 0.25f + uvs[1].x * 0.75f, 0.75f);
 }
 
 TEST_F(WindowBackdropTest, CroppedFilterCoversWindowThroughCacheAndRootFlip) {
