@@ -615,8 +615,14 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
         (!buffer_damage->isEmpty() && buffer_damage->isSimple() &&
          buffer_damage->bounds() == DlIRect::MakeSize(pending_frame_size_));
     if (!buffer_damage.has_value() || !buffer_damage->isEmpty()) {
+      // The region includes both frame changes and repair required by this
+      // particular output buffer. Cull only its bounds; a complex region is
+      // conservatively represented by one rectangle for Impeller dispatch.
+      const auto damage_cull = !full_repaint && buffer_damage.has_value()
+                                   ? std::make_optional(buffer_damage->bounds())
+                                   : std::nullopt;
       if (!root->second->Render(*pending_denial_render_target_, full_repaint,
-                                full_repaint)) {
+                                full_repaint, damage_cull)) {
         pending_denial_render_target_.reset();
         frame->Submit();
         return;
