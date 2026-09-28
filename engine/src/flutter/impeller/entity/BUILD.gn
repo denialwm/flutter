@@ -297,6 +297,19 @@ impeller_component("entity_test_helpers") {
   deps = [ ":entity" ]
 }
 
+# Geometry and source-coverage checks only; no playground or GPU rendering.
+impeller_component("glass_filter_unittests") {
+  target_type = "executable"
+  testonly = true
+  sources = [ "contents/filters/glass_filter_contents_unittests.cc" ]
+  deps = [
+    ":entity",
+    "../geometry:geometry_asserts",
+    "//flutter/testing:testing",
+    "//flutter/third_party/googletest:gtest_main",
+  ]
+}
+
 impeller_component("entity_unittests") {
   testonly = true
 

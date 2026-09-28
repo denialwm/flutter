@@ -158,6 +158,15 @@ std::optional<GlassMaterialDraw> ResolveGlassMaterialDraw(
   };
 }
 
+Scalar FitGlassBevelWidthScale(Size material_size,
+                               Scalar physical_thickness,
+                               Scalar requested_scale) {
+  const Scalar half_extent =
+      std::min(material_size.width, material_size.height) * 0.5f;
+  return std::min(requested_scale,
+                  half_extent / std::max(physical_thickness, 0.0001f));
+}
+
 bool GlassFrostNeedsBlur(Scalar sigma_x, Scalar sigma_y) {
   return sigma_x != 0.0f || sigma_y != 0.0f;
 }
@@ -301,6 +310,13 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
   const Scalar physical_thickness =
       std::min(thickness_ * (scale_x + scale_y) * 0.5f,
                std::min(material_size.width, material_size.height) * 0.5f);
+  // Thickness alone does not bound the bevel: its width scale can make the
+  // opposing edge profiles overlap on a narrow material. Their normals then
+  // flip at its centre while refraction is still nonzero, splitting the image.
+  // Fit only that footprint, using full material dimensions (never damage),
+  // and retain the selected optical depth and lighting for small surfaces.
+  const Scalar physical_bevel_width_scale = FitGlassBevelWidthScale(
+      material_size, physical_thickness, bevel_width_scale_);
   const RoundingRadii& radii = shape_.GetRadii();
   const Vector4 corner_radii(
       PhysicalCornerRadius(radii.top_left, scale_x, scale_y),
@@ -324,7 +340,8 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
        dispersion = dispersion_, saturation = saturation_, tint = tint_,
        tint_strength = tint_strength_, brightness = brightness_,
        light_angle = light_angle_, light_intensity = light_intensity_,
-       edge_strength = edge_strength_, bevel_width_scale = bevel_width_scale_,
+       edge_strength = edge_strength_,
+       bevel_width_scale = physical_bevel_width_scale,
        refraction_depth_scale = refraction_depth_scale_, rim_width = rim_width_,
        rim_falloff = rim_falloff_,
        opposite_light_strength = opposite_light_strength_](

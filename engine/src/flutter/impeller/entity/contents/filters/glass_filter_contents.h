@@ -26,6 +26,12 @@ std::optional<GlassMaterialDraw> ResolveGlassMaterialDraw(
     const Rect& material_bounds,
     const Matrix& material_transform = Matrix());
 
+// Fits the bevel to the full physical material so opposing edges reach a flat
+// normal before they meet. Optical thickness and refraction depth stay intact.
+Scalar FitGlassBevelWidthScale(Size material_size,
+                               Scalar physical_thickness,
+                               Scalar requested_scale);
+
 bool GlassFrostNeedsBlur(Scalar sigma_x, Scalar sigma_y);
 
 class GlassFilterContents final : public FilterContents {

@@ -91,6 +91,13 @@ void roundedBoxField(vec2 position,
   } else {
     vec2 inward = max(-q, 0.0);
     vec2 smooth_weights = vec2(inward.y * inward.y, inward.x * inward.x);
+    // The inner core also crosses the horizontal and vertical centre lines.
+    // Cancel opposing contributions there before normalizing; sign_position
+    // alone flips a nonzero component and splits the refracted image near the
+    // ends of narrow, lightly rounded surfaces. The weight stays unchanged at
+    // either straight-edge join, where the other component is already zero.
+    vec2 core_extent = max(half_size - vec2(radius), vec2(0.0001));
+    smooth_weights *= clamp(abs(centered) / core_extent, 0.0, 1.0);
     float weight_length = length(smooth_weights);
     outward_normal = (weight_length > 0.0001 ? smooth_weights / weight_length
                                              : normalize(vec2(1.0))) *

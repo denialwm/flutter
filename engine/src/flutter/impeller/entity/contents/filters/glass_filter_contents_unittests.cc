@@ -127,6 +127,39 @@ TEST(GlassFilterContentsTest, SingularMaterialTransformIsRejected) {
                                         Matrix::MakeScale({0, 1, 1})));
 }
 
+TEST(GlassFilterContentsTest, NarrowMaterialFitsOpposingBevels) {
+  // A 35px bevel on a 48px taskbar used to retain a nonzero normal on both
+  // sides of its centre. The fit reaches zero there without changing depth.
+  EXPECT_FLOAT_EQ(FitGlassBevelWidthScale(Size(800, 48), 20, 1.75f), 1.2f);
+  EXPECT_FLOAT_EQ(FitGlassBevelWidthScale(Size(48, 800), 20, 1.75f), 1.2f);
+  EXPECT_FLOAT_EQ(FitGlassBevelWidthScale(Size(24, 24), 12, 3), 1);
+}
+
+TEST(GlassFilterContentsTest, FittingBevelPreservesProfilesThatAlreadyFit) {
+  EXPECT_FLOAT_EQ(FitGlassBevelWidthScale(Size(800, 400), 20, 1.75f), 1.75f);
+  EXPECT_FLOAT_EQ(FitGlassBevelWidthScale(Size(800, 48), 20, 0.25f), 0.25f);
+  EXPECT_FLOAT_EQ(FitGlassBevelWidthScale(Size(800, 70), 20, 1.75f), 1.75f);
+}
+
+TEST(GlassFilterContentsTest, BevelFitIsIndependentOfOutputScaleAndDamage) {
+  const Rect bounds = Rect::MakeXYWH(400, 300, 800, 48);
+  for (const Scalar scale : {0.75f, 1.0f, 1.25f, 2.0f}) {
+    const Matrix transform = Matrix::MakeScale({scale, -scale, 1});
+    const auto full = ResolveGlassMaterialDraw(
+        bounds.TransformBounds(transform), bounds, transform);
+    const auto cropped = ResolveGlassMaterialDraw(
+        Rect::MakeXYWH(420, 310, 10, 8).TransformBounds(transform), bounds,
+        transform);
+    ASSERT_TRUE(full);
+    ASSERT_TRUE(cropped);
+    EXPECT_FLOAT_EQ(
+        FitGlassBevelWidthScale(full->material_size, 20 * scale, 1.75f), 1.2f);
+    EXPECT_FLOAT_EQ(
+        FitGlassBevelWidthScale(cropped->material_size, 20 * scale, 1.75f),
+        1.2f);
+  }
+}
+
 TEST(GlassFilterContentsTest, ZeroFrostBypassesGaussianPass) {
   EXPECT_FALSE(GlassFrostNeedsBlur(0, 0));
   EXPECT_TRUE(GlassFrostNeedsBlur(1, 0));
