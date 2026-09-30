@@ -38,4 +38,4 @@ class WindowSurfaceContents final : public Contents {
   Scalar opacity_;
 };
 }  // namespace impeller
-#endif
+#endif  // FLUTTER_IMPELLER_ENTITY_CONTENTS_WINDOW_SURFACE_CONTENTS_H_

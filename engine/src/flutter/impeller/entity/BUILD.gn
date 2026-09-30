@@ -131,8 +131,6 @@ impeller_component("entity") {
     "contents/atlas_contents.h",
     "contents/backdrop_surface_contents.cc",
     "contents/backdrop_surface_contents.h",
-    "contents/window_surface_contents.h",
-    "contents/window_surface_contents.cc",
     "contents/circle_contents.cc",
     "contents/circle_contents.h",
     "contents/clip_contents.cc",
@@ -224,6 +222,8 @@ impeller_component("entity") {
     "contents/uber_sdf_parameters.h",
     "contents/vertices_contents.cc",
     "contents/vertices_contents.h",
+    "contents/window_surface_contents.cc",
+    "contents/window_surface_contents.h",
     "draw_order_resolver.cc",
     "draw_order_resolver.h",
     "entity.cc",
@@ -305,7 +305,7 @@ impeller_component("glass_filter_unittests") {
   deps = [
     ":entity",
     "../geometry:geometry_asserts",
-    "//flutter/testing:testing",
+    "//flutter/testing",
     "//flutter/third_party/googletest:gtest_main",
   ]
 }

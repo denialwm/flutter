@@ -80,4 +80,4 @@ class DlWindowSurfaceFilter final : public DlImageFilter {
 };
 
 }  // namespace flutter
-#endif
+#endif  // FLUTTER_DISPLAY_LIST_EFFECTS_IMAGE_FILTERS_DL_WINDOW_SURFACE_FILTER_H_

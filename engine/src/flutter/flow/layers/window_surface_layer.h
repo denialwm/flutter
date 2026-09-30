@@ -36,4 +36,4 @@ class WindowSurfaceLayer final : public ContainerLayer {
   bool cache_prepared_ = false;
 };
 }  // namespace flutter
-#endif
+#endif  // FLUTTER_FLOW_LAYERS_WINDOW_SURFACE_LAYER_H_
