@@ -7,7 +7,8 @@ uniform FragInfo {
   // packed vec4 array uploads this material in ONE call instead of twelve,
   // with no array-repacking allocation and the same 112-byte payload.
   vec4 data[7];
-} frag_info;
+}
+frag_info;
 #define window_bounds frag_info.data[0]
 #define content_bounds frag_info.data[1]
 #define source_limits frag_info.data[2]
@@ -28,7 +29,8 @@ out vec4 frag_color;
 float roundedCoverage(vec4 bounds, float corner_radius) {
   vec2 half_size = max((bounds.zw - bounds.xy) * 0.5, vec2(0.0));
   corner_radius = clamp(corner_radius, 0.0, min(half_size.x, half_size.y));
-  vec2 q = abs(v_position - (bounds.xy + bounds.zw) * 0.5) - half_size + corner_radius;
+  vec2 q = abs(v_position - (bounds.xy + bounds.zw) * 0.5) - half_size +
+           corner_radius;
   float d = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - corner_radius;
   // Derivatives keep the fringe one physical pixel wide during output-scale,
   // overview and window animation transforms, without stencil/MSAA passes.
@@ -37,21 +39,22 @@ float roundedCoverage(vec4 bounds, float corner_radius) {
 void main() {
   float outer = roundedCoverage(window_bounds, radius);
   float inset = max(content_bounds.x - window_bounds.x, 0.0);
-  float inner = min(outer, roundedCoverage(content_bounds,
-                                         max(radius - inset, 0.0)));
-  if (outer <= 0.0) { discard; }
+  float inner =
+      min(outer, roundedCoverage(content_bounds, max(radius - inset, 0.0)));
+  if (outer <= 0.0) {
+    discard;
+  }
   vec4 surface = vec4(0.0);
   // No client texture fetch for the solid frame; no filtered-backdrop fetch
   // for opaque clients, transparent holes or disabled blur/glass.
   if (inner > 0.0 && has_surface > 0.5 &&
       all(greaterThanEqual(v_surface_uv, source_coverage.xy)) &&
       all(lessThanEqual(v_surface_uv, source_coverage.zw))) {
-    surface = sampleSurface(clamp(v_surface_uv, source_limits.xy,
-                                  source_limits.zw));
+    surface =
+        sampleSurface(clamp(v_surface_uv, source_limits.xy, source_limits.zw));
     surface *= surface_opacity;
     if (has_backdrop > 0.5 && surface.a > 0.0 &&
-        surface.a * inner > alpha_threshold &&
-        surface.a < 1.0 - 1.0 / 1024.0) {
+        surface.a * inner > alpha_threshold && surface.a < 1.0 - 1.0 / 1024.0) {
       vec4 backdrop = vec4(texture(backdrop_texture_sampler, v_backdrop_uv,
                                    float16_t(kDefaultMipBias)));
       surface += backdrop * backdrop_opacity * (1.0 - surface.a);

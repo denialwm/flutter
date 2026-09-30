@@ -2,7 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 #include <impeller/types.glsl>
-uniform FrameInfo { mat4 mvp; } frame_info;
+uniform FrameInfo {
+  mat4 mvp;
+}
+frame_info;
 in vec2 position;
 in vec2 surface_uv;
 in vec2 backdrop_uv;
