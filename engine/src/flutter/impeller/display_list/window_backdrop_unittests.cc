@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "flutter/common/backdrop_filter_cache_key.h"
 #include "flutter/display_list/effects/image_filters/dl_blur_image_filter.h"
 #include "flutter/display_list/effects/image_filters/dl_glass_image_filter.h"
 #include "impeller/display_list/canvas.h"
@@ -90,6 +91,103 @@ class WindowBackdropTest : public ::testing::Test {
   std::unique_ptr<ContentContext> renderer_;
   std::shared_ptr<Texture> texture_;
 };
+
+TEST_F(WindowBackdropTest,
+       BackdropSnapshotOwnerRetirementPreservesOtherViewsAndPins) {
+  auto& context = *renderer_;
+  TextureDescriptor descriptor;
+  descriptor.size = {4, 4};
+  descriptor.format = context.GetDeviceCapabilities().GetDefaultColorFormat();
+  descriptor.usage = TextureUsage::kRenderTarget;
+  descriptor.storage_mode = StorageMode::kDevicePrivate;
+  auto texture =
+      context.GetContext()->GetResourceAllocator()->CreateTexture(descriptor);
+  ASSERT_TRUE(texture);
+  const int64_t removed = flutter::MakeBackdropFilterCacheKey(7u, 1u);
+  const int64_t retained = flutter::MakeBackdropFilterCacheKey(8u, 1u);
+  auto owner = std::make_shared<int>(7);
+  auto other_view = std::make_shared<int>(8);
+  auto previous_tree = owner;
+  context.RegisterBackdropSnapshotOwner(removed, owner);
+  context.RegisterBackdropSnapshotOwner(retained, other_view);
+  auto removed_texture =
+      context.GetContext()->GetResourceAllocator()->CreateTexture(descriptor);
+  ASSERT_TRUE(removed_texture);
+  std::weak_ptr<Texture> removed_texture_lifetime = removed_texture;
+  context.CacheBackdropSnapshot(removed, Snapshot{.texture = removed_texture});
+  removed_texture.reset();
+  context.CacheBackdropSnapshot(retained, Snapshot{.texture = texture});
+  context.CacheBackdropSnapshot(17, Snapshot{.texture = texture});
+  // One view releasing its tree cannot evict a family another tree retains.
+  owner.reset();
+  context.PruneExpiredBackdropSnapshots();
+  EXPECT_TRUE(context.GetCachedBackdropSnapshot(removed).has_value());
+  {
+    BackdropSnapshotPins pins(context);
+    ASSERT_TRUE(pins.Pin(removed, Rect::MakeWH(4, 4)));
+    previous_tree.reset();
+    context.PruneExpiredBackdropSnapshots();
+    // The cache's reference is gone, but this submission still sees its pin.
+    EXPECT_TRUE(context.GetCachedBackdropSnapshot(removed).has_value());
+    EXPECT_FALSE(removed_texture_lifetime.expired());
+  }
+  EXPECT_FALSE(context.GetCachedBackdropSnapshot(removed).has_value());
+  EXPECT_TRUE(removed_texture_lifetime.expired());
+  EXPECT_TRUE(context.GetCachedBackdropSnapshot(retained).has_value());
+  EXPECT_TRUE(context.GetCachedBackdropSnapshot(17).has_value());
+  other_view.reset();
+  context.PruneExpiredBackdropSnapshots();
+  EXPECT_FALSE(context.GetCachedBackdropSnapshot(retained).has_value());
+}
+
+TEST_F(WindowBackdropTest,
+       BackdropSnapshotRetirementDrainsGLESCollectionAtIdle) {
+  auto reactor = context_->GetReactor();
+  auto handle = reactor->CreateHandle(HandleType::kTexture);
+  ASSERT_FALSE(handle.IsDead());
+  auto collected = std::make_shared<bool>(false);
+  ASSERT_TRUE(reactor->RegisterCleanupCallback(
+      handle, [collected] { *collected = true; }));
+  TextureDescriptor descriptor;
+  descriptor.size = {4, 4};
+  descriptor.format = PixelFormat::kR8G8B8A8UNormInt;
+  descriptor.usage = TextureUsage::kShaderRead;
+  auto texture = TextureGLES::WrapTexture(reactor, descriptor, handle);
+  ASSERT_TRUE(texture);
+  auto owner = std::make_shared<int>(7);
+  const int64_t key = flutter::MakeBackdropFilterCacheKey(7u, 1u);
+  renderer_->RegisterBackdropSnapshotOwner(key, owner);
+  renderer_->CacheBackdropSnapshot(key, Snapshot{.texture = texture});
+  texture.reset();
+  owner.reset();
+  EXPECT_FALSE(*collected);
+  renderer_->PruneExpiredBackdropSnapshots();
+  // No new render pass or command submission is needed to collect the handle.
+  EXPECT_TRUE(*collected);
+  EXPECT_FALSE(renderer_->GetCachedBackdropSnapshot(key).has_value());
+}
+
+TEST_F(WindowBackdropTest,
+       BackdropSnapshotOwnerChangeRetiresGenerationBeforeMaterializing) {
+  auto& context = *renderer_;
+  TextureDescriptor descriptor;
+  descriptor.size = {4, 4};
+  descriptor.format = context.GetDeviceCapabilities().GetDefaultColorFormat();
+  descriptor.usage = TextureUsage::kRenderTarget;
+  descriptor.storage_mode = StorageMode::kDevicePrivate;
+  auto texture =
+      context.GetContext()->GetResourceAllocator()->CreateTexture(descriptor);
+  ASSERT_TRUE(texture);
+  auto owner = std::make_shared<int>(7);
+  const int64_t first = flutter::MakeBackdropFilterCacheKey(7u, 1u);
+  const int64_t second = flutter::MakeBackdropFilterCacheKey(7u, 2u);
+  context.RegisterBackdropSnapshotOwner(first, owner);
+  context.CacheBackdropSnapshot(first, Snapshot{.texture = texture});
+  context.RegisterBackdropSnapshotOwner(second, owner);
+  EXPECT_FALSE(context.GetCachedBackdropSnapshot(first).has_value());
+  EXPECT_FALSE(context.GetCachedBackdropSnapshot(second).has_value());
+  EXPECT_FALSE(context.ShouldMaterializeBackdropSnapshot(second));
+}
 
 TEST_F(WindowBackdropTest, ExplicitWindowNeverUsesClipOrBorderDraws) {
   for (bool direct : {true, false}) {

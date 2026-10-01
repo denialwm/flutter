@@ -1087,6 +1087,48 @@ bool BackdropSnapshotPins::Pin(int64_t key, const Rect& coverage) {
   return true;
 }
 
+void ContentContext::RegisterBackdropSnapshotOwner(int64_t key,
+                                                   std::weak_ptr<void> owner) {
+  const uint32_t family = flutter::GetBackdropFilterCacheFamily(key);
+  if (family == 0u) {
+    return;
+  }
+  backdrop_snapshot_owners_[family] = std::move(owner);
+  // Damage planning has already pinned any snapshot required for submission.
+  RetireOlderBackdropSnapshotGenerations(key);
+}
+
+void ContentContext::PruneExpiredBackdropSnapshots() {
+  bool retired_snapshots = false;
+  for (auto owner = backdrop_snapshot_owners_.begin();
+       owner != backdrop_snapshot_owners_.end();) {
+    if (!owner->second.expired()) {
+      ++owner;
+      continue;
+    }
+    const uint32_t family = owner->first;
+    for (auto entry = backdrop_snapshot_cache_.begin();
+         entry != backdrop_snapshot_cache_.end();) {
+      if (flutter::GetBackdropFilterCacheFamily(entry->first) == family) {
+        retired_snapshots = true;
+        backdrop_snapshot_cache_bytes_ -= entry->second.byte_size;
+        entry = backdrop_snapshot_cache_.erase(entry);
+      } else {
+        ++entry;
+      }
+    }
+    backdrop_snapshot_observations_.erase(family);
+    owner = backdrop_snapshot_owners_.erase(owner);
+  }
+  if (retired_snapshots) {
+    // GLES texture destructors enqueue handle collection. Drain it while the
+    // just-completed raster context is current so the final frame does not
+    // leave removed families resident until another frame arrives. A worker
+    // without a current context defers collection to its next safe reaction.
+    (void)context_->FlushCommandBuffers();
+  }
+}
+
 void ContentContext::RetireOlderBackdropSnapshotGenerations(int64_t key) {
   const uint32_t family = flutter::GetBackdropFilterCacheFamily(key);
   if (family == 0u) {

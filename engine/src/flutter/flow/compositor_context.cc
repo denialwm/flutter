@@ -299,6 +299,15 @@ RasterStatus CompositorContext::ScopedFrame::Raster(
     frame_damage->SetBufferDamage(std::move(plan.buffer_damage));
   }
 
+#ifdef IMPELLER_SUPPORTS_RENDERING
+  if (aiks_context_) {
+    for (const auto& cache : layer_tree.backdrop_filter_caches()) {
+      aiks_context_->GetContentContext().RegisterBackdropSnapshotOwner(
+          cache.state->token(), cache.state);
+    }
+  }
+#endif
+
   const DlRect preroll_cull =
       clip_region ? DlRect::Make(clip_region->bounds()) : kGiantRect;
   bool root_needs_readback =

@@ -256,6 +256,13 @@ void Rasterizer::CollectView(int64_t view_id) {
     external_view_embedder_->CollectView(view_id);
   }
   view_records_.erase(view_id);
+#ifdef IMPELLER_SUPPORTS_RENDERING
+  if (surface_ && surface_->GetAiksContext()) {
+    surface_->GetAiksContext()
+        ->GetContentContext()
+        .PruneExpiredBackdropSnapshots();
+  }
+#endif
 }
 
 void Rasterizer::SetDenialRenderOutputs(
@@ -1088,6 +1095,17 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
   // See https://github.com/flutter/flutter/issues/135530, item 4.
   frame_timings_recorder.RecordRasterEnd(
       NOT_SLIMPELLER(&compositor_context_->raster_cache()));
+
+  // All view records now own their replacement or retry trees. A family
+  // removed from one view may still be retained by another view; weak owners
+  // preserve those snapshots and retire only families with no remaining tree.
+#ifdef IMPELLER_SUPPORTS_RENDERING
+  if (surface_->GetAiksContext()) {
+    surface_->GetAiksContext()
+        ->GetContentContext()
+        .PruneExpiredBackdropSnapshots();
+  }
+#endif
 
   FireNextFrameCallbackIfPresent();
 

@@ -344,6 +344,10 @@ class ContentContext {
   // or pinning a snapshot does not establish that caching saved any work.
   void RecordBackdropSnapshotReuse(int64_t key);
   void CacheBackdropSnapshot(int64_t key, const Snapshot& snapshot);
+  // Flutter supplies the lifetime of a versioned layer family. The weak
+  // owner observes all retained view trees without keeping a layer alive.
+  void RegisterBackdropSnapshotOwner(int64_t key, std::weak_ptr<void> owner);
+  void PruneExpiredBackdropSnapshots();
 
  protected:
   // Visible for testing.
@@ -418,6 +422,7 @@ class ContentContext {
       backdrop_snapshot_cache_;
   friend class BackdropSnapshotPins;
   BackdropSnapshotPins* backdrop_snapshot_pins_ = nullptr;
+  std::unordered_map<uint32_t, std::weak_ptr<void>> backdrop_snapshot_owners_;
   size_t backdrop_snapshot_cache_bytes_ = 0u;
   uint64_t backdrop_snapshot_cache_access_ = 0u;
 
