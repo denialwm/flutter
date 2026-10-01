@@ -57,6 +57,7 @@ void EmbedderExternalTextureGL::PrepareImage(PaintContext& context,
         );
     presentation_ = {};
     background_sample_ = {};
+    crop_only_presentation_ = false;
     presentation_.struct_size = sizeof(presentation_);
     if (last_image_ && presentation_callback_) {
       const bool supplied = presentation_callback_(Id(), &presentation_);
@@ -92,6 +93,22 @@ void EmbedderExternalTextureGL::PrepareImage(PaintContext& context,
             sample_axis(visible_source->GetTop(), visible_source->GetBottom()),
             1, 1);
       }
+      // Without a backing strip, a source inside the image drawn into a
+      // destination inside the canvas needs neither a clip nor a second draw:
+      // the same single image draw as an unmodified texture.
+      const auto source =
+          DlRect::MakeXYWH(presentation_.source[0], presentation_.source[1],
+                           presentation_.source[2], presentation_.source[3]);
+      const auto destination = DlRect::MakeXYWH(
+          presentation_.destination[0], presentation_.destination[1],
+          presentation_.destination[2], presentation_.destination[3]);
+      crop_only_presentation_ =
+          (presentation_.background[2] <= 0 ||
+           presentation_.background[3] <= 0) &&
+          !source.IsEmpty() && !destination.IsEmpty() &&
+          DlRect::Make(last_image_->GetBounds()).Contains(source) &&
+          DlRect::MakeWH(presentation_.width, presentation_.height)
+              .Contains(destination);
     }
   }
 }
@@ -107,7 +124,8 @@ void EmbedderExternalTextureGL::PaintWindow(PaintContext& context,
   // Some mobile clients use the embedder's content-inset presentation, which
   // paints a sampled backing strip as well as the client. That is explicitly
   // a composed input, not an attempted direct draw that can silently decline.
-  const bool direct = presentation_.width <= 0;
+  // A crop-only presentation remains the direct plan's single image.
+  const bool direct = presentation_.width <= 0 || crop_only_presentation_;
   const DlWindowSurfaceFilter material(window.style(), window.backdrop(),
                                        direct);
   DlPaint restore = context.paint ? *context.paint : DlPaint();
@@ -145,6 +163,14 @@ void EmbedderExternalTextureGL::Paint(PaintContext& context,
                               bounds.GetTop() + rect[1] * sy, rect[2] * sx,
                               rect[3] * sy);
     };
+    if (crop_only_presentation_) {
+      // Strict sampling keeps filtering from reading texels outside the
+      // crop, such as the unused rows of an over-allocated client buffer.
+      canvas->DrawImageRect(last_image_, source,
+                            project(presentation_.destination), sampling, paint,
+                            DlSrcRectConstraint::kStrict);
+      return;
+    }
     canvas->Save();
     canvas->ClipRect(bounds);
     if (!background_sample_.IsEmpty()) {

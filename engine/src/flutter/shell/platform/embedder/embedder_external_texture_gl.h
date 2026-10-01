@@ -62,6 +62,8 @@ class EmbedderExternalTextureGL : public flutter::Texture {
   ExternalTexturePresentationCallback presentation_callback_;
   DenialFlutterExternalTexturePresentation presentation_ = {};
   DlRect background_sample_;
+  // A presentation that only crops the image is still one image draw.
+  bool crop_only_presentation_ = false;
   void PrepareImage(PaintContext& context, const DlRect& bounds);
 
   sk_sp<DlImage> ResolveTexture(int64_t texture_id,
