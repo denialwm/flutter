@@ -12,11 +12,12 @@ void main() {
   ];
   for (final id in <int>[0, -1]) {
     ui.WindowSurfaceEngineLayer? previous;
-    for (final filter in filters) {
+    for (final (index, filter) in filters.indexed) {
       final builder = ui.SceneBuilder();
       final layer = builder.pushWindowSurface(
         bounds,
         contentBounds: content,
+        materialBounds: index.isOdd ? content.deflate(12) : null,
         radius: 10,
         backdrop: filter,
         textureId: id,

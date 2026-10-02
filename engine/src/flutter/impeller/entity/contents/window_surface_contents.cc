@@ -79,8 +79,10 @@ void BindFragment(RenderPass& pass,
       Vector4(style.radius, opacity,
               surface.contents ? surface.contents->GetOpacity() : 0,
               backdrop.contents ? backdrop.contents->GetOpacity() : 0);
+  const std::optional<Rect>& material = style.material_bounds;
   info.data[6] = Vector4(threshold, backdrop.contents ? 1 : 0,
-                         surface.contents ? 1 : 0, 0);
+                         surface.contents ? 1 : 0, material ? 1 : 0);
+  info.data[7] = material ? Vector4(material->GetLTRB()) : Vector4();
   FS::BindFragInfo(pass, data.EmplaceUniform(info));
   FS::BindBackdropTextureSampler(pass, backdrop_texture, backdrop_sampler);
 }

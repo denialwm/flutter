@@ -251,13 +251,13 @@ TEST_F(WindowBackdropTest, WindowMaterialIsOneUnpaddedUniformUpload) {
     const auto& data = metadata->members[0];
     EXPECT_EQ(data.type, ShaderType::kFloat);
     EXPECT_EQ(data.float_type, ShaderFloatType::kVec4);
-    EXPECT_EQ(data.array_elements, 7u);
+    EXPECT_EQ(data.array_elements, 8u);
     EXPECT_EQ(data.size, 16u);
     EXPECT_EQ(data.offset, 0u);
-    EXPECT_EQ(data.byte_length, 112u);
+    EXPECT_EQ(data.byte_length, 128u);
   }
-  EXPECT_EQ(sizeof(WindowSurfaceFragmentShader::FragInfo), 112u);
-  EXPECT_EQ(sizeof(WindowSurfaceTextureFragmentShader::FragInfo), 112u);
+  EXPECT_EQ(sizeof(WindowSurfaceFragmentShader::FragInfo), 128u);
+  EXPECT_EQ(sizeof(WindowSurfaceTextureFragmentShader::FragInfo), 128u);
 }
 
 TEST_F(WindowBackdropTest, WindowSamplingSurvivesAllBufferTransforms) {
@@ -344,6 +344,7 @@ TEST_F(WindowBackdropTest, WindowSamplingSurvivesAllBufferTransforms) {
         EXPECT_NEAR(material->data[5].y, 0.8f, 0.00001f);
         EXPECT_NEAR(material->data[5].z, 0.6f, 0.00001f);
         EXPECT_EQ(material->data[6], Vector4(0, 0, 1, 0));
+        EXPECT_EQ(material->data[7], Vector4());
         checked_material = true;
       }
       EXPECT_TRUE(checked_material);
@@ -357,11 +358,14 @@ TEST_F(WindowBackdropTest, ExplicitWindowReusesInsetGlassAndBlurAcrossFrames) {
   for (bool glass : {false, true}) {
     for (bool direct : {true, false}) {
       for (Scalar border : {0.0f, 2.0f}) {
-        for (bool transformed : {false, true}) {
+        for (int variant = 0; variant < 4; ++variant) {
+          const bool transformed = variant & 1;
+          const bool material_bounds = variant & 2;
           SCOPED_TRACE(glass);
           SCOPED_TRACE(direct);
           SCOPED_TRACE(border);
           SCOPED_TRACE(transformed);
+          SCOPED_TRACE(material_bounds);
           ++key;
           flutter::DlWindowSurfaceFilter::Style style{
               Rect::MakeLTRB(20.25f, 10.5f, 179.75f, 89.5f),
@@ -369,6 +373,11 @@ TEST_F(WindowBackdropTest, ExplicitWindowReusesInsetGlassAndBlurAcrossFrames) {
               18,
               flutter::DlColor::kRed()};
           style.content_bounds = style.bounds.Expand(-border);
+          if (material_bounds) {
+            // A popup's window geometry inside its client-drawn shadow.
+            style.material_bounds =
+                Rect::MakeLTRB(40.5f, 25.25f, 150.75f, 70.5f);
+          }
           std::shared_ptr<flutter::DlImageFilter> filter =
               glass ? flutter::DlGlassImageFilter::Make(
                           7, 7,
@@ -414,12 +423,37 @@ TEST_F(WindowBackdropTest, ExplicitWindowReusesInsetGlassAndBlurAcrossFrames) {
             auto cached = renderer_->GetCachedBackdropSnapshot(key);
             ASSERT_TRUE(cached);
             ASSERT_TRUE(cached->GetCoverage());
-            const Rect needed = style.content_bounds.TransformBounds(transform);
+            const Rect needed =
+                style.material_bounds.value_or(style.content_bounds)
+                    .TransformBounds(transform);
             EXPECT_TRUE(cached->GetCoverage()->Contains(needed));
+            // The material is never evaluated outside its bounds.
+            EXPECT_EQ(cached->GetCoverage()->Contains(
+                          style.content_bounds.TransformBounds(transform)),
+                      !material_bounds);
             const auto& pass = canvas.GetRenderPassForTesting();
             const auto& command = pass.GetCommands().back();
             ASSERT_EQ(command.audit_category,
                       CommandAuditCategory::kBackdropSurfaceComposite);
+            bool checked_material = false;
+            for (const auto& binding : pass.GetBoundBuffersForTesting()) {
+              if (binding.GetMetadata() !=
+                  &WindowSurfaceTextureFragmentShader::kMetadataFragInfo) {
+                continue;
+              }
+              const auto* info = reinterpret_cast<
+                  const WindowSurfaceTextureFragmentShader::FragInfo*>(
+                  DeviceBufferGLES::Cast(*binding.resource.GetBuffer())
+                      .GetBufferData() +
+                  binding.resource.GetRange().offset);
+              EXPECT_EQ(info->data[6].w, material_bounds ? 1 : 0);
+              EXPECT_EQ(info->data[7],
+                        material_bounds
+                            ? Vector4(style.material_bounds->GetLTRB())
+                            : Vector4());
+              checked_material = true;
+            }
+            EXPECT_TRUE(checked_material);
             const auto& view =
                 pass.GetVertexBuffersForTesting()[command.vertex_buffers
                                                       .offset];

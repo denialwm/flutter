@@ -71,11 +71,15 @@ void SceneBuilder::pushWindowSurface(
       Dart_IsNull(backdrop_handle)
           ? nullptr
           : tonic::DartConverter<ImageFilter*>::FromDart(backdrop_handle);
-  FML_CHECK(geometry.num_elements() == 30);
+  FML_CHECK(geometry.num_elements() == 34);
   const auto g = [&](size_t i) { return SafeNarrow(geometry[i]); };
-  const DlWindowSurfaceFilter::Style style{
-      DlRect::MakeLTRB(g(0), g(1), g(2), g(3)),
-      DlRect::MakeLTRB(g(4), g(5), g(6), g(7)), g(8), DlColor(frame_color)};
+  DlWindowSurfaceFilter::Style style{DlRect::MakeLTRB(g(0), g(1), g(2), g(3)),
+                                     DlRect::MakeLTRB(g(4), g(5), g(6), g(7)),
+                                     g(8), DlColor(frame_color)};
+  const DlRect material = DlRect::MakeLTRB(g(30), g(31), g(32), g(33));
+  if (material != style.content_bounds) {
+    style.material_bounds = material;
+  }
   const auto matrix = DlMatrix::MakeColumn(
       g(14), g(15), g(16), g(17), g(18), g(19), g(20), g(21), g(22), g(23),
       g(24), g(25), g(26), g(27), g(28), g(29));

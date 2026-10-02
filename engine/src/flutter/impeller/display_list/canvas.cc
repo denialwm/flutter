@@ -2337,6 +2337,16 @@ void Canvas::SaveLayer(const Paint& paint,
   if (backdrop_filter) {
     RecordBackdropDirectPredicate(direct_plan_rejections);
   }
+  // A window's material never composites outside its material bounds, so
+  // the backdrop is evaluated only where those bounds meet the window.
+  Rect backdrop_demand = subpass_coverage;
+  if (window && window->style.material_bounds.has_value()) {
+    const std::optional<Rect> material = subpass_coverage.Intersection(
+        window->style.material_bounds->TransformBounds(window->transform));
+    if (material.has_value() && !material->IsEmpty()) {
+      backdrop_demand = material.value();
+    }
+  }
 
   std::optional<uint32_t> planned_backdrop_epoch;
   if (backdrop_filter && render_passes_.size() == 1u) {
@@ -2367,9 +2377,9 @@ void Canvas::SaveLayer(const Paint& paint,
         // in a coverage-sized subpass and restoring that subpass into the
         // parent.
         std::shared_ptr<TextureContents> contents = TextureContents::MakeRect(
-            subpass_coverage.Shift(-GetGlobalPassPosition()));
+            backdrop_demand.Shift(-GetGlobalPassPosition()));
         auto scaled =
-            subpass_coverage.TransformBounds(snapshot.transform.Invert());
+            backdrop_demand.TransformBounds(snapshot.transform.Invert());
         contents->SetTexture(snapshot.texture);
         contents->SetSourceRect(scaled);
         contents->SetSamplerDescriptor(snapshot.sampler_descriptor);
@@ -2416,7 +2426,7 @@ void Canvas::SaveLayer(const Paint& paint,
       const auto cached_coverage =
           cached.has_value() ? cached->GetCoverage() : std::nullopt;
       if (cached_coverage.has_value() &&
-          cached_coverage->Contains(subpass_coverage)) {
+          cached_coverage->Contains(backdrop_demand)) {
         renderer_.RecordBackdropSnapshotReuse(backdrop_id.value());
         consume_backdrop_count();
         if (will_cache_backdrop_texture) {
@@ -2505,9 +2515,9 @@ void Canvas::SaveLayer(const Paint& paint,
         // Crop the SOURCE, not just the filtered result. Both the Gaussian
         // convolution and glass refraction now clamp to this window's edges.
         // Keep direct_scene_snapshot unchanged for alpha-threshold restore.
-        auto local_source = CropWindowBackdrop(
-            renderer_, input_texture,
-            subpass_coverage.Shift(-GetGlobalPassPosition()));
+        auto local_source =
+            CropWindowBackdrop(renderer_, input_texture,
+                               backdrop_demand.Shift(-GetGlobalPassPosition()));
         if (!local_source) {
           VALIDATION_LOG << "Failed to isolate window backdrop source.";
           return SkipUntilMatchingRestore(total_content_depth);
@@ -2536,7 +2546,7 @@ void Canvas::SaveLayer(const Paint& paint,
         // Grouped filters still need one snapshot that can serve every member.
         const std::optional<Rect> coverage_limit =
             will_cache_backdrop_texture ? std::nullopt
-                                        : std::make_optional(subpass_coverage);
+                                        : std::make_optional(backdrop_demand);
         return backdrop_filter_contents->RenderToSnapshot(
             renderer_, {}, {.coverage_limit = coverage_limit});
       };
@@ -2592,7 +2602,7 @@ void Canvas::SaveLayer(const Paint& paint,
       resolved_backdrop_contents = std::static_pointer_cast<TextureContents>(
           resolved_backdrop_entity->GetContents());
     } else {
-      backdrop_filter_contents->SetCoverageHint(subpass_coverage);
+      backdrop_filter_contents->SetCoverageHint(backdrop_demand);
       backdrop_entity.SetContents(backdrop_filter_contents);
       backdrop_entity.SetBlendMode(BlendMode::kSrc);
       backdrop_entity.SetTransform(
@@ -2623,7 +2633,7 @@ void Canvas::SaveLayer(const Paint& paint,
                 ->GetDirectEntity(renderer_, backdrop_entity, subpass_coverage);
       } else {
         resolved_backdrop_entity = backdrop_filter_contents->GetEntity(
-            renderer_, backdrop_entity, subpass_coverage);
+            renderer_, backdrop_entity, backdrop_demand);
       }
       if (!direct_glass_material && resolved_backdrop_entity.has_value() &&
           (backdrop_filter->type() == flutter::DlImageFilterType::kBlur ||
@@ -2704,14 +2714,14 @@ void Canvas::SaveLayer(const Paint& paint,
       resolved_contents = std::static_pointer_cast<TextureContents>(
           resolved_entity->GetContents());
     } else if (backdrop_filter_contents) {
-      backdrop_filter_contents->SetCoverageHint(subpass_coverage);
+      backdrop_filter_contents->SetCoverageHint(backdrop_demand);
       Entity backdrop_entity;
       backdrop_entity.SetContents(backdrop_filter_contents);
       backdrop_entity.SetBlendMode(BlendMode::kSrc);
       backdrop_entity.SetTransform(
           Matrix::MakeTranslation(Vector3(-GetGlobalPassPosition())));
       resolved_entity = backdrop_filter_contents->GetEntity(
-          renderer_, backdrop_entity, subpass_coverage);
+          renderer_, backdrop_entity, backdrop_demand);
       if (resolved_entity.has_value()) {
         resolved_contents = std::static_pointer_cast<TextureContents>(
             resolved_entity->GetContents());

@@ -486,9 +486,14 @@ abstract class SceneBuilder {
   /// between [bounds] and [contentBounds] defines the frame thickness.
   /// [textureTransform] maps [textureBounds] into the window's coordinate
   /// space; it supports Wayland rotations/reflections as well as scaling.
+  /// [materialBounds] limits the [backdrop] material to a part of
+  /// [contentBounds], such as a popup's window geometry inside its
+  /// client-drawn shadow; the client composites over the unfiltered scene
+  /// outside it, and the material is only evaluated inside it.
   WindowSurfaceEngineLayer pushWindowSurface(
     Rect bounds, {
     required Rect contentBounds,
+    Rect? materialBounds,
     double radius = 0,
     Color frameColor = const Color(0x00000000),
     ImageFilter? backdrop,
@@ -966,6 +971,7 @@ base class _NativeSceneBuilder extends NativeFieldWrapperClass1 implements Scene
   WindowSurfaceEngineLayer pushWindowSurface(
     Rect bounds, {
     required Rect contentBounds,
+    Rect? materialBounds,
     double radius = 0,
     Color frameColor = const Color(0x00000000),
     ImageFilter? backdrop,
@@ -977,10 +983,11 @@ base class _NativeSceneBuilder extends NativeFieldWrapperClass1 implements Scene
     WindowSurfaceEngineLayer? oldLayer,
   }) {
     assert(bounds.isFinite && contentBounds.isFinite && radius.isFinite && radius >= 0);
+    assert(materialBounds == null || materialBounds.isFinite);
     assert(textureOpacity >= 0 && textureOpacity <= 1);
     assert(textureTransform == null || textureTransform.length == 16);
     assert(_debugCheckCanBeUsedAsOldLayer(oldLayer, 'pushWindowSurface'));
-    final geometry = Float64List(30);
+    final geometry = Float64List(34);
     geometry.setRange(0, 14, <double>[
       bounds.left,
       bounds.top,
@@ -1002,6 +1009,13 @@ base class _NativeSceneBuilder extends NativeFieldWrapperClass1 implements Scene
     } else {
       geometry[14] = geometry[19] = geometry[24] = geometry[29] = 1;
     }
+    final Rect material = materialBounds ?? contentBounds;
+    geometry.setRange(30, 34, <double>[
+      material.left,
+      material.top,
+      material.right,
+      material.bottom,
+    ]);
     final EngineLayer engineLayer = _NativeEngineLayer._();
     _pushWindowSurface(
       engineLayer,

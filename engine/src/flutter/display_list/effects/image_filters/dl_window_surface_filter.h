@@ -5,6 +5,8 @@
 #ifndef FLUTTER_DISPLAY_LIST_EFFECTS_IMAGE_FILTERS_DL_WINDOW_SURFACE_FILTER_H_
 #define FLUTTER_DISPLAY_LIST_EFFECTS_IMAGE_FILTERS_DL_WINDOW_SURFACE_FILTER_H_
 
+#include <optional>
+
 #include "flutter/display_list/dl_color.h"
 #include "flutter/display_list/effects/dl_image_filter.h"
 
@@ -20,9 +22,14 @@ class DlWindowSurfaceFilter final : public DlImageFilter {
     DlRect content_bounds;
     DlScalar radius = 0;
     DlColor frame_color = DlColor::kTransparent();
+    // The part of content_bounds that may receive the backdrop material, such
+    // as a popup's window geometry inside its client-drawn shadow. Outside it,
+    // the client composites over the unfiltered scene.
+    std::optional<DlRect> material_bounds;
     bool operator==(const Style& other) const {
       return bounds == other.bounds && content_bounds == other.content_bounds &&
-             radius == other.radius && frame_color == other.frame_color;
+             radius == other.radius && frame_color == other.frame_color &&
+             material_bounds == other.material_bounds;
     }
   };
 

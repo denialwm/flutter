@@ -4,9 +4,9 @@
 uniform f16sampler2D backdrop_texture_sampler;
 uniform FragInfo {
   // GLES lowers a uniform block to individual glUniform calls. One tightly
-  // packed vec4 array uploads this material in ONE call instead of twelve,
-  // with no array-repacking allocation and the same 112-byte payload.
-  vec4 data[7];
+  // packed vec4 array uploads this material in ONE call instead of fourteen,
+  // with no array-repacking allocation and the same 128-byte payload.
+  vec4 data[8];
 }
 frag_info;
 #define window_bounds frag_info.data[0]
@@ -21,6 +21,8 @@ frag_info;
 #define alpha_threshold frag_info.data[6].x
 #define has_backdrop frag_info.data[6].y
 #define has_surface frag_info.data[6].z
+#define has_material_bounds frag_info.data[6].w
+#define material_bounds frag_info.data[7]
 in highp vec2 v_position;
 in highp vec2 v_surface_uv;
 in highp vec2 v_backdrop_uv;
@@ -36,11 +38,25 @@ float roundedCoverage(vec4 bounds, float corner_radius) {
   // overview and window animation transforms, without stencil/MSAA passes.
   return clamp(0.5 - d / max(fwidth(d), 0.00001), 0.0, 1.0);
 }
+
+// The backdrop material may be confined to window-space bounds. Outside them,
+// the client composites over the unfiltered destination.
+float materialCoverage() {
+  if (has_material_bounds < 0.5) {
+    return 1.0;
+  }
+  vec2 inside =
+      min(v_position - material_bounds.xy, material_bounds.zw - v_position);
+  vec2 coverage =
+      clamp(inside / max(fwidth(v_position), vec2(0.00001)) + 0.5, 0.0, 1.0);
+  return coverage.x * coverage.y;
+}
 void main() {
   float outer = roundedCoverage(window_bounds, radius);
   float inset = max(content_bounds.x - window_bounds.x, 0.0);
   float inner =
       min(outer, roundedCoverage(content_bounds, max(radius - inset, 0.0)));
+  float material = materialCoverage();
   if (outer <= 0.0) {
     discard;
   }
@@ -53,11 +69,11 @@ void main() {
     surface =
         sampleSurface(clamp(v_surface_uv, source_limits.xy, source_limits.zw));
     surface *= surface_opacity;
-    if (has_backdrop > 0.5 && surface.a > 0.0 &&
+    if (has_backdrop > 0.5 && material > 0.0 && surface.a > 0.0 &&
         surface.a * inner > alpha_threshold && surface.a < 1.0 - 1.0 / 1024.0) {
       vec4 backdrop = vec4(texture(backdrop_texture_sampler, v_backdrop_uv,
                                    float16_t(kDefaultMipBias)));
-      surface += backdrop * backdrop_opacity * (1.0 - surface.a);
+      surface += backdrop * backdrop_opacity * material * (1.0 - surface.a);
     }
   }
   // Disjoint coverages avoid double blending at the inner AA edge.
