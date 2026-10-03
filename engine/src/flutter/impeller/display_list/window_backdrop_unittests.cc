@@ -14,6 +14,7 @@
 #include "impeller/entity/contents/filters/glass_filter_contents.h"
 #include "impeller/entity/contents/glass_material_sheet.h"
 #include "impeller/entity/contents/texture_contents.h"
+#include "impeller/entity/geometry/rect_geometry.h"
 #include "impeller/entity/render_target_cache.h"
 #include "impeller/entity/window_surface.frag.h"
 #include "impeller/entity/window_surface.vert.h"
@@ -876,6 +877,51 @@ TEST_F(WindowBackdropTest,
   // covers widths 31..65 with two sizes.
   EXPECT_LE(layer_textures.size(), 2u);
   EXPECT_GE(layer_textures.size(), 1u);
+}
+TEST_F(WindowBackdropTest, ClampedBlurLayersArePooledButOtherFiltersStayExact) {
+  // SetUp gives ContentContext no allocator, so it owns a RenderTargetCache.
+  auto cache = std::static_pointer_cast<RenderTargetCache>(
+      renderer_->GetRenderTargetCache());
+  const auto pooled_targets = [&](flutter::DlTileMode tile_mode) {
+    cache->Start();
+    TextureDescriptor desc;
+    desc.size = {200, 100};
+    desc.format = PixelFormat::kR8G8B8A8UNormInt;
+    desc.usage = TextureUsage::kRenderTarget;
+    desc.storage_mode = StorageMode::kDevicePrivate;
+    ColorAttachment color;
+    color.texture =
+        renderer_->GetContext()->GetResourceAllocator()->CreateTexture(desc);
+    color.load_action = LoadAction::kClear;
+    RenderTarget target;
+    target.SetColorAttachment(color, 0);
+    Canvas canvas(*renderer_, target, false, false);
+    // The layer, clipped by the target, is 181x93 device pixels.
+    canvas.ClipGeometry(FillRectGeometry(Rect::MakeLTRB(19, 7, 200, 100)),
+                        Entity::ClipOperation::kIntersect);
+    Paint blurred;
+    auto filter = flutter::DlBlurImageFilter::Make(3, 3, tile_mode);
+    blurred.image_filter = filter.get();
+    canvas.SaveLayer(blurred, Rect::MakeLTRB(19, 7, 200, 100));
+    Paint fill;
+    fill.color = Color::Red();
+    canvas.DrawRect(Rect::MakeLTRB(30, 20, 150, 80), fill);
+    canvas.Restore();
+    canvas.EndReplay();
+    size_t pooled = 0;
+    for (auto data = cache->GetRenderTargetDataBegin();
+         data != cache->GetRenderTargetDataEnd(); ++data) {
+      const ISize size = data->render_target.GetRenderTargetSize();
+      pooled += data->used_this_frame && size.width % 64 == 0 &&
+                size.height % 64 == 0;
+    }
+    cache->End();
+    return pooled;
+  };
+  EXPECT_GE(pooled_targets(flutter::DlTileMode::kClamp), 1u);
+  // A decal blur samples transparent texels beyond the layer, which a clamped
+  // region would not reproduce.
+  EXPECT_EQ(pooled_targets(flutter::DlTileMode::kDecal), 0u);
 }
 }  // namespace
 }  // namespace testing

@@ -90,10 +90,10 @@ bool IsDirectGlassMaterialRequested() {
   return requested;
 }
 
-// Whether every read of this window backdrop filter honors
-// Snapshot::sample_bounds, so it can read the window's texels in place
-// instead of a copy. Clamped sampling reproduces only a clamp-to-edge crop.
-bool WindowBackdropSupportsSampleBounds(const flutter::DlImageFilter& filter) {
+// Whether every read of this filter honors Snapshot::sample_bounds, so it can
+// read a region of a larger texture in place instead of a copy. Clamped
+// sampling reproduces only a clamp-to-edge crop.
+bool FilterReadsWithinSampleBounds(const flutter::DlImageFilter& filter) {
   switch (filter.type()) {
     case flutter::DlImageFilterType::kGlass:
       // Its frost blur always clamps, and the material clamps its reads.
@@ -517,7 +517,7 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
     const Color& clear_color,
     bool use_msaa,
     bool preserve_depth_stencil_between_passes = false,
-    bool pooled_glass_layer = false,
+    std::string_view label = "EntityPass",
     bool pooled = false) {
   const std::shared_ptr<Context>& context = renderer.GetContext();
   if (pooled) {
@@ -538,8 +538,7 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
         /*context=*/*context,
         /*size=*/size,
         /*mip_count=*/1,
-        /*label=*/
-        pooled_glass_layer ? "Denial pooled glass layer" : "EntityPass",
+        /*label=*/label,
         /*color_attachment_config=*/
         RenderTarget::AttachmentConfigMSAA{
             .storage_mode = StorageMode::kDeviceTransient,
@@ -553,7 +552,7 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
         *context,  // context
         size,      // size
         /*mip_count=*/1,
-        "EntityPass",  // label
+        label,  // label
         RenderTarget::AttachmentConfig{
             .storage_mode = StorageMode::kDevicePrivate,
             .load_action = LoadAction::kDontCare,
@@ -2089,7 +2088,8 @@ void Canvas::SetupRenderPass() {
                            color0.texture->GetSize(),  //
                            /*clear_color=*/Color::BlackTransparent(),
                            /*use_msaa=*/true,
-                           /*preserve_depth_stencil_between_passes=*/true);
+                           /*preserve_depth_stencil_between_passes=*/true,
+                           /*label=*/"Denial root readback layer");
     render_passes_.push_back(
         LazyRenderingConfig(renderer_, std::move(entity_pass_target),
                             preserve_depth_stencil_between_passes));
@@ -2549,7 +2549,7 @@ void Canvas::SaveLayer(const Paint& paint,
                     Rect::MakeSize(GetCurrentPassTextureRegion().value_or(
                         input_texture->GetSize())));
         if (sample_bounds.has_value() && !sample_bounds->IsEmpty() &&
-            WindowBackdropSupportsSampleBounds(*backdrop_filter)) {
+            FilterReadsWithinSampleBounds(*backdrop_filter)) {
           // These filters clamp every read to the window's texels in place.
           // Copying them out would allocate a new texture for every window
           // whose position or size changes.
@@ -2569,7 +2569,7 @@ void Canvas::SaveLayer(const Paint& paint,
                  region.has_value()) {
         // This layer's allocation is padded. Keep every backdrop read inside
         // the layer, exactly as on an exact-size texture.
-        if (WindowBackdropSupportsSampleBounds(*backdrop_filter)) {
+        if (FilterReadsWithinSampleBounds(*backdrop_filter)) {
           input = FilterInput::Make(input_texture, Matrix(),
                                     Rect::MakeSize(region.value()));
         } else {
@@ -2810,10 +2810,14 @@ void Canvas::SaveLayer(const Paint& paint,
   // on almost every frame and never hits the render target cache. Allocate a
   // coarse size, or reuse a slightly larger cached target, and use only the
   // exact region: coverage, origin, clip state and restore geometry remain
-  // exact. Filters and threshold composites of the restored layer read its
-  // whole texture, so those layers keep exact allocations.
-  const bool pooled_layer = !backdrop_alpha_threshold.has_value() &&
-                            !paint.image_filter && !paint.color_filter;
+  // exact. A clamped blur of the restored layer clamps its reads to that
+  // region too. Other filters and threshold composites read the whole
+  // texture, so those layers keep exact allocations.
+  const bool pooled_layer =
+      !backdrop_alpha_threshold.has_value() && !paint.color_filter &&
+      (!paint.image_filter ||
+       (paint.image_filter->type() == flutter::DlImageFilterType::kBlur &&
+        FilterReadsWithinSampleBounds(*paint.image_filter)));
   const ISize layer_size = subpass_size;
   std::unique_ptr<EntityPassTarget> layer_target = CreateRenderTarget(
       renderer_,
@@ -2825,8 +2829,12 @@ void Canvas::SaveLayer(const Paint& paint,
           : subpass_size,
       Color::BlackTransparent(), use_msaa,
       /*preserve_depth_stencil_between_passes=*/false,
-      /*pooled_glass_layer=*/pooled_layer && backdrop_filter &&
-          backdrop_filter->type() == flutter::DlImageFilterType::kGlass,
+      /*label=*/
+      !pooled_layer ? "Denial exact layer"
+      : backdrop_filter &&
+              backdrop_filter->type() == flutter::DlImageFilterType::kGlass
+          ? "Denial pooled glass layer"
+          : "EntityPass",
       /*pooled=*/pooled_layer);
   std::optional<ISize> texture_region;
   if (layer_target->IsValid() &&
