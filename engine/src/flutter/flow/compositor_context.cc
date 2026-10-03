@@ -264,6 +264,7 @@ RasterStatus CompositorContext::ScopedFrame::Raster(
   TRACE_EVENT0("flutter", "CompositorContext::ScopedFrame::Raster");
 
   std::optional<DlRegion> clip_region;
+  std::optional<DlMatrix> repaint_transform;
   if (frame_damage) {
     BackdropSnapshotPin pin_backdrop;
 #ifdef IMPELLER_SUPPORTS_RENDERING
@@ -277,6 +278,7 @@ RasterStatus CompositorContext::ScopedFrame::Raster(
       snapshot_transform =
           view_embedder_->GetRootCanvasToRenderTargetTransform();
     }
+    repaint_transform = snapshot_transform;
     if (aiks_context_ && snapshot_transform.has_value()) {
       backdrop_snapshot_pins_ =
           std::make_unique<impeller::BackdropSnapshotPins>(
@@ -298,6 +300,19 @@ RasterStatus CompositorContext::ScopedFrame::Raster(
     clip_region = std::move(plan.repaint_region);
     frame_damage->SetBufferDamage(std::move(plan.buffer_damage));
   }
+
+#ifdef IMPELLER_SUPPORTS_RENDERING
+  if (aiks_context_) {
+    // Impeller recognizes the clip to this damage, so the damage, which
+    // changes with every frame, does not size the layers under it.
+    std::optional<impeller::Rect> repaint_bounds;
+    if (clip_region.has_value() && repaint_transform.has_value()) {
+      repaint_bounds = DlRect::Make(clip_region->bounds())
+                           .TransformBounds(repaint_transform.value());
+    }
+    aiks_context_->GetContentContext().SetFrameRepaintBounds(repaint_bounds);
+  }
+#endif
 
 #ifdef IMPELLER_SUPPORTS_RENDERING
   if (aiks_context_) {

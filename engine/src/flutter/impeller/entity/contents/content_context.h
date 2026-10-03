@@ -19,6 +19,7 @@
 #include "impeller/core/host_buffer.h"
 #include "impeller/entity/contents/text_shadow_cache.h"
 #include "impeller/geometry/color.h"
+#include "impeller/geometry/rect.h"
 #include "impeller/renderer/capabilities.h"
 #include "impeller/renderer/command_buffer.h"
 #include "impeller/renderer/pipeline.h"
@@ -359,6 +360,17 @@ class ContentContext {
   void RegisterBackdropSnapshotOwner(int64_t key, std::weak_ptr<void> owner);
   void PruneExpiredBackdropSnapshots();
 
+  // The bounds, in render target pixels, of the damage that the next
+  // onscreen frame repaints, or none when it repaints the whole target. The
+  // canvas clip that limits a partial repaint to its damage changes size with
+  // every frame, so it does not limit the size its layers can reach.
+  void SetFrameRepaintBounds(std::optional<Rect> bounds) {
+    frame_repaint_bounds_ = bounds;
+  }
+  std::optional<Rect> GetFrameRepaintBounds() const {
+    return frame_repaint_bounds_;
+  }
+
  protected:
   // Visible for testing.
   void SetTransientsIndexesBuffer(std::shared_ptr<HostBuffer> host_buffer) {
@@ -437,6 +449,7 @@ class ContentContext {
   std::unordered_map<uint32_t, std::weak_ptr<void>> backdrop_snapshot_owners_;
   size_t backdrop_snapshot_cache_bytes_ = 0u;
   uint64_t backdrop_snapshot_cache_access_ = 0u;
+  std::optional<Rect> frame_repaint_bounds_;
 
   struct BackdropSnapshotObservation {
     int64_t key;

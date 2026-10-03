@@ -73,7 +73,8 @@ class EntityPassClipStack {
                              Point global_pass_position,
                              uint32_t clip_depth,
                              size_t clip_height_floor,
-                             bool is_aa);
+                             bool is_aa,
+                             bool limits_reach = true);
 
   ReplayResult& GetLastReplayResult() {
     return GetCurrentSubpassState().rendered_clip_entities.back();

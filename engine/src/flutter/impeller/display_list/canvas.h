@@ -416,6 +416,11 @@ class Canvas {
   // The exact size of the current pass when its allocation is padded.
   std::optional<ISize> GetCurrentPassTextureRegion() const;
 
+  // Whether a clip with this pass-local coverage limits the root pass to the
+  // damage of a partial repaint (see ContentContext::SetFrameRepaintBounds).
+  bool IsFrameRepaintClip(const Rect& clip_coverage,
+                          Entity::ClipOperation clip_op) const;
+
   // clip depth of the previous save or 0.
   size_t GetClipHeightFloor() const;
 

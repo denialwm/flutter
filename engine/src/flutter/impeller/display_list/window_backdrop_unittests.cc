@@ -1074,6 +1074,64 @@ TEST_F(WindowBackdropTest, LayersSlidingUnderAStaticClipKeepOneTarget) {
   }
   EXPECT_EQ(layer_textures.size(), 1u);
 }
+TEST_F(WindowBackdropTest, PartialRepaintDamageDoesNotSizeLayers) {
+  // SetUp gives ContentContext no allocator, so it owns a RenderTargetCache.
+  auto cache = std::static_pointer_cast<RenderTargetCache>(
+      renderer_->GetRenderTargetCache());
+  const auto repaint = [&](bool hint) {
+    std::set<const Texture*> layer_textures;
+    for (int frame = 1; frame < 10; ++frame) {
+      SCOPED_TRACE(frame);
+      cache->Start();
+      TextureDescriptor desc;
+      desc.size = {200, 100};
+      desc.format = PixelFormat::kR8G8B8A8UNormInt;
+      desc.usage = TextureUsage::kRenderTarget;
+      desc.storage_mode = StorageMode::kDevicePrivate;
+      ColorAttachment color;
+      color.texture =
+          renderer_->GetContext()->GetResourceAllocator()->CreateTexture(desc);
+      color.load_action = LoadAction::kLoad;
+      RenderTarget target;
+      target.SetColorAttachment(color, 0);
+      // A card grows on a static blurred wallpaper. Each frame repaints only
+      // the card's damage.
+      const Rect damage =
+          Rect::MakeXYWH(150 - 15 * frame, 20, 20 + 15 * frame, 20 + 6 * frame);
+      renderer_->SetFrameRepaintBounds(hint ? std::optional<Rect>(damage)
+                                            : std::nullopt);
+      Canvas canvas(*renderer_, target, false, false);
+      canvas.ClipGeometry(FillRectGeometry(damage),
+                          Entity::ClipOperation::kIntersect);
+      Paint blurred;
+      auto filter =
+          flutter::DlBlurImageFilter::Make(3, 3, flutter::DlTileMode::kClamp);
+      blurred.image_filter = filter.get();
+      canvas.SaveLayer(blurred, Rect::MakeXYWH(0, 0, 200, 100));
+      Paint fill;
+      fill.color = Color::Red();
+      canvas.DrawRect(Rect::MakeXYWH(0, 0, 200, 100), fill);
+      canvas.Restore();
+      canvas.EndReplay();
+      for (auto data = cache->GetRenderTargetDataBegin();
+           data != cache->GetRenderTargetDataEnd(); ++data) {
+        const ISize size = data->render_target.GetRenderTargetSize();
+        if (data->used_this_frame && size.width % 64 == 0 &&
+            size.height % 64 == 0) {
+          layer_textures.insert(
+              data->render_target.GetRenderTargetTexture().get());
+        }
+      }
+      cache->End();
+    }
+    renderer_->SetFrameRepaintBounds(std::nullopt);
+    return layer_textures.size();
+  };
+  // Without the hint, the damage clip sizes the layer as it grows.
+  EXPECT_GT(repaint(false), 1u);
+  // The clip to the frame's damage does not limit what the layer can reach.
+  EXPECT_EQ(repaint(true), 1u);
+}
 }  // namespace
 }  // namespace testing
 }  // namespace impeller

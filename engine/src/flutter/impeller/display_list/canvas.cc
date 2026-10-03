@@ -807,6 +807,21 @@ void Canvas::Rotate(Radians radians) {
   Concat(Matrix::MakeRotationZ(radians));
 }
 
+bool Canvas::IsFrameRepaintClip(const Rect& clip_coverage,
+                                Entity::ClipOperation clip_op) const {
+  const std::optional<Rect> repaint = renderer_.GetFrameRepaintBounds();
+  if (!repaint.has_value() || render_passes_.size() != 1u ||
+      clip_op != Entity::ClipOperation::kIntersect) {
+    return false;
+  }
+  const Rect coverage = clip_coverage.Shift(GetGlobalPassPosition());
+  constexpr Scalar kTolerance = 0.5f;
+  return std::abs(coverage.GetLeft() - repaint->GetLeft()) <= kTolerance &&
+         std::abs(coverage.GetTop() - repaint->GetTop()) <= kTolerance &&
+         std::abs(coverage.GetRight() - repaint->GetRight()) <= kTolerance &&
+         std::abs(coverage.GetBottom() - repaint->GetBottom()) <= kTolerance;
+}
+
 std::optional<ISize> Canvas::GetCurrentPassTextureRegion() const {
   // Every pass above the root belongs to the innermost save layer.
   if (render_passes_.size() <= 1u || save_layer_state_.empty()) {
@@ -1724,7 +1739,9 @@ void Canvas::ClipGeometry(
           /*global_pass_position=*/GetGlobalPassPosition(),  //
           /*clip_depth=*/clip_depth,                         //
           /*clip_height_floor=*/GetClipHeightFloor(),        //
-          /*is_aa=*/is_aa);
+          /*is_aa=*/is_aa,                                   //
+          /*limits_reach=*/
+          !IsFrameRepaintClip(clip_coverage.value(), clip_op));
 
   std::optional<IRect32> clip_scissor;
   if (clip_state_result.clip_did_change) {

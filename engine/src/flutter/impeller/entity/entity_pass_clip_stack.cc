@@ -113,7 +113,8 @@ EntityPassClipStack::ClipStateResult EntityPassClipStack::RecordClip(
     Point global_pass_position,
     uint32_t clip_depth,
     size_t clip_height_floor,
-    bool is_aa) {
+    bool is_aa,
+    bool limits_reach) {
   ClipStateResult result = {.should_render = false, .clip_did_change = false};
 
   std::optional<Rect> maybe_clip_coverage = CurrentClipCoverage();
@@ -141,7 +142,9 @@ EntityPassClipStack::ClipStateResult EntityPassClipStack::RecordClip(
   Size reach = CurrentClipReach();
   const ClipCoverage extent =
       clip_contents.GetClipCoverage(Rect::MakeMaximum());
-  if (!extent.coverage.has_value()) {
+  if (!limits_reach) {
+    // The clip limits only this frame, like the damage of a partial repaint.
+  } else if (!extent.coverage.has_value()) {
     reach = Size();
   } else if (!extent.coverage->IsMaximum()) {
     reach = reach.Min(extent.coverage->GetSize());
