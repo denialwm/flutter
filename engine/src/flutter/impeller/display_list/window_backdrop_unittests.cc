@@ -568,6 +568,74 @@ TEST_F(WindowBackdropTest, CroppedFilterCoversWindowThroughCacheAndRootFlip) {
   }
 }
 
+TEST_F(WindowBackdropTest, SampleBoundsMatchWindowCropWithoutCopying) {
+  for (const Rect window :
+       {Rect::MakeLTRB(55.25f, 10.5f, 195.75f, 97.5f),
+        Rect::MakeLTRB(0, 0, 120, 64), Rect::MakeLTRB(-12.5f, 30, 80, 140)}) {
+    // Sigma 2 fuses downsampling into the vertical pass on GLES; sigma 6
+    // uses the dedicated downsample shader.
+    for (Scalar blur_sigma : {0.0f, 2.0f, 6.0f}) {
+      const bool glass = blur_sigma == 0;
+      SCOPED_TRACE(window);
+      SCOPED_TRACE(blur_sigma);
+      auto cropped = CropWindowBackdrop(*renderer_, texture_, window);
+      ASSERT_TRUE(cropped);
+      const std::optional<Rect> bounds = Rect::RoundOut(window).Intersection(
+          Rect::MakeSize(texture_->GetSize()));
+      ASSERT_TRUE(bounds);
+      auto bounded = FilterInput::Make(texture_, Matrix(), bounds);
+      Entity entity;
+      entity.SetTransform(Matrix::MakeTranslation(Vector2(-5, -3)));
+      EXPECT_EQ(bounded->GetCoverage(entity),
+                cropped->GetCoverage()->Shift(Vector2(-5, -3)));
+      auto bounded_snapshot =
+          bounded->GetSnapshot("test", *renderer_, entity, std::nullopt, 1);
+      ASSERT_TRUE(bounded_snapshot);
+      EXPECT_EQ(bounded_snapshot->texture, texture_);
+
+      std::shared_ptr<flutter::DlImageFilter> filter =
+          glass ? flutter::DlGlassImageFilter::Make(
+                      20, 20, RoundRect::MakeRectXY(window, 8, 8), 1, 27, 0.52f,
+                      0.51f, 1, flutter::DlColor::kTransparent(), 0, 1, 0, 1, 1,
+                      0.65f, true)
+                : flutter::DlBlurImageFilter::Make(
+                      blur_sigma, blur_sigma, flutter::DlTileMode::kClamp,
+                      std::nullopt, 1, 0.65f, true);
+      auto render = [&](const FilterInput::Ref& input) {
+        auto contents = WrapInput(*renderer_, filter.get(), input);
+        contents->SetIsBackdropFilter(true);
+        contents->SetRenderingMode(Entity::RenderingMode::kDirect);
+        return contents->RenderToSnapshot(*renderer_, Entity{},
+                                          {.coverage_limit = window});
+      };
+      auto from_crop =
+          render(FilterInput::Make(cropped->texture, cropped->transform));
+      auto in_place = render(bounded);
+      ASSERT_TRUE(from_crop);
+      ASSERT_TRUE(in_place);
+      // Clamping reads to the window plans exactly the crop's passes.
+      EXPECT_EQ(in_place->texture->GetSize(), from_crop->texture->GetSize());
+      EXPECT_EQ(in_place->transform, from_crop->transform);
+    }
+  }
+}
+
+TEST_F(WindowBackdropTest, SampleBoundsClampToEdgeTexelCenters) {
+  Snapshot snapshot{.texture = texture_};
+  EXPECT_EQ(snapshot.GetSampleBoundsUVs(), Snapshot::GetUnboundedSampleUVs());
+  snapshot.sample_bounds = Rect::MakeLTRB(55, 10, 96, 90);
+  const Vector4 uvs = snapshot.GetSampleBoundsUVs();
+  EXPECT_FLOAT_EQ(uvs.x, 55.5f / 200);
+  EXPECT_FLOAT_EQ(uvs.z, 95.5f / 200);
+  if (texture_->GetYCoordScale() < 0) {
+    EXPECT_FLOAT_EQ(uvs.y, 1 - 89.5f / 100);
+    EXPECT_FLOAT_EQ(uvs.w, 1 - 10.5f / 100);
+  } else {
+    EXPECT_FLOAT_EQ(uvs.y, 10.5f / 100);
+    EXPECT_FLOAT_EQ(uvs.w, 89.5f / 100);
+  }
+}
+
 TEST_F(WindowBackdropTest, FractionalWindowRoundsOutAndClampsToSource) {
   auto cropped = CropWindowBackdrop(
       *renderer_, texture_, Rect::MakeLTRB(55.25f, -2.5f, 195.75f, 97.5f));

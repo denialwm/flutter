@@ -30,10 +30,12 @@ class TextureFilterInput final : public FilterInput {
 
  private:
   explicit TextureFilterInput(std::shared_ptr<Texture> texture,
-                              Matrix local_transform = Matrix());
+                              Matrix local_transform = Matrix(),
+                              std::optional<Rect> sample_bounds = std::nullopt);
 
   std::shared_ptr<Texture> texture_;
   Matrix local_transform_;
+  std::optional<Rect> sample_bounds_;
 
   friend FilterInput;
 };

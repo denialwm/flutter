@@ -24,6 +24,9 @@ kernel_samples;
 uniform FragInfo {
   float unpremultiply;
   float sample_count;
+  // Texture coordinates outside this rectangle read its edge texels, as if the
+  // texture were cropped to it and sampled with clamp-to-edge.
+  vec4 sample_bounds;
 }
 frag_info;
 
@@ -43,9 +46,9 @@ void main() {
 
   for (int i = 0; i < int(frag_info.sample_count); i++) {
     float16_t coefficient = float16_t(kernel_samples.sample_data[i].z);
-    total_color += coefficient *
-                   Sample(texture_sampler,
-                          v_texture_coords + kernel_samples.sample_data[i].xy);
+    vec2 coords = clamp(v_texture_coords + kernel_samples.sample_data[i].xy,
+                        frag_info.sample_bounds.xy, frag_info.sample_bounds.zw);
+    total_color += coefficient * Sample(texture_sampler, coords);
   }
 
   if (frag_info.unpremultiply > 0.5) {

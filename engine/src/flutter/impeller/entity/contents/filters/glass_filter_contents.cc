@@ -28,13 +28,26 @@ namespace {
 std::optional<Snapshot> CopyGlassScene(const ContentContext& renderer,
                                        const Snapshot& scene,
                                        const Rect& coverage) {
-  const auto scene_coverage = scene.GetCoverage();
+  const auto scene_coverage =
+      scene.sample_bounds.has_value()
+          ? std::make_optional(
+                scene.sample_bounds->TransformBounds(scene.transform))
+          : scene.GetCoverage();
   const auto copy_coverage =
       scene_coverage ? coverage.Intersection(*scene_coverage) : std::nullopt;
   if (!copy_coverage) {
     return std::nullopt;
   }
-  const Rect bounds = Rect::RoundOut(*copy_coverage);
+  std::optional<Rect> rounded_bounds = Rect::RoundOut(*copy_coverage);
+  if (scene.sample_bounds.has_value()) {
+    // Never copy texels outside the scene's sample bounds; clamp-to-edge on
+    // the copy then reproduces the bounded sampling.
+    rounded_bounds = rounded_bounds->Intersection(*scene_coverage);
+    if (!rounded_bounds || rounded_bounds->IsEmpty()) {
+      return std::nullopt;
+    }
+  }
+  const Rect bounds = *rounded_bounds;
   auto commands = renderer.GetContext()->CreateCommandBuffer();
   if (!commands) {
     return std::nullopt;
@@ -388,6 +401,9 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         frag_info.rim_falloff = rim_falloff;
         frag_info.opposite_light_strength = opposite_light_strength;
         frag_info.blurred_opacity = blurred_snapshot->opacity;
+        frag_info.blurred_sample_bounds =
+            blurred_snapshot->GetSampleBoundsUVs();
+        frag_info.scene_sample_bounds = scene_snapshot->GetSampleBoundsUVs();
 
         SamplerDescriptor blurred_sampler =
             blurred_snapshot->sampler_descriptor;

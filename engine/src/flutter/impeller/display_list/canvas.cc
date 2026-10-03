@@ -105,6 +105,24 @@ bool IsPooledGlassMaterialPaddingRequested() {
   return requested;
 }
 
+// Whether every read of this window backdrop filter honors
+// Snapshot::sample_bounds, so it can read the window's texels in place
+// instead of a copy. Clamped sampling reproduces only a clamp-to-edge crop.
+bool WindowBackdropSupportsSampleBounds(const flutter::DlImageFilter& filter) {
+  switch (filter.type()) {
+    case flutter::DlImageFilterType::kGlass:
+      // Its frost blur always clamps, and the material clamps its reads.
+      return true;
+    case flutter::DlImageFilterType::kBlur: {
+      const flutter::DlBlurImageFilter* blur = filter.asBlur();
+      return blur->tile_mode() == flutter::DlTileMode::kClamp &&
+             !blur->bounds().has_value();
+    }
+    default:
+      return false;
+  }
+}
+
 struct BackdropLayerPlanAudit {
   using Clock = std::chrono::steady_clock;
 
@@ -2515,15 +2533,27 @@ void Canvas::SaveLayer(const Paint& paint,
         // Crop the SOURCE, not just the filtered result. Both the Gaussian
         // convolution and glass refraction now clamp to this window's edges.
         // Keep direct_scene_snapshot unchanged for alpha-threshold restore.
-        auto local_source =
-            CropWindowBackdrop(renderer_, input_texture,
-                               backdrop_demand.Shift(-GetGlobalPassPosition()));
-        if (!local_source) {
-          VALIDATION_LOG << "Failed to isolate window backdrop source.";
-          return SkipUntilMatchingRestore(total_content_depth);
+        const Rect window_source =
+            backdrop_demand.Shift(-GetGlobalPassPosition());
+        const std::optional<Rect> sample_bounds =
+            Rect::RoundOut(window_source)
+                .Intersection(Rect::MakeSize(input_texture->GetSize()));
+        if (sample_bounds.has_value() && !sample_bounds->IsEmpty() &&
+            WindowBackdropSupportsSampleBounds(*backdrop_filter)) {
+          // These filters clamp every read to the window's texels in place.
+          // Copying them out would allocate a new texture for every window
+          // whose position or size changes.
+          input = FilterInput::Make(input_texture, Matrix(), sample_bounds);
+        } else {
+          auto local_source =
+              CropWindowBackdrop(renderer_, input_texture, window_source);
+          if (!local_source) {
+            VALIDATION_LOG << "Failed to isolate window backdrop source.";
+            return SkipUntilMatchingRestore(total_content_depth);
+          }
+          input =
+              FilterInput::Make(local_source->texture, local_source->transform);
         }
-        input =
-            FilterInput::Make(local_source->texture, local_source->transform);
       }
       backdrop_filter_contents = WrapInput(renderer_, backdrop_filter, input);
       if (backdrop_filter->asGlass()) {

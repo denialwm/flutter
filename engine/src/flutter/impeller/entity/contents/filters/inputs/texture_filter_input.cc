@@ -11,8 +11,11 @@
 namespace impeller {
 
 TextureFilterInput::TextureFilterInput(std::shared_ptr<Texture> texture,
-                                       Matrix local_transform)
-    : texture_(std::move(texture)), local_transform_(local_transform) {}
+                                       Matrix local_transform,
+                                       std::optional<Rect> sample_bounds)
+    : texture_(std::move(texture)),
+      local_transform_(local_transform),
+      sample_bounds_(sample_bounds) {}
 
 TextureFilterInput::~TextureFilterInput() = default;
 
@@ -22,8 +25,9 @@ std::optional<Snapshot> TextureFilterInput::GetSnapshot(
     const Entity& entity,
     std::optional<Rect> coverage_limit,
     int32_t mip_count) const {
-  auto snapshot =
-      Snapshot{.texture = texture_, .transform = GetTransform(entity)};
+  auto snapshot = Snapshot{.texture = texture_,
+                           .transform = GetTransform(entity),
+                           .sample_bounds = sample_bounds_};
   if (texture_->GetMipCount() > 1) {
     snapshot.sampler_descriptor.label = "TextureFilterInput Trilinear Sampler";
     snapshot.sampler_descriptor.mip_filter = MipFilter::kLinear;
@@ -33,7 +37,7 @@ std::optional<Snapshot> TextureFilterInput::GetSnapshot(
 
 std::optional<Rect> TextureFilterInput::GetCoverage(
     const Entity& entity) const {
-  return Rect::MakeSize(texture_->GetSize())
+  return sample_bounds_.value_or(Rect::MakeSize(texture_->GetSize()))
       .TransformBounds(GetTransform(entity));
 }
 

@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "impeller/core/formats.h"
@@ -45,6 +46,12 @@ struct Snapshot {
   /// capture the padding.
   bool needs_rasterization_for_runtime_effects = false;
 
+  /// The texels this snapshot represents, in texture pixel coordinates.
+  /// Filters that honor it read the edge texels outside this rectangle, as if
+  /// the texture had been cropped to it and sampled with clamp-to-edge. A
+  /// filter can then read a region of a larger texture without copying it.
+  std::optional<Rect> sample_bounds;
+
   /// Any snapshot that is scaled should re-rasterize because we should be
   /// performing the RuntimeEffect at the resolution of the screen, not the
   /// scaled up or scaled down version of the snapshot.
@@ -67,6 +74,16 @@ struct Snapshot {
   ///         Result order: Top left, top right, bottom left, bottom right.
   std::optional<std::array<Point, 4>> GetCoverageUVs(
       const Rect& coverage) const;
+
+  /// @brief  The texture coordinates of the edge texel centers of
+  ///         `sample_bounds`, as (left, top, right, bottom) in the texture's
+  ///         sampling orientation. Clamping linear samples to this rectangle
+  ///         matches clamp-to-edge sampling of the cropped texture. Without
+  ///         sample bounds, the rectangle does not restrict sampling.
+  Vector4 GetSampleBoundsUVs() const;
+
+  /// @brief  Sample bounds texture coordinates that do not restrict sampling.
+  static Vector4 GetUnboundedSampleUVs();
 };
 
 }  // namespace impeller

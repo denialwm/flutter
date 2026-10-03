@@ -40,8 +40,12 @@ class FilterInput {
 
   static FilterInput::Ref Make(Variant input, bool msaa_enabled = true);
 
-  static FilterInput::Ref Make(std::shared_ptr<Texture> input,
-                               Matrix local_transform);
+  /// `sample_bounds` restricts the texels the input's snapshot represents.
+  /// See `Snapshot::sample_bounds`.
+  static FilterInput::Ref Make(
+      std::shared_ptr<Texture> input,
+      Matrix local_transform,
+      std::optional<Rect> sample_bounds = std::nullopt);
 
   static FilterInput::Vector Make(std::initializer_list<Variant> inputs);
 

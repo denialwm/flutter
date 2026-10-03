@@ -4,6 +4,7 @@
 
 #include "impeller/renderer/snapshot.h"
 
+#include <algorithm>
 #include <optional>
 
 namespace impeller {
@@ -30,6 +31,34 @@ std::optional<std::array<Point, 4>> Snapshot::GetCoverageUVs(
     return std::nullopt;
   }
   return coverage.GetTransformedPoints(uv_transform.value());
+}
+
+Vector4 Snapshot::GetUnboundedSampleUVs() {
+  // Wide enough for any coordinate a filter samples, yet representable at
+  // half precision.
+  constexpr Scalar kUnbounded = 16384.0f;
+  return Vector4(-kUnbounded, -kUnbounded, kUnbounded, kUnbounded);
+}
+
+Vector4 Snapshot::GetSampleBoundsUVs() const {
+  if (!texture || !sample_bounds.has_value() || sample_bounds->IsEmpty() ||
+      texture->GetSize().IsEmpty()) {
+    return GetUnboundedSampleUVs();
+  }
+  const Size size(texture->GetSize());
+  const Rect& bounds = sample_bounds.value();
+  const Scalar inset_x = std::min(0.5f, bounds.GetWidth() * 0.5f);
+  const Scalar inset_y = std::min(0.5f, bounds.GetHeight() * 0.5f);
+  const Scalar left = (bounds.GetLeft() + inset_x) / size.width;
+  const Scalar right = (bounds.GetRight() - inset_x) / size.width;
+  Scalar top = (bounds.GetTop() + inset_y) / size.height;
+  Scalar bottom = (bounds.GetBottom() - inset_y) / size.height;
+  if (texture->GetYCoordScale() < 0.0f) {
+    const Scalar flipped_top = 1.0f - bottom;
+    bottom = 1.0f - top;
+    top = flipped_top;
+  }
+  return Vector4(left, top, right, bottom);
 }
 
 }  // namespace impeller

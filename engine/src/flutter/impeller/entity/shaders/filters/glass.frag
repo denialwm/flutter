@@ -34,6 +34,10 @@ uniform FragInfo {
   float rim_width;
   float rim_falloff;
   float opposite_light_strength;
+  // Coordinates outside these rectangles read their edge texels, as if each
+  // texture were cropped to its rectangle and sampled with clamp-to-edge.
+  vec4 blurred_sample_bounds;
+  vec4 scene_sample_bounds;
 }
 frag_info;
 
@@ -115,9 +119,10 @@ vec2 blurredUvOffset(vec2 pixel_offset) {
 }
 
 vec4 sampleFrost(vec2 pixel_offset, float spread) {
-  return vec4(texture(blurred_texture_sampler,
-                      v_blurred_texture_coords +
-                          blurredUvOffset(pixel_offset * spread))) *
+  vec2 coords = clamp(
+      v_blurred_texture_coords + blurredUvOffset(pixel_offset * spread),
+      frag_info.blurred_sample_bounds.xy, frag_info.blurred_sample_bounds.zw);
+  return vec4(texture(blurred_texture_sampler, coords)) *
          frag_info.blurred_opacity;
 }
 
@@ -194,7 +199,10 @@ vec4 applyMaterialCoverage(vec4 material, float coverage) {
   if (coverage >= 1.0) {
     return material;
   }
-  vec4 scene = vec4(texture(scene_texture_sampler, v_scene_texture_coords)) *
+  vec2 scene_coords =
+      clamp(v_scene_texture_coords, frag_info.scene_sample_bounds.xy,
+            frag_info.scene_sample_bounds.zw);
+  vec4 scene = vec4(texture(scene_texture_sampler, scene_coords)) *
                frag_info.scene_opacity;
   // A backdrop filter replaces scene pixels. Shape coverage must interpolate
   // that replacement with the original premultiplied scene, including alpha.

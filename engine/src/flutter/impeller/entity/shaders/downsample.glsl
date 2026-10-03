@@ -13,6 +13,9 @@ uniform FragInfo {
   float edge;
   float ratio;
   vec2 pixel_size;
+  // Texture coordinates outside this rectangle read its edge texels, as if the
+  // texture were cropped to it and sampled with clamp-to-edge.
+  vec4 sample_bounds;
 }
 frag_info;
 
@@ -26,8 +29,9 @@ void main() {
   vec4 total = vec4(0.0);
   for (float i = -frag_info.edge; i <= frag_info.edge; i += 2) {
     for (float j = -frag_info.edge; j <= frag_info.edge; j += 2) {
-      total += (Sample(v_texture_coords + frag_info.pixel_size * vec2(i, j)) *
-                frag_info.ratio);
+      vec2 uv = clamp(v_texture_coords + frag_info.pixel_size * vec2(i, j),
+                      frag_info.sample_bounds.xy, frag_info.sample_bounds.zw);
+      total += Sample(uv) * frag_info.ratio;
     }
   }
   frag_color = total;

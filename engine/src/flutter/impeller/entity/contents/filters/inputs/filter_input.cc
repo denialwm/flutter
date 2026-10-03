@@ -42,9 +42,10 @@ FilterInput::Ref FilterInput::Make(Variant input, bool msaa_enabled) {
 }
 
 FilterInput::Ref FilterInput::Make(std::shared_ptr<Texture> texture,
-                                   Matrix local_transform) {
-  return std::shared_ptr<TextureFilterInput>(
-      new TextureFilterInput(std::move(texture), local_transform));
+                                   Matrix local_transform,
+                                   std::optional<Rect> sample_bounds) {
+  return std::shared_ptr<TextureFilterInput>(new TextureFilterInput(
+      std::move(texture), local_transform, sample_bounds));
 }
 
 FilterInput::Vector FilterInput::Make(std::initializer_list<Variant> inputs) {
