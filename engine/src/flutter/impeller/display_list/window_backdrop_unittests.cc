@@ -923,6 +923,157 @@ TEST_F(WindowBackdropTest, ClampedBlurLayersArePooledButOtherFiltersStayExact) {
   // region would not reproduce.
   EXPECT_EQ(pooled_targets(flutter::DlTileMode::kDecal), 0u);
 }
+TEST_F(WindowBackdropTest, LayersSlidingPastTheirLimitKeepOneTarget) {
+  // SetUp gives ContentContext no allocator, so it owns a RenderTargetCache.
+  auto cache = std::static_pointer_cast<RenderTargetCache>(
+      renderer_->GetRenderTargetCache());
+  const auto slide = [&](bool viewport_clip) {
+    std::set<const Texture*> layer_textures;
+    for (int frame = 0; frame < 10; ++frame) {
+      SCOPED_TRACE(frame);
+      cache->Start();
+      TextureDescriptor desc;
+      desc.size = {200, 100};
+      desc.format = PixelFormat::kR8G8B8A8UNormInt;
+      desc.usage = TextureUsage::kRenderTarget;
+      desc.storage_mode = StorageMode::kDevicePrivate;
+      ColorAttachment color;
+      color.texture =
+          renderer_->GetContext()->GetResourceAllocator()->CreateTexture(desc);
+      color.load_action = LoadAction::kClear;
+      RenderTarget target;
+      target.SetColorAttachment(color, 0);
+      Canvas canvas(*renderer_, target, false, false);
+      if (viewport_clip) {
+        canvas.ClipGeometry(FillRectGeometry(Rect::MakeLTRB(0, 0, 200, 30)),
+                            Entity::ClipOperation::kIntersect);
+      }
+      // A full-width panel slides in from above the top edge.
+      canvas.Translate(Vector3(0, -90 + 10 * frame));
+      const Rect panel = Rect::MakeXYWH(0, 0, 200, 90);
+      Paint group;
+      group.color = Color::White().WithAlpha(0.5f);
+      canvas.SaveLayer(group, panel);
+      Paint fill;
+      fill.color = Color::Red();
+      canvas.DrawRect(panel, fill);
+      canvas.Restore();
+      canvas.EndReplay();
+      for (auto data = cache->GetRenderTargetDataBegin();
+           data != cache->GetRenderTargetDataEnd(); ++data) {
+        if (data->used_this_frame) {
+          layer_textures.insert(
+              data->render_target.GetRenderTargetTexture().get());
+          // The panel's full size, or the viewport that limits it.
+          EXPECT_EQ(data->render_target.GetRenderTargetSize(),
+                    viewport_clip ? ISize(256, 64) : ISize(256, 128));
+        }
+      }
+      cache->End();
+    }
+    return layer_textures.size();
+  };
+  // The viewport slide runs first: its smaller target can't serve the full
+  // panel, while the full panel's target could be lent to the viewport.
+  EXPECT_EQ(slide(true), 1u);
+  EXPECT_EQ(slide(false), 1u);
+}
+TEST_F(WindowBackdropTest, UnboundedLayersReachTheirSlidingClip) {
+  // SetUp gives ContentContext no allocator, so it owns a RenderTargetCache.
+  auto cache = std::static_pointer_cast<RenderTargetCache>(
+      renderer_->GetRenderTargetCache());
+  std::set<const Texture*> layer_textures;
+  for (int frame = 1; frame < 10; ++frame) {
+    SCOPED_TRACE(frame);
+    cache->Start();
+    TextureDescriptor desc;
+    desc.size = {200, 100};
+    desc.format = PixelFormat::kR8G8B8A8UNormInt;
+    desc.usage = TextureUsage::kRenderTarget;
+    desc.storage_mode = StorageMode::kDevicePrivate;
+    ColorAttachment color;
+    color.texture =
+        renderer_->GetContext()->GetResourceAllocator()->CreateTexture(desc);
+    color.load_action = LoadAction::kClear;
+    RenderTarget target;
+    target.SetColorAttachment(color, 0);
+    Canvas canvas(*renderer_, target, false, false);
+    // A lock screen slides in from above: its clip moves with it, and its
+    // layer floods that clip.
+    canvas.Translate(Vector3(0, -100 + 10 * frame));
+    canvas.ClipGeometry(FillRectGeometry(Rect::MakeXYWH(0, 0, 200, 100)),
+                        Entity::ClipOperation::kIntersect);
+    Paint group;
+    group.color = Color::White().WithAlpha(0.5f);
+    canvas.SaveLayer(group, std::nullopt);
+    Paint fill;
+    fill.color = Color::Red();
+    canvas.DrawPaint(fill);
+    canvas.Restore();
+    canvas.EndReplay();
+    for (auto data = cache->GetRenderTargetDataBegin();
+         data != cache->GetRenderTargetDataEnd(); ++data) {
+      if (data->used_this_frame) {
+        layer_textures.insert(
+            data->render_target.GetRenderTargetTexture().get());
+        EXPECT_EQ(data->render_target.GetRenderTargetSize(), ISize(256, 128));
+      }
+    }
+    cache->End();
+  }
+  EXPECT_EQ(layer_textures.size(), 1u);
+}
+TEST_F(WindowBackdropTest, LayersSlidingUnderAStaticClipKeepOneTarget) {
+  // SetUp gives ContentContext no allocator, so it owns a RenderTargetCache.
+  auto cache = std::static_pointer_cast<RenderTargetCache>(
+      renderer_->GetRenderTargetCache());
+  std::set<const Texture*> layer_textures;
+  for (int frame = 1; frame < 10; ++frame) {
+    SCOPED_TRACE(frame);
+    cache->Start();
+    TextureDescriptor desc;
+    desc.size = {200, 100};
+    desc.format = PixelFormat::kR8G8B8A8UNormInt;
+    desc.usage = TextureUsage::kRenderTarget;
+    desc.storage_mode = StorageMode::kDevicePrivate;
+    ColorAttachment color;
+    color.texture =
+        renderer_->GetContext()->GetResourceAllocator()->CreateTexture(desc);
+    color.load_action = LoadAction::kClear;
+    RenderTarget target;
+    target.SetColorAttachment(color, 0);
+    Canvas canvas(*renderer_, target, false, false);
+    // A lock screen slides in from below inside a stage clip that matches the
+    // target. Its blurred wallpaper has a clip that moves with it.
+    canvas.ClipGeometry(FillRectGeometry(Rect::MakeXYWH(0, 0, 200, 100)),
+                        Entity::ClipOperation::kIntersect);
+    canvas.Translate(Vector3(0, 100 - 10 * frame));
+    canvas.ClipGeometry(FillRectGeometry(Rect::MakeXYWH(0, 0, 200, 100)),
+                        Entity::ClipOperation::kIntersect);
+    Paint blurred;
+    auto filter =
+        flutter::DlBlurImageFilter::Make(3, 3, flutter::DlTileMode::kClamp);
+    blurred.image_filter = filter.get();
+    canvas.SaveLayer(blurred, Rect::MakeXYWH(0, 0, 200, 100));
+    Paint fill;
+    fill.color = Color::Red();
+    canvas.DrawRect(Rect::MakeXYWH(0, 0, 200, 100), fill);
+    canvas.Restore();
+    canvas.EndReplay();
+    for (auto data = cache->GetRenderTargetDataBegin();
+         data != cache->GetRenderTargetDataEnd(); ++data) {
+      const ISize size = data->render_target.GetRenderTargetSize();
+      if (data->used_this_frame && size.width % 64 == 0 &&
+          size.height % 64 == 0) {
+        layer_textures.insert(
+            data->render_target.GetRenderTargetTexture().get());
+        EXPECT_EQ(size, ISize(256, 128));
+      }
+    }
+    cache->End();
+  }
+  EXPECT_EQ(layer_textures.size(), 1u);
+}
 }  // namespace
 }  // namespace testing
 }  // namespace impeller

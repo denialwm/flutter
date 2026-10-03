@@ -5,6 +5,8 @@
 #ifndef FLUTTER_IMPELLER_ENTITY_ENTITY_PASS_CLIP_STACK_H_
 #define FLUTTER_IMPELLER_ENTITY_ENTITY_PASS_CLIP_STACK_H_
 
+#include <limits>
+
 #include "impeller/entity/contents/clip_contents.h"
 #include "impeller/geometry/rect.h"
 
@@ -13,6 +15,14 @@ namespace impeller {
 struct ClipCoverageLayer {
   std::optional<Rect> coverage;
   size_t clip_height = 0;
+  /// The largest size the current clips can show, wherever they and the
+  /// content move: no dimension of an intersection exceeds that of any of its
+  /// clips, of the content of enclosing layers or of their passes.
+  Size reach = kUnlimitedReach;
+
+  static constexpr Size kUnlimitedReach =
+      Size(std::numeric_limits<Scalar>::infinity(),
+           std::numeric_limits<Scalar>::infinity());
 };
 
 /// @brief A class that tracks all clips that have been recorded in the current
@@ -45,7 +55,14 @@ class EntityPassClipStack {
 
   std::optional<Rect> CurrentClipCoverage() const;
 
-  void PushSubpass(std::optional<Rect> subpass_coverage, size_t clip_height);
+  /// The largest size the current clips can show. See ClipCoverageLayer.
+  Size CurrentClipReach() const;
+
+  /// Starts a subpass. Its clips' reach starts at `reach`, or at the current
+  /// reach when none is given.
+  void PushSubpass(std::optional<Rect> subpass_coverage,
+                   size_t clip_height,
+                   std::optional<Size> reach = std::nullopt);
 
   void PopSubpass();
 

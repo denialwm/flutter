@@ -25,17 +25,27 @@ std::optional<Rect> EntityPassClipStack::CurrentClipCoverage() const {
   return subpass_state_.back().clip_coverage.back().coverage;
 }
 
+Size EntityPassClipStack::CurrentClipReach() const {
+  const std::vector<ClipCoverageLayer>& layers =
+      subpass_state_.back().clip_coverage;
+  return layers.empty() ? ClipCoverageLayer::kUnlimitedReach
+                        : layers.back().reach;
+}
+
 bool EntityPassClipStack::HasCoverage() const {
   return !subpass_state_.back().clip_coverage.empty();
 }
 
 void EntityPassClipStack::PushSubpass(std::optional<Rect> subpass_coverage,
-                                      size_t clip_height) {
+                                      size_t clip_height,
+                                      std::optional<Size> reach) {
+  const Size subpass_reach = reach.value_or(CurrentClipReach());
   subpass_state_.push_back(SubpassState{
       .clip_coverage =
           {
               ClipCoverageLayer{.coverage = subpass_coverage,
-                                .clip_height = clip_height},
+                                .clip_height = clip_height,
+                                .reach = subpass_reach},
           },
   });
   next_replay_index_ = 0;
@@ -126,6 +136,17 @@ EntityPassClipStack::ClipStateResult EntityPassClipStack::RecordClip(
 
   SubpassState& subpass_state = GetCurrentSubpassState();
 
+  // An intersect clip limits the reach by the size of its whole extent,
+  // wherever it is, so the reach stays the same while it moves.
+  Size reach = CurrentClipReach();
+  const ClipCoverage extent =
+      clip_contents.GetClipCoverage(Rect::MakeMaximum());
+  if (!extent.coverage.has_value()) {
+    reach = Size();
+  } else if (!extent.coverage->IsMaximum()) {
+    reach = reach.Min(extent.coverage->GetSize());
+  }
+
   // Compute the previous clip height.
   size_t previous_clip_height = 0;
   if (!subpass_state.clip_coverage.empty()) {
@@ -142,8 +163,9 @@ EntityPassClipStack::ClipStateResult EntityPassClipStack::RecordClip(
       clip_coverage.coverage.has_value() &&
       clip_coverage.coverage.value().Contains(current_clip_coverage)) {
     subpass_state.clip_coverage.push_back(ClipCoverageLayer{
-        .coverage = current_clip_coverage,       //
-        .clip_height = previous_clip_height + 1  //
+        .coverage = current_clip_coverage,        //
+        .clip_height = previous_clip_height + 1,  //
+        .reach = reach,                           //
     });
 
     return result;
@@ -175,9 +197,9 @@ EntityPassClipStack::ClipStateResult EntityPassClipStack::RecordClip(
   }
 
   subpass_state.clip_coverage.push_back(ClipCoverageLayer{
-      .coverage = coverage_value,              //
-      .clip_height = previous_clip_height + 1  //
-
+      .coverage = coverage_value,               //
+      .clip_height = previous_clip_height + 1,  //
+      .reach = reach,                           //
   });
   result.clip_did_change = true;
   result.should_render = should_render;

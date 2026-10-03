@@ -2154,8 +2154,9 @@ std::optional<Rect> Canvas::GetLocalCoverageLimit() const {
   // The maximum coverage of the subpass. Subpasses textures should never
   // extend outside the parent pass texture or the current clip coverage.
   std::optional<Rect> maybe_coverage_limit =
-      Rect::MakeOriginSize(GetGlobalPassPosition(),
-                           Size(back_texture->GetSize()))
+      Rect::MakeOriginSize(
+          GetGlobalPassPosition(),
+          Size(GetCurrentPassTextureRegion().value_or(back_texture->GetSize())))
           .Intersection(current_clip_coverage);
 
   if (!maybe_coverage_limit.has_value() || maybe_coverage_limit->IsEmpty()) {
@@ -2819,15 +2820,43 @@ void Canvas::SaveLayer(const Paint& paint,
        (paint.image_filter->type() == flutter::DlImageFilterType::kBlur &&
         FilterReadsWithinSampleBounds(*paint.image_filter)));
   const ISize layer_size = subpass_size;
+  ISize allocation_size = subpass_size;
+  // The clips' extent and the content bounds limit what the layer can reach
+  // while it moves past the edges of its pass.
+  const std::optional<Rect> content =
+      window ? std::optional<Rect>(window->style.content_bounds.TransformBounds(
+                   window->transform))
+      : bounds.has_value() && !backdrop_filter &&
+              !Entity::IsBlendModeDestructive(paint.blend_mode)
+          ? std::optional<Rect>(
+                bounds->TransformBounds(transform_stack_.back().transform))
+          : std::nullopt;
+  // Wherever the layer, its content and its clips move, it can show no more
+  // than the smallest of them and of its parent pass in either dimension.
+  Size layer_reach = clip_coverage_stack_.CurrentClipReach()
+                         .Min(Size(render_passes_.back()
+                                       .GetInlinePassContext()
+                                       ->GetTexture()
+                                       ->GetSize()))
+                         .Min(Size(render_target_.GetRenderTargetSize()));
+  if (content.has_value() && content->IsFinite()) {
+    layer_reach = layer_reach.Min(content->GetSize());
+  }
+  if (pooled_layer) {
+    // A layer cut by a clip or the edge of its pass while it moves, like a
+    // panel or a lock screen sliding in, changes its exact size on every
+    // frame of that motion. Allocate the size it can reach, so the motion
+    // reuses one target.
+    if (PooledTargetPaddingEnabled()) {
+      allocation_size = allocation_size.Max(ISize::Ceil(layer_reach));
+    }
+    allocation_size = RoundUpPooledTargetSize(
+        allocation_size, renderer_.GetContext()
+                             ->GetCapabilities()
+                             ->GetMaximumRenderPassAttachmentSize());
+  }
   std::unique_ptr<EntityPassTarget> layer_target = CreateRenderTarget(
-      renderer_,
-      pooled_layer
-          ? RoundUpPooledTargetSize(subpass_size,
-                                    renderer_.GetContext()
-                                        ->GetCapabilities()
-                                        ->GetMaximumRenderPassAttachmentSize())
-          : subpass_size,
-      Color::BlackTransparent(), use_msaa,
+      renderer_, allocation_size, Color::BlackTransparent(), use_msaa,
       /*preserve_depth_stencil_between_passes=*/false,
       /*label=*/
       !pooled_layer ? "Denial exact layer"
@@ -2869,7 +2898,8 @@ void Canvas::SaveLayer(const Paint& paint,
   // save layers may transform the subpass texture after it's rendered,
   // causing parent clip coverage to get misaligned with the actual area that
   // the subpass will affect in the parent pass.
-  clip_coverage_stack_.PushSubpass(subpass_coverage, GetClipHeight());
+  clip_coverage_stack_.PushSubpass(subpass_coverage, GetClipHeight(),
+                                   layer_reach);
 
   if (window || save_layer_state_.back().alpha_threshold_backdrop.has_value()) {
     return;
