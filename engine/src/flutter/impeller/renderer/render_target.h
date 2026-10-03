@@ -147,6 +147,19 @@ class RenderTarget final {
   std::map<size_t, ColorAttachment> colors_;
 };
 
+/// @brief Rounds an offscreen size up to a coarse allocation size.
+///
+///        A target whose exact size follows a moving clip, such as a panel
+///        sliding past a screen edge or a reveal that grows every frame,
+///        would otherwise request a new size on almost every frame and never
+///        hit the render target cache. Its callers must keep using the exact
+///        size for coverage, sampling and composition. Nothing reads the
+///        padding. `DENIA_EXACT_TARGET_SIZES=1` disables the rounding.
+ISize RoundUpPooledTargetSize(ISize size, ISize maximum);
+
+/// @brief Whether pooled targets may be padded or reused at a larger size.
+bool PooledTargetPaddingEnabled();
+
 /// @brief a wrapper around the impeller [Allocator] instance that can be used
 ///        to provide caching of allocated render target textures.
 class RenderTargetAllocator {
@@ -181,6 +194,12 @@ class RenderTargetAllocator {
       const std::shared_ptr<Texture>& existing_color_resolve_texture = nullptr,
       const std::shared_ptr<Texture>& existing_depth_stencil_texture = nullptr,
       std::optional<PixelFormat> target_pixel_format = std::nullopt);
+
+  /// @brief Lets the next `CreateOffscreen` or `CreateOffscreenMSAA` call
+  ///        return an unused cached target that is somewhat larger than
+  ///        requested. Its caller must read, sample and composite only the
+  ///        region it requested. The permission expires with that call.
+  virtual void AllowLargerTargetForNextRequest() {}
 
   /// @brief Disable any caching until the next call to `EnabledCache`.
   virtual void DisableCache() {}

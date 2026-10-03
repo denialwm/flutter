@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <set>
+
 #include "flutter/common/backdrop_filter_cache_key.h"
 #include "flutter/display_list/effects/image_filters/dl_blur_image_filter.h"
 #include "flutter/display_list/effects/image_filters/dl_glass_image_filter.h"
@@ -12,6 +14,7 @@
 #include "impeller/entity/contents/filters/glass_filter_contents.h"
 #include "impeller/entity/contents/glass_material_sheet.h"
 #include "impeller/entity/contents/texture_contents.h"
+#include "impeller/entity/render_target_cache.h"
 #include "impeller/entity/window_surface.frag.h"
 #include "impeller/entity/window_surface.vert.h"
 #include "impeller/entity/window_surface_texture.frag.h"
@@ -777,6 +780,102 @@ TEST_F(WindowBackdropTest, FractionalWindowRoundsOutAndClampsToSource) {
   EXPECT_EQ(cropped->GetCoverage(), Rect::MakeLTRB(55, 0, 196, 98));
   EXPECT_FALSE(CropWindowBackdrop(*renderer_, texture_,
                                   Rect::MakeLTRB(201, 0, 220, 20)));
+}
+TEST_F(WindowBackdropTest, PooledTargetSizesRoundUpWithinTheMaximum) {
+  const ISize maximum(4096, 4096);
+  EXPECT_EQ(RoundUpPooledTargetSize({1, 740}, maximum), ISize(64, 768));
+  EXPECT_EQ(RoundUpPooledTargetSize({420, 740}, maximum), ISize(448, 768));
+  EXPECT_EQ(RoundUpPooledTargetSize({128, 64}, maximum), ISize(128, 64));
+  EXPECT_EQ(RoundUpPooledTargetSize({1000, 10}, {1010, 4096}), ISize(1010, 64));
+  // A request beyond the maximum keeps its own size.
+  EXPECT_EQ(RoundUpPooledTargetSize({1020, 10}, {1010, 4096}), ISize(1020, 64));
+  EXPECT_EQ(RoundUpPooledTargetSize({}, maximum), ISize());
+}
+
+TEST_F(WindowBackdropTest, CacheLendsSlightlyLargerTargetsOnlyWhenAllowed) {
+  const Context& context = *renderer_->GetContext();
+  RenderTargetCache cache(context.GetResourceAllocator(),
+                          /*keep_alive_frame_count=*/0);
+  cache.Start();
+  const RenderTarget wide = cache.CreateOffscreen(context, {448, 768}, 1);
+  ASSERT_TRUE(wide.IsValid());
+  cache.End();
+
+  cache.Start();
+  const RenderTarget exact = cache.CreateOffscreen(context, {384, 768}, 1);
+  EXPECT_EQ(exact.GetRenderTargetSize(), ISize(384, 768));
+  EXPECT_NE(exact.GetRenderTargetTexture(), wide.GetRenderTargetTexture());
+  cache.AllowLargerTargetForNextRequest();
+  const RenderTarget lent = cache.CreateOffscreen(context, {384, 768}, 1);
+  EXPECT_EQ(lent.GetRenderTargetSize(), ISize(448, 768));
+  EXPECT_EQ(lent.GetRenderTargetTexture(), wide.GetRenderTargetTexture());
+  cache.End();
+
+  cache.Start();
+  // More than twice the requested area is never lent.
+  cache.AllowLargerTargetForNextRequest();
+  const RenderTarget narrow = cache.CreateOffscreen(context, {128, 768}, 1);
+  EXPECT_EQ(narrow.GetRenderTargetSize(), ISize(128, 768));
+  // The permission expires with the request that consumed it, even an empty
+  // one.
+  cache.AllowLargerTargetForNextRequest();
+  EXPECT_FALSE(cache.CreateOffscreen(context, {}, 1).IsValid());
+  const RenderTarget unpermitted =
+      cache.CreateOffscreen(context, {300, 768}, 1);
+  EXPECT_EQ(unpermitted.GetRenderTargetSize(), ISize(300, 768));
+  cache.End();
+
+  cache.Start();
+  // An exact size is preferred over a larger one.
+  cache.AllowLargerTargetForNextRequest();
+  const RenderTarget preferred = cache.CreateOffscreen(context, {300, 768}, 1);
+  EXPECT_EQ(preferred.GetRenderTargetTexture(),
+            unpermitted.GetRenderTargetTexture());
+  cache.End();
+}
+
+TEST_F(WindowBackdropTest,
+       ClippedLayersReusePooledTargetsWhileTheirSizeChanges) {
+  // SetUp gives ContentContext no allocator, so it owns a RenderTargetCache.
+  auto cache = std::static_pointer_cast<RenderTargetCache>(
+      renderer_->GetRenderTargetCache());
+  std::set<const Texture*> layer_textures;
+  for (int frame = 0; frame < 8; ++frame) {
+    SCOPED_TRACE(frame);
+    cache->Start();
+    TextureDescriptor desc;
+    desc.size = {200, 100};
+    desc.format = PixelFormat::kR8G8B8A8UNormInt;
+    desc.usage = TextureUsage::kRenderTarget;
+    desc.storage_mode = StorageMode::kDevicePrivate;
+    ColorAttachment color;
+    color.texture =
+        renderer_->GetContext()->GetResourceAllocator()->CreateTexture(desc);
+    ASSERT_TRUE(color.texture);
+    color.load_action = LoadAction::kClear;
+    RenderTarget target;
+    target.SetColorAttachment(color, 0);
+    Canvas canvas(*renderer_, target, false, false);
+    // A layer clipped by a moving edge: its exact size changes every frame.
+    const Rect layer = Rect::MakeXYWH(10.5f, 10, 30 + 5 * frame, 40 + frame);
+    Paint group;
+    group.color = Color::White().WithAlpha(0.5f);
+    canvas.SaveLayer(group, layer);
+    Paint fill;
+    fill.color = Color::Red();
+    canvas.DrawRect(layer.Expand(-4), fill);
+    canvas.Restore();
+    canvas.EndReplay();
+    cache->End();
+    for (auto data = cache->GetRenderTargetDataBegin();
+         data != cache->GetRenderTargetDataEnd(); ++data) {
+      layer_textures.insert(data->render_target.GetRenderTargetTexture().get());
+    }
+  }
+  // Exact allocations would create one texture per frame. The 64 px pool
+  // covers widths 31..65 with two sizes.
+  EXPECT_LE(layer_textures.size(), 2u);
+  EXPECT_GE(layer_textures.size(), 1u);
 }
 }  // namespace
 }  // namespace testing

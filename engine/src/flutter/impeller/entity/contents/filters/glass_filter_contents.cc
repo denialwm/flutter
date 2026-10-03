@@ -558,19 +558,15 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
       };
 
   ISize target_size = material_pixel_size;
-  const ISize maximum_size = renderer.GetContext()
+  if (material_target_padding_enabled_) {
+    // A moving or clipped material changes its exact size almost every
+    // frame. A coarse or slightly larger cached target keeps hitting the
+    // render target cache; only the exact region is composited.
+    target_size = RoundUpPooledTargetSize(
+        material_pixel_size, renderer.GetContext()
                                  ->GetCapabilities()
-                                 ->GetMaximumRenderPassAttachmentSize();
-  if (material_target_padding_enabled_ &&
-      material_pixel_size.width <= maximum_size.width &&
-      material_pixel_size.height <= maximum_size.height) {
-    constexpr int64_t kGranularity = 128;
-    target_size =
-        ISize{((target_size.width + kGranularity - 1) / kGranularity) *
-                  kGranularity,
-              ((target_size.height + kGranularity - 1) / kGranularity) *
-                  kGranularity}
-            .Min(maximum_size);
+                                 ->GetMaximumRenderPassAttachmentSize());
+    renderer.GetRenderTargetCache()->AllowLargerTargetForNextRequest();
   }
   fml::StatusOr<RenderTarget> render_target = renderer.MakeSubpass(
       material_target_padding_enabled_ ? "Denial pooled glass material"
@@ -582,18 +578,19 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
     return std::nullopt;
   }
 
-  if (target_size != material_pixel_size) {
-    // The transparent allocation padding is never sampled or composited.
-    return make_region_entity(render_target.value().GetRenderTargetTexture(),
+  const std::shared_ptr<Texture> material_texture =
+      render_target.value().GetRenderTargetTexture();
+  if (material_texture->GetSize() != material_pixel_size) {
+    // The allocation padding is never sampled or composited.
+    return make_region_entity(material_texture,
                               Rect::MakeSize(material_pixel_size));
   }
-  return Entity::FromSnapshot(
-      Snapshot{
-          .texture = render_target.value().GetRenderTargetTexture(),
-          .transform = Matrix::MakeTranslation(material_coverage.GetOrigin()),
-          .sampler_descriptor = output_sampler,
-          .opacity = 1.0f},
-      entity.GetBlendMode());
+  return Entity::FromSnapshot(Snapshot{.texture = material_texture,
+                                       .transform = Matrix::MakeTranslation(
+                                           material_coverage.GetOrigin()),
+                                       .sampler_descriptor = output_sampler,
+                                       .opacity = 1.0f},
+                              entity.GetBlendMode());
 }
 
 std::optional<Rect> GlassFilterContents::GetFilterCoverage(

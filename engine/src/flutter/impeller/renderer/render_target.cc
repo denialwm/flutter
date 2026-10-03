@@ -4,6 +4,7 @@
 
 #include "impeller/renderer/render_target.h"
 
+#include <cstdlib>
 #include <format>
 #include <sstream>
 
@@ -337,6 +338,28 @@ RenderTargetAllocator::RenderTargetAllocator(
 void RenderTargetAllocator::Start() {}
 
 void RenderTargetAllocator::End() {}
+
+bool PooledTargetPaddingEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("DENIA_EXACT_TARGET_SIZES");
+    return !(value != nullptr && value[0] == '1' && value[1] == '\0');
+  }();
+  return enabled;
+}
+
+ISize RoundUpPooledTargetSize(ISize size, ISize maximum) {
+  if (!PooledTargetPaddingEnabled() || size.IsEmpty()) {
+    return size;
+  }
+  // 64 device pixels keep the padding small while a panel crossing a 420 px
+  // edge visits 7 sizes instead of one per frame.
+  constexpr int64_t kGranularity = 64;
+  const ISize rounded{
+      ((size.width + kGranularity - 1) / kGranularity) * kGranularity,
+      ((size.height + kGranularity - 1) / kGranularity) * kGranularity};
+  // Never shrink below the request, even when it exceeds the maximum.
+  return rounded.Min(maximum).Max(size);
+}
 
 RenderTarget RenderTargetAllocator::CreateOffscreen(
     const Context& context,

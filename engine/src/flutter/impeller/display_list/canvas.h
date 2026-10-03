@@ -308,8 +308,8 @@ class Canvas {
     Rect coverage;
     bool has_backdrop_filter = false;
     std::optional<AlphaThresholdBackdrop> alpha_threshold_backdrop;
-    // A pooled target may include unused padding. Restore only the original
-    // pixel region so allocation granularity cannot expand the visible layer.
+    // A pooled target may include unused padding. Restore and read only the
+    // exact region so allocation granularity cannot expand the visible layer.
     std::optional<ISize> texture_region;
     std::shared_ptr<CanvasStackEntry::WindowState> window;
   };
@@ -412,6 +412,9 @@ class Canvas {
   uint64_t current_depth_ = 0u;
 
   Point GetGlobalPassPosition() const;
+
+  // The exact size of the current pass when its allocation is padded.
+  std::optional<ISize> GetCurrentPassTextureRegion() const;
 
   // clip depth of the previous save or 0.
   size_t GetClipHeightFloor() const;

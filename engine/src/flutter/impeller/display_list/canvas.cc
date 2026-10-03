@@ -90,22 +90,6 @@ bool IsDirectGlassMaterialRequested() {
   return requested;
 }
 
-bool IsPooledGlassTargetPaddingRequested() {
-  static const bool requested = [] {
-    const char* value = std::getenv("DENIA_GLASS_POOLED_TARGET_PADDING");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return requested;
-}
-
-bool IsPooledGlassMaterialPaddingRequested() {
-  static const bool requested = [] {
-    const char* value = std::getenv("DENIA_GLASS_POOLED_MATERIAL_PADDING");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return requested;
-}
-
 // Whether every read of this window backdrop filter honors
 // Snapshot::sample_bounds, so it can read the window's texels in place
 // instead of a copy. Clamped sampling reproduces only a clamp-to-edge crop.
@@ -500,6 +484,12 @@ static std::shared_ptr<Contents> CreateContentsForSubpassTarget(
   contents->SetTexture(target);
   contents->SetLabel(label);
   contents->SetSourceRect(region);
+  if (texture_region.has_value()) {
+    // Read the padded allocation exactly as an exact-size layer: edge reads
+    // clamp to the region, and snapshots of it keep the region as bounds.
+    contents->SetStrictSourceRect(true);
+    contents->SetSourceRectIsSampleBounds(true);
+  }
   contents->SetOpacity(paint.color.alpha);
   contents->SetDeferApplyingOpacity(true);
 
@@ -527,8 +517,12 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
     const Color& clear_color,
     bool use_msaa,
     bool preserve_depth_stencil_between_passes = false,
-    bool pooled_glass_layer = false) {
+    bool pooled_glass_layer = false,
+    bool pooled = false) {
   const std::shared_ptr<Context>& context = renderer.GetContext();
+  if (pooled) {
+    renderer.GetRenderTargetCache()->AllowLargerTargetForNextRequest();
+  }
 
   /// All of the load/store actions are managed by `InlinePassContext` when
   /// `RenderPasses` are created, so we just set them to `kDontCare` here.
@@ -812,6 +806,14 @@ void Canvas::Skew(Scalar sx, Scalar sy) {
 
 void Canvas::Rotate(Radians radians) {
   Concat(Matrix::MakeRotationZ(radians));
+}
+
+std::optional<ISize> Canvas::GetCurrentPassTextureRegion() const {
+  // Every pass above the root belongs to the innermost save layer.
+  if (render_passes_.size() <= 1u || save_layer_state_.empty()) {
+    return std::nullopt;
+  }
+  return save_layer_state_.back().texture_region;
 }
 
 Point Canvas::GetGlobalPassPosition() const {
@@ -2543,7 +2545,9 @@ void Canvas::SaveLayer(const Paint& paint,
             backdrop_demand.Shift(-GetGlobalPassPosition());
         const std::optional<Rect> sample_bounds =
             Rect::RoundOut(window_source)
-                .Intersection(Rect::MakeSize(input_texture->GetSize()));
+                .Intersection(
+                    Rect::MakeSize(GetCurrentPassTextureRegion().value_or(
+                        input_texture->GetSize())));
         if (sample_bounds.has_value() && !sample_bounds->IsEmpty() &&
             WindowBackdropSupportsSampleBounds(*backdrop_filter)) {
           // These filters clamp every read to the window's texels in place.
@@ -2555,6 +2559,24 @@ void Canvas::SaveLayer(const Paint& paint,
               CropWindowBackdrop(renderer_, input_texture, window_source);
           if (!local_source) {
             VALIDATION_LOG << "Failed to isolate window backdrop source.";
+            return SkipUntilMatchingRestore(total_content_depth);
+          }
+          input =
+              FilterInput::Make(local_source->texture, local_source->transform);
+        }
+      } else if (const std::optional<ISize> region =
+                     GetCurrentPassTextureRegion();
+                 region.has_value()) {
+        // This layer's allocation is padded. Keep every backdrop read inside
+        // the layer, exactly as on an exact-size texture.
+        if (WindowBackdropSupportsSampleBounds(*backdrop_filter)) {
+          input = FilterInput::Make(input_texture, Matrix(),
+                                    Rect::MakeSize(region.value()));
+        } else {
+          auto local_source = CropWindowBackdrop(
+              renderer_, input_texture, Rect::MakeSize(region.value()));
+          if (!local_source) {
+            VALIDATION_LOG << "Failed to isolate padded layer backdrop.";
             return SkipUntilMatchingRestore(total_content_depth);
           }
           input =
@@ -2783,43 +2805,37 @@ void Canvas::SaveLayer(const Paint& paint,
     }
   }
 
+  // A layer's exact size follows its clip, so a panel sliding past a screen
+  // edge, a growing reveal or a window dragged off screen requests a new size
+  // on almost every frame and never hits the render target cache. Allocate a
+  // coarse size, or reuse a slightly larger cached target, and use only the
+  // exact region: coverage, origin, clip state and restore geometry remain
+  // exact. Filters and threshold composites of the restored layer read its
+  // whole texture, so those layers keep exact allocations.
+  const bool pooled_layer = !backdrop_alpha_threshold.has_value() &&
+                            !paint.image_filter && !paint.color_filter;
+  const ISize layer_size = subpass_size;
+  std::unique_ptr<EntityPassTarget> layer_target = CreateRenderTarget(
+      renderer_,
+      pooled_layer
+          ? RoundUpPooledTargetSize(subpass_size,
+                                    renderer_.GetContext()
+                                        ->GetCapabilities()
+                                        ->GetMaximumRenderPassAttachmentSize())
+          : subpass_size,
+      Color::BlackTransparent(), use_msaa,
+      /*preserve_depth_stencil_between_passes=*/false,
+      /*pooled_glass_layer=*/pooled_layer && backdrop_filter &&
+          backdrop_filter->type() == flutter::DlImageFilterType::kGlass,
+      /*pooled=*/pooled_layer);
   std::optional<ISize> texture_region;
-  const bool pooled_glass_layer =
-      IsPooledGlassTargetPaddingRequested() && use_msaa && backdrop_filter &&
-      backdrop_filter->type() == flutter::DlImageFilterType::kGlass &&
-      !backdrop_alpha_threshold.has_value() && !paint.image_filter &&
-      !paint.color_filter &&
-      renderer_.GetContext()->GetBackendType() ==
-          Context::BackendType::kOpenGLES;
-  if (pooled_glass_layer) {
-    // During motion, clipping changes a color layer's exact allocation size
-    // almost every frame. Pooling a small set of padded sizes avoids retiring
-    // large MSAA attachments at that rate. Coverage, origin, clip state and
-    // restore geometry remain exact; only the backing allocation grows.
-    constexpr int64_t kGranularity = 128;
-    const ISize pooled_size =
-        ISize{((subpass_size.width + kGranularity - 1) / kGranularity) *
-                  kGranularity,
-              ((subpass_size.height + kGranularity - 1) / kGranularity) *
-                  kGranularity}
-            .Min(renderer_.GetContext()
-                     ->GetCapabilities()
-                     ->GetMaximumRenderPassAttachmentSize());
-    if (pooled_size != subpass_size) {
-      texture_region = subpass_size;
-      subpass_size = pooled_size;
-    }
+  if (layer_target->IsValid() &&
+      layer_target->GetRenderTarget().GetRenderTargetSize() != layer_size) {
+    texture_region = layer_size;
   }
 
   render_passes_.push_back(
-      LazyRenderingConfig(renderer_,                                     //
-                          CreateRenderTarget(renderer_,                  //
-                                             subpass_size,               //
-                                             Color::BlackTransparent(),  //
-                                             use_msaa,                   //
-                                             false,                      //
-                                             pooled_glass_layer          //
-                                             )));
+      LazyRenderingConfig(renderer_, std::move(layer_target)));
   save_layer_state_.push_back(SaveLayerState{
       paint_copy, subpass_coverage.Shift(-coverage_origin_adjustment),
       backdrop_filter != nullptr, std::move(alpha_threshold_backdrop),
@@ -2864,13 +2880,8 @@ void Canvas::SaveLayer(const Paint& paint,
         Matrix::MakeTranslation(Vector3(-local_position)) *
         backdrop_entity.GetTransform());
   } else {
-    if (IsPooledGlassMaterialPaddingRequested() && use_msaa &&
-        backdrop_filter &&
-        backdrop_filter->type() == flutter::DlImageFilterType::kGlass &&
-        !backdrop_alpha_threshold.has_value() && !paint.image_filter &&
-        !paint.color_filter &&
-        renderer_.GetContext()->GetBackendType() ==
-            Context::BackendType::kOpenGLES) {
+    if (backdrop_filter &&
+        backdrop_filter->type() == flutter::DlImageFilterType::kGlass) {
       // This uncached material is consumed immediately by the child layer.
       // Persistent snapshots and threshold consumers never enter this path.
       std::static_pointer_cast<GlassFilterContents>(backdrop_filter_contents)

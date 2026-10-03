@@ -30,6 +30,9 @@ class RenderTargetCache : public RenderTargetAllocator {
   void End() override;
 
   // |RenderTargetAllocator|
+  void AllowLargerTargetForNextRequest() override;
+
+  // |RenderTargetAllocator|
   void DisableCache() override;
 
   // |RenderTargetAllocator|
@@ -79,9 +82,17 @@ class RenderTargetCache : public RenderTargetAllocator {
 
   bool CacheEnabled() const;
 
+  // Returns the unused target to reuse for `config`, preferring an exact
+  // size. With `allow_larger`, it may otherwise return the smallest unused
+  // target with the same attachments that contains the size and has at most
+  // twice its area.
+  RenderTargetData* FindReusableTarget(const RenderTargetConfig& config,
+                                       bool allow_larger);
+
   std::vector<RenderTargetData> render_target_data_;
   uint32_t keep_alive_frame_count_;
   uint32_t cache_disabled_count_ = 0;
+  bool allow_larger_next_request_ = false;
 
   RenderTargetCache(const RenderTargetCache&) = delete;
 
