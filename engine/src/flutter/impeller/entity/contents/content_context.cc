@@ -14,6 +14,7 @@
 #include "impeller/base/validation.h"
 #include "impeller/core/formats.h"
 #include "impeller/core/texture_descriptor.h"
+#include "impeller/entity/contents/filters/blur_workspace.h"
 #include "impeller/entity/contents/framebuffer_blend_contents.h"
 #include "impeller/entity/contents/glass_material_sheet.h"
 #include "impeller/entity/contents/pipelines.h"
@@ -580,7 +581,8 @@ ContentContext::ContentContext(
           context_->GetIdleWaiter(),
           context_->GetCapabilities()->GetMinimumUniformAlignment())),
       text_shadow_cache_(std::make_unique<TextShadowCache>()),
-      glass_material_sheet_(std::make_unique<GlassMaterialSheet>()) {
+      glass_material_sheet_(std::make_unique<GlassMaterialSheet>()),
+      blur_workspace_(std::make_unique<BlurWorkspace>()) {
   if (!context_ || !context_->IsValid()) {
     return;
   }

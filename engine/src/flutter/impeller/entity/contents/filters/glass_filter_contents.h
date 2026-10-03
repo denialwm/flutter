@@ -6,6 +6,7 @@
 #define FLUTTER_IMPELLER_ENTITY_CONTENTS_FILTERS_GLASS_FILTER_CONTENTS_H_
 
 #include "impeller/entity/contents/filters/filter_contents.h"
+#include "impeller/entity/contents/filters/gaussian_blur_filter_contents.h"
 #include "impeller/geometry/color.h"
 #include "impeller/geometry/round_rect.h"
 
@@ -76,6 +77,11 @@ class GlassFilterContents final : public FilterContents {
   // the material renders into a dedicated target as before.
   void SetMaterialSheetOwner(const void* owner, ISize pass_size);
 
+  // `frost` is the blur that inputs[1] wraps. A material rendered into its
+  // own target consumes the frost immediately, so the frost may then render
+  // into the shared BlurWorkspace; it is rendered again for every use.
+  void SetFrost(std::shared_ptr<GaussianBlurFilterContents> frost);
+
  private:
   std::optional<Entity> RenderFilter(
       const FilterInput::Vector& inputs,
@@ -114,6 +120,7 @@ class GlassFilterContents final : public FilterContents {
   bool render_material_directly_ = false;
   bool material_target_padding_enabled_ = false;
   const void* material_sheet_owner_ = nullptr;
+  std::shared_ptr<GaussianBlurFilterContents> frost_;
   ISize material_sheet_pass_size_;
 };
 

@@ -102,6 +102,14 @@ class GaussianBlurFilterContents final : public FilterContents {
                                       Scalar downsample_scale = 1.0f);
 
   std::optional<Rect> GetBounds() const { return bounds_; }
+
+  /// Declares that the caller consumes each result before any other blur
+  /// renders. Every pass may then render into the shared BlurWorkspace
+  /// instead of allocating targets sized by the input. The result is a
+  /// sample-bounded snapshot, so it must be rendered again for each use.
+  void SetResultIsTransient(bool transient) {
+    result_is_transient_ = transient;
+  }
   Scalar GetSigmaX() const { return sigma_.x; }
   Scalar GetSigmaY() const { return sigma_.y; }
 
@@ -155,6 +163,7 @@ class GaussianBlurFilterContents final : public FilterContents {
   const BlurStyle mask_blur_style_;
   const Geometry* mask_geometry_ = nullptr;
   const Scalar downsample_scale_ = 1.0f;
+  bool result_is_transient_ = false;
 };
 
 }  // namespace impeller

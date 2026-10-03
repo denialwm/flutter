@@ -7,6 +7,7 @@
 #include "flutter/display_list/effects/image_filters/dl_glass_image_filter.h"
 #include "impeller/display_list/canvas.h"
 #include "impeller/display_list/image_filter.h"
+#include "impeller/entity/contents/filters/blur_workspace.h"
 #include "impeller/entity/contents/filters/gaussian_blur_filter_contents.h"
 #include "impeller/entity/contents/filters/glass_filter_contents.h"
 #include "impeller/entity/contents/glass_material_sheet.h"
@@ -721,6 +722,50 @@ TEST_F(WindowBackdropTest, SheetMaterialMatchesDedicatedTargetGeometry) {
                   ->GetTexture(),
               sheet_contents->GetTexture());
     renderer_->GetGlassMaterialSheet().Release(&owner);
+  }
+}
+
+TEST_F(WindowBackdropTest, TransientBlurRendersInWorkspaceLikeExactTargets) {
+  const Rect window = Rect::MakeLTRB(55.25f, 10.5f, 195.75f, 97.5f);
+  const std::optional<Rect> bounds =
+      Rect::RoundOut(window).Intersection(Rect::MakeSize(texture_->GetSize()));
+  ASSERT_TRUE(bounds);
+  // Sigma 2 fuses the downsample; sigma 6 and 20 downsample separately.
+  for (Scalar sigma : {2.0f, 6.0f, 20.0f}) {
+    SCOPED_TRACE(sigma);
+    auto render = [&](bool transient) {
+      auto blur = std::static_pointer_cast<GaussianBlurFilterContents>(
+          FilterContents::MakeGaussianBlur(
+              FilterInput::Make(texture_, Matrix(), bounds), Sigma(sigma),
+              Sigma(sigma), Entity::TileMode::kClamp, std::nullopt,
+              FilterContents::BlurStyle::kNormal, nullptr, 1));
+      blur->SetIsBackdropFilter(true);
+      blur->SetResultIsTransient(transient);
+      return blur->RenderToSnapshot(*renderer_, Entity{},
+                                    {.coverage_limit = window});
+    };
+    auto exact = render(false);
+    auto transient = render(true);
+    ASSERT_TRUE(exact);
+    ASSERT_TRUE(transient);
+    EXPECT_FALSE(exact->sample_bounds.has_value());
+    ASSERT_TRUE(transient->sample_bounds.has_value());
+    // The region holds the exact target's texels at the same placement.
+    EXPECT_EQ(transient->sample_bounds.value(),
+              Rect::MakeSize(exact->texture->GetSize()));
+    EXPECT_EQ(transient->transform, exact->transform);
+    EXPECT_NE(transient->texture, exact->texture);
+    auto workspace = renderer_->GetBlurWorkspace().Get(
+        *renderer_->GetContext(), exact->texture->GetSize());
+    ASSERT_TRUE(workspace);
+    EXPECT_TRUE(transient->texture ==
+                    (*workspace)[0].GetRenderTargetTexture() ||
+                transient->texture == (*workspace)[1].GetRenderTargetTexture());
+    // A smaller later blur reuses the same workspace.
+    auto again = render(true);
+    ASSERT_TRUE(again);
+    EXPECT_TRUE(again->texture == (*workspace)[0].GetRenderTargetTexture() ||
+                again->texture == (*workspace)[1].GetRenderTargetTexture());
   }
 }
 

@@ -16,12 +16,19 @@
 namespace impeller {
 
 Entity Entity::FromSnapshot(const Snapshot& snapshot, BlendMode blend_mode) {
-  auto texture_rect = Rect::MakeSize(snapshot.texture->GetSize());
+  // A sample-bounded snapshot represents only the texels within its bounds,
+  // clamped at their edges like a texture cropped to them.
+  auto texture_rect = snapshot.sample_bounds.value_or(
+      Rect::MakeSize(snapshot.texture->GetSize()));
 
   auto contents = TextureContents::MakeRect(texture_rect);
   contents->SetTexture(snapshot.texture);
   contents->SetSamplerDescriptor(snapshot.sampler_descriptor);
   contents->SetSourceRect(texture_rect);
+  if (snapshot.sample_bounds.has_value()) {
+    contents->SetStrictSourceRect(true);
+    contents->SetSourceRectIsSampleBounds(true);
+  }
   contents->SetOpacity(snapshot.opacity);
   contents->SetNeedsRasterizationForRuntimeEffects(
       snapshot.needs_rasterization_for_runtime_effects);

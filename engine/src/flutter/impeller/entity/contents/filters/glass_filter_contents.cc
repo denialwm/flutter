@@ -236,6 +236,11 @@ void GlassFilterContents::SetMaterialSheetOwner(const void* owner,
   material_sheet_pass_size_ = pass_size;
 }
 
+void GlassFilterContents::SetFrost(
+    std::shared_ptr<GaussianBlurFilterContents> frost) {
+  frost_ = std::move(frost);
+}
+
 std::optional<Entity> GlassFilterContents::GetDirectEntity(
     const ContentContext& renderer,
     const Entity& entity,
@@ -290,8 +295,23 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
   // crop-aware Gaussian filter. Resource pressure must not make an entire
   // backdrop scope disappear, so retain the undiffused scene as a graceful
   // fallback if that intermediate cannot be allocated.
-  std::optional<Snapshot> blurred_snapshot = inputs[1]->GetSnapshot(
-      "Denial Glass Frost", renderer, entity, material_coverage);
+  std::optional<Snapshot> blurred_snapshot;
+  if (frost_ && !render_material_directly_) {
+    // This material consumes the frost before anything else renders, so the
+    // frost renders into the shared workspace. Bypass the input's snapshot
+    // cache: a later blur reuses that workspace.
+    frost_->SetResultIsTransient(true);
+    blurred_snapshot = frost_->RenderToSnapshot(
+        renderer, entity,
+        {.coverage_limit = material_coverage, .label = "Denial Glass Frost"});
+  } else {
+    if (frost_) {
+      // A direct material composites later, after other blurs.
+      frost_->SetResultIsTransient(false);
+    }
+    blurred_snapshot = inputs[1]->GetSnapshot("Denial Glass Frost", renderer,
+                                              entity, material_coverage);
+  }
   if (!blurred_snapshot.has_value()) {
     blurred_snapshot = scene_snapshot;
   }

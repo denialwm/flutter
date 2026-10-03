@@ -90,6 +90,11 @@ class TextureContents final : public Contents {
 
   bool GetStrictSourceRect() const;
 
+  /// Marks this contents as the strict, untransformed form of a snapshot
+  /// whose sample bounds are `source_rect_`. RenderToSnapshot then returns
+  /// that snapshot instead of rendering a copy of its region.
+  void SetSourceRectIsSampleBounds(bool is_sample_bounds);
+
   void SetOpacity(Scalar opacity);
 
   Scalar GetOpacity() const;
@@ -144,6 +149,7 @@ class TextureContents final : public Contents {
   SamplerDescriptor sampler_descriptor_ = {};
   Rect source_rect_;
   bool strict_source_rect_enabled_ = false;
+  bool source_rect_is_sample_bounds_ = false;
   Scalar opacity_ = 1.0f;
   Scalar inherited_opacity_ = 1.0f;
   bool defer_applying_opacity_ = false;

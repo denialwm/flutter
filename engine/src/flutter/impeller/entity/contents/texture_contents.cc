@@ -102,6 +102,25 @@ std::optional<Snapshot> TextureContents::RenderToSnapshot(
   // rects.
   auto bounds = destination_rect_;
   auto opacity = GetOpacity();
+  if (source_rect_is_sample_bounds_ && strict_source_rect_enabled_ &&
+      !source_rect_.IsEmpty() &&
+      (opacity >= 1 - kEhCloseEnough || defer_applying_opacity_)) {
+    // Every consumer of a sample-bounded snapshot clamps its reads to the
+    // bounds, exactly as this strict source rect does.
+    auto scale = Vector2(bounds.GetSize() / source_rect_.GetSize());
+    return Snapshot{
+        .texture = texture_,
+        .transform = entity.GetTransform() *
+                     Matrix::MakeTranslation(bounds.GetOrigin()) *
+                     Matrix::MakeScale(scale) *
+                     Matrix::MakeTranslation(-source_rect_.GetOrigin()),
+        .sampler_descriptor =
+            options.sampler_descriptor.value_or(sampler_descriptor_),
+        .opacity = opacity,
+        .needs_rasterization_for_runtime_effects =
+            snapshots_need_rasterization_for_runtime_effects_,
+        .sample_bounds = source_rect_};
+  }
   if (source_rect_ == Rect::MakeSize(texture_->GetSize()) &&
       (opacity >= 1 - kEhCloseEnough || defer_applying_opacity_)) {
     auto scale = Vector2(bounds.GetSize() / Size(texture_->GetSize()));
@@ -289,6 +308,10 @@ void TextureContents::SetStrictSourceRect(bool strict) {
 
 bool TextureContents::GetStrictSourceRect() const {
   return strict_source_rect_enabled_;
+}
+
+void TextureContents::SetSourceRectIsSampleBounds(bool is_sample_bounds) {
+  source_rect_is_sample_bounds_ = is_sample_bounds;
 }
 
 void TextureContents::SetSamplerDescriptor(const SamplerDescriptor& desc) {

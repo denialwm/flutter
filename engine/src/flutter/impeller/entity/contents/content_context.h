@@ -123,6 +123,7 @@ enum ConicalKind {
 class Tessellator;
 class RenderTargetCache;
 class GlassMaterialSheet;
+class BlurWorkspace;
 
 class ContentContext {
  public:
@@ -276,6 +277,9 @@ class ContentContext {
     return *glass_material_sheet_;
   }
 
+  /// The persistent targets of blurs whose result is consumed immediately.
+  BlurWorkspace& GetBlurWorkspace() const { return *blur_workspace_; }
+
   /// RuntimeEffect pipelines must be obtained via this method to avoid
   /// re-creating them every frame.
   ///
@@ -415,6 +419,7 @@ class ContentContext {
   std::shared_ptr<Texture> empty_texture_;
   std::unique_ptr<TextShadowCache> text_shadow_cache_;
   std::unique_ptr<GlassMaterialSheet> glass_material_sheet_;
+  std::unique_ptr<BlurWorkspace> blur_workspace_;
 
   bool is_texture_caching_enabled_ = false;
   mutable std::unordered_map<const flutter::DlImage*, std::shared_ptr<Texture>>

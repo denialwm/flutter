@@ -14,6 +14,7 @@
 #include "impeller/display_list/skia_conversions.h"
 #include "impeller/entity/contents/filters/color_filter_contents.h"
 #include "impeller/entity/contents/filters/filter_contents.h"
+#include "impeller/entity/contents/filters/gaussian_blur_filter_contents.h"
 #include "impeller/entity/contents/filters/glass_filter_contents.h"
 #include "impeller/entity/contents/filters/inputs/filter_input.h"
 #include "impeller/entity/contents/texture_contents.h"
@@ -92,15 +93,17 @@ std::shared_ptr<FilterContents> WrapInput(const ContentContext& renderer,
       // by Denial's ordinary backdrop blur and preserves a valid blur halo for
       // refraction at the shape edge.
       FilterInput::Ref frost_input = input;
+      std::shared_ptr<GaussianBlurFilterContents> frost;
       if (GlassFrostNeedsBlur(glass_filter->sigma_x(),
                               glass_filter->sigma_y())) {
-        std::shared_ptr<FilterContents> frost =
+        // MakeGaussianBlur always creates a GaussianBlurFilterContents.
+        frost = std::static_pointer_cast<GaussianBlurFilterContents>(
             FilterContents::MakeGaussianBlur(
                 input, Sigma(glass_filter->sigma_x()),
                 Sigma(glass_filter->sigma_y()), Entity::TileMode::kClamp,
                 std::nullopt, FilterContents::BlurStyle::kNormal, nullptr,
-                glass_filter->downsample_scale());
-        frost_input = FilterInput::Make(std::move(frost));
+                glass_filter->downsample_scale()));
+        frost_input = FilterInput::Make(std::shared_ptr<FilterContents>(frost));
       }
       const flutter::DlColor tint = glass_filter->tint();
       auto glass = std::make_shared<GlassFilterContents>(
@@ -115,6 +118,7 @@ std::shared_ptr<FilterContents> WrapInput(const ContentContext& renderer,
           glass_filter->refraction_depth_scale(), glass_filter->rim_width(),
           glass_filter->rim_falloff(), glass_filter->opposite_light_strength());
       glass->SetInputs({input, std::move(frost_input)});
+      glass->SetFrost(std::move(frost));
       return glass;
     }
     case flutter::DlImageFilterType::kDilate: {
