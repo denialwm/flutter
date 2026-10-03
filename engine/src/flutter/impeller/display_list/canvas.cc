@@ -42,6 +42,7 @@
 #include "impeller/entity/contents/filters/filter_contents.h"
 #include "impeller/entity/contents/filters/glass_filter_contents.h"
 #include "impeller/entity/contents/framebuffer_blend_contents.h"
+#include "impeller/entity/contents/glass_material_sheet.h"
 #include "impeller/entity/contents/line_contents.h"
 #include "impeller/entity/contents/shadow_vertices_contents.h"
 #include "impeller/entity/contents/solid_color_contents.h"
@@ -709,6 +710,11 @@ class Canvas::PathBlurShape : public BlurShape {
   // optional stack allocation - for BuildGeometry
   std::optional<FillPathFromSourceGeometry> source_geometry_;
 };
+
+Canvas::~Canvas() {
+  // An abandoned replay never composites the materials it reserved.
+  renderer_.GetGlassMaterialSheet().Release(this);
+}
 
 Canvas::Canvas(ContentContext& renderer,
                const RenderTarget& render_target,
@@ -2557,8 +2563,19 @@ void Canvas::SaveLayer(const Paint& paint,
       }
       backdrop_filter_contents = WrapInput(renderer_, backdrop_filter, input);
       if (backdrop_filter->asGlass()) {
-        std::static_pointer_cast<GlassFilterContents>(backdrop_filter_contents)
-            ->SetMaterialTransform(material_transform);
+        auto glass = std::static_pointer_cast<GlassFilterContents>(
+            backdrop_filter_contents);
+        glass->SetMaterialTransform(material_transform);
+        if (direct_window && render_passes_.size() == 1u &&
+            !will_cache_backdrop_texture &&
+            backdrop_rendering_mode == Entity::RenderingMode::kDirect &&
+            !IsDirectGlassMaterialRequested() &&
+            renderer_.GetContext()->GetBackendType() ==
+                Context::BackendType::kOpenGLES) {
+          // The window composites its material into this root pass, which
+          // ends before anything can overwrite the material's sheet region.
+          glass->SetMaterialSheetOwner(this, input_texture->GetSize());
+        }
       }
       backdrop_filter_contents->SetEffectTransform(
           transform_stack_.back().transform.Basis());
@@ -3665,6 +3682,10 @@ std::shared_ptr<Texture> Canvas::FlipBackdrop(Point global_pass_position,
     render_passes_.emplace_back(std::move(rendering_config));
     return nullptr;
   }
+  if (render_passes_.empty()) {
+    // The ended root pass composited every material it reserved.
+    renderer_.GetGlassMaterialSheet().Release(this);
+  }
 
   const std::shared_ptr<Texture>& input_texture =
       rendering_config.GetInlinePassContext()->GetTexture();
@@ -3847,6 +3868,7 @@ void Canvas::EndReplay() {
   render_passes_.back().GetInlinePassContext()->GetRenderPass();
   render_passes_.back().GetInlinePassContext()->EndPass(
       /*is_onscreen=*/!requires_readback_ && is_onscreen_);
+  renderer_.GetGlassMaterialSheet().Release(this);
   FlushBackdropLayerPlanAudit();
   FlushBackdropGraphPlanAudit();
   backdrop_data_.clear();

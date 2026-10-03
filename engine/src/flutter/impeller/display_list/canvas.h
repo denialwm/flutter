@@ -173,7 +173,7 @@ class Canvas {
                   bool requires_readback,
                   IRect32 cull_rect);
 
-  ~Canvas() = default;
+  ~Canvas();
 
   /// @brief Update the backdrop data used to group together backdrop filters
   ///        within the same layer

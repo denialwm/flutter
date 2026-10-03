@@ -129,7 +129,10 @@ std::shared_ptr<BackdropSurfaceContents> BackdropSurfaceContents::Make(
       !alpha_threshold.has_value()) {
     return nullptr;
   }
+  // The fused composite samples the whole backdrop texture. A backdrop
+  // confined to a region of a larger texture draws on its own instead.
   if (!backdrop_contents || !backdrop_contents->GetTexture() ||
+      backdrop_contents->GetStrictSourceRect() ||
       backdrop_entity.GetContents().get() != backdrop_contents.get() ||
       backdrop_contents->IsExternalTexture() ||
       backdrop_contents->GetTexture()->GetTextureDescriptor().type ==

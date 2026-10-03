@@ -11,7 +11,10 @@
 
 #include "fml/closure.h"
 #include "impeller/entity/contents/content_context.h"
+#include "impeller/entity/contents/glass_material_sheet.h"
+#include "impeller/entity/contents/solid_color_contents.h"
 #include "impeller/entity/contents/texture_contents.h"
+#include "impeller/entity/geometry/rect_geometry.h"
 #include "impeller/entity/glass.frag.h"
 #include "impeller/entity/glass.vert.h"
 #include "impeller/renderer/command.h"
@@ -225,6 +228,12 @@ void GlassFilterContents::SetMaterialTransform(const Matrix& transform) {
 
 void GlassFilterContents::SetMaterialTargetPaddingEnabled(bool enabled) {
   material_target_padding_enabled_ = enabled;
+}
+
+void GlassFilterContents::SetMaterialSheetOwner(const void* owner,
+                                                ISize pass_size) {
+  material_sheet_owner_ = owner;
+  material_sheet_pass_size_ = pass_size;
 }
 
 std::optional<Entity> GlassFilterContents::GetDirectEntity(
@@ -444,6 +453,82 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
     return result;
   }
 
+  std::shared_ptr<CommandBuffer> command_buffer =
+      renderer.GetContext()->CreateCommandBuffer();
+  if (!command_buffer) {
+    return std::nullopt;
+  }
+  const ISize material_pixel_size = ISize::Ceil(draw_size);
+
+  SamplerDescriptor output_sampler;
+  output_sampler.min_filter = MinMagFilter::kLinear;
+  output_sampler.mag_filter = MinMagFilter::kLinear;
+  output_sampler.width_address_mode = SamplerAddressMode::kClampToEdge;
+  output_sampler.height_address_mode = SamplerAddressMode::kClampToEdge;
+  // Retain the original geometry and texel coordinates of a material placed
+  // inside a larger texture. Strict sampling clamps to the original edge texel
+  // centers, matching CLAMP_TO_EDGE on an exact-size texture even at
+  // fractional layer translations. Texels outside it are never sampled.
+  const auto make_region_entity = [&](const std::shared_ptr<Texture>& texture,
+                                      const Rect& region) {
+    auto contents = TextureContents::MakeRect(Rect::MakeSize(region.GetSize()));
+    contents->SetTexture(texture);
+    contents->SetSourceRect(region);
+    contents->SetStrictSourceRect(true);
+    contents->SetSamplerDescriptor(output_sampler);
+    Entity result;
+    result.SetBlendMode(entity.GetBlendMode());
+    result.SetTransform(Matrix::MakeTranslation(material_coverage.GetOrigin()));
+    result.SetContents(std::move(contents));
+    return result;
+  };
+
+  if (material_sheet_owner_ != nullptr) {
+    // Texel i of the region holds the same pixel as texel i of a dedicated
+    // target; only its offset in the sheet differs.
+    const IRect region = IRect::MakeOriginSize(
+        IPoint(static_cast<int64_t>(std::floor(material_coverage.GetLeft())),
+               static_cast<int64_t>(std::floor(material_coverage.GetTop()))),
+        material_pixel_size);
+    std::optional<RenderTarget> sheet =
+        renderer.GetGlassMaterialSheet().Reserve(*renderer.GetContext(),
+                                                 material_sheet_owner_, region,
+                                                 material_sheet_pass_size_);
+    if (sheet.has_value()) {
+      const Matrix region_transform =
+          Matrix::MakeTranslation(Vector2(region.GetOrigin()));
+      ContentContext::SubpassCallback sheet_callback =
+          [&](const ContentContext& renderer, RenderPass& pass) {
+            // The sheet retains earlier materials. Clear this region as a new
+            // target would be, including texels the material only partially
+            // covers at a fractional size.
+            FillRectGeometry clear_geometry(
+                Rect::MakeSize(material_pixel_size));
+            SolidColorContents clear(&clear_geometry);
+            clear.SetColor(Color::BlackTransparent());
+            Entity clear_entity;
+            clear_entity.SetTransform(region_transform);
+            clear_entity.SetBlendMode(BlendMode::kSrc);
+            if (!clear.Render(renderer, clear_entity, pass)) {
+              return false;
+            }
+            Entity material_entity;
+            material_entity.SetTransform(region_transform);
+            material_entity.SetBlendMode(BlendMode::kSrc);
+            return render_material(renderer, material_entity, pass);
+          };
+      fml::StatusOr<RenderTarget> sheet_target =
+          renderer.MakeSubpass("Denial Glass Material Sheet", sheet.value(),
+                               command_buffer, sheet_callback);
+      if (!sheet_target.ok() || !renderer.GetContext()->EnqueueCommandBuffer(
+                                    std::move(command_buffer))) {
+        return std::nullopt;
+      }
+      return make_region_entity(sheet_target.value().GetRenderTargetTexture(),
+                                Rect::Make(region));
+    }
+  }
+
   ContentContext::SubpassCallback callback =
       [render_material = std::move(render_material)](
           const ContentContext& renderer, RenderPass& pass) {
@@ -452,12 +537,6 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
         return render_material(renderer, material_entity, pass);
       };
 
-  std::shared_ptr<CommandBuffer> command_buffer =
-      renderer.GetContext()->CreateCommandBuffer();
-  if (!command_buffer) {
-    return std::nullopt;
-  }
-  const ISize material_pixel_size = ISize::Ceil(draw_size);
   ISize target_size = material_pixel_size;
   const ISize maximum_size = renderer.GetContext()
                                  ->GetCapabilities()
@@ -483,27 +562,10 @@ std::optional<Entity> GlassFilterContents::RenderFilter(
     return std::nullopt;
   }
 
-  SamplerDescriptor output_sampler;
-  output_sampler.min_filter = MinMagFilter::kLinear;
-  output_sampler.mag_filter = MinMagFilter::kLinear;
-  output_sampler.width_address_mode = SamplerAddressMode::kClampToEdge;
-  output_sampler.height_address_mode = SamplerAddressMode::kClampToEdge;
   if (target_size != material_pixel_size) {
-    // Retain the original geometry and texel coordinates. Strict sampling
-    // clamps to the original edge texel centers, matching CLAMP_TO_EDGE on
-    // the former exact-size texture even at fractional layer translations.
     // The transparent allocation padding is never sampled or composited.
-    const Rect source_rect = Rect::MakeSize(material_pixel_size);
-    auto contents = TextureContents::MakeRect(source_rect);
-    contents->SetTexture(render_target.value().GetRenderTargetTexture());
-    contents->SetSourceRect(source_rect);
-    contents->SetStrictSourceRect(true);
-    contents->SetSamplerDescriptor(output_sampler);
-    Entity result;
-    result.SetBlendMode(entity.GetBlendMode());
-    result.SetTransform(Matrix::MakeTranslation(material_coverage.GetOrigin()));
-    result.SetContents(std::move(contents));
-    return result;
+    return make_region_entity(render_target.value().GetRenderTargetTexture(),
+                              Rect::MakeSize(material_pixel_size));
   }
   return Entity::FromSnapshot(
       Snapshot{

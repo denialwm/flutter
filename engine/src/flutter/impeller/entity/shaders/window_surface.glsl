@@ -4,9 +4,9 @@
 uniform f16sampler2D backdrop_texture_sampler;
 uniform FragInfo {
   // GLES lowers a uniform block to individual glUniform calls. One tightly
-  // packed vec4 array uploads this material in ONE call instead of fourteen,
-  // with no array-repacking allocation and the same 128-byte payload.
-  vec4 data[8];
+  // packed vec4 array uploads this material in ONE call instead of fifteen,
+  // with no array-repacking allocation and the same 144-byte payload.
+  vec4 data[9];
 }
 frag_info;
 #define window_bounds frag_info.data[0]
@@ -23,6 +23,7 @@ frag_info;
 #define has_surface frag_info.data[6].z
 #define has_material_bounds frag_info.data[6].w
 #define material_bounds frag_info.data[7]
+#define backdrop_limits frag_info.data[8]
 in highp vec2 v_position;
 in highp vec2 v_surface_uv;
 in highp vec2 v_backdrop_uv;
@@ -71,7 +72,9 @@ void main() {
     surface *= surface_opacity;
     if (has_backdrop > 0.5 && material > 0.0 && surface.a > 0.0 &&
         surface.a * inner > alpha_threshold && surface.a < 1.0 - 1.0 / 1024.0) {
-      vec4 backdrop = vec4(texture(backdrop_texture_sampler, v_backdrop_uv,
+      vec2 backdrop_uv =
+          clamp(v_backdrop_uv, backdrop_limits.xy, backdrop_limits.zw);
+      vec4 backdrop = vec4(texture(backdrop_texture_sampler, backdrop_uv,
                                    float16_t(kDefaultMipBias)));
       surface += backdrop * backdrop_opacity * material * (1.0 - surface.a);
     }

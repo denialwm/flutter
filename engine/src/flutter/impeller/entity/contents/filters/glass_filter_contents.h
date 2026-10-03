@@ -70,6 +70,12 @@ class GlassFilterContents final : public FilterContents {
 
   void SetMaterialTargetPaddingEnabled(bool enabled);
 
+  // Renders the material into the renderer's GlassMaterialSheet at its
+  // position in a pass of `pass_size`. `owner` must release the region after
+  // encoding the pass that composites the material. Without a free region,
+  // the material renders into a dedicated target as before.
+  void SetMaterialSheetOwner(const void* owner, ISize pass_size);
+
  private:
   std::optional<Entity> RenderFilter(
       const FilterInput::Vector& inputs,
@@ -107,6 +113,8 @@ class GlassFilterContents final : public FilterContents {
   std::optional<Matrix> material_transform_;
   bool render_material_directly_ = false;
   bool material_target_padding_enabled_ = false;
+  const void* material_sheet_owner_ = nullptr;
+  ISize material_sheet_pass_size_;
 };
 
 }  // namespace impeller

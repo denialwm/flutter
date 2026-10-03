@@ -83,6 +83,8 @@ void BindFragment(RenderPass& pass,
   info.data[6] = Vector4(threshold, backdrop.contents ? 1 : 0,
                          surface.contents ? 1 : 0, material ? 1 : 0);
   info.data[7] = material ? Vector4(material->GetLTRB()) : Vector4();
+  // A material may occupy a region of a larger, shared texture.
+  info.data[8] = Vector4(SourceLimits(backdrop).GetLTRB());
   FS::BindFragInfo(pass, data.EmplaceUniform(info));
   FS::BindBackdropTextureSampler(pass, backdrop_texture, backdrop_sampler);
 }

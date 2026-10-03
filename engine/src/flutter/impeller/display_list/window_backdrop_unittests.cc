@@ -9,6 +9,8 @@
 #include "impeller/display_list/image_filter.h"
 #include "impeller/entity/contents/filters/gaussian_blur_filter_contents.h"
 #include "impeller/entity/contents/filters/glass_filter_contents.h"
+#include "impeller/entity/contents/glass_material_sheet.h"
+#include "impeller/entity/contents/texture_contents.h"
 #include "impeller/entity/window_surface.frag.h"
 #include "impeller/entity/window_surface.vert.h"
 #include "impeller/entity/window_surface_texture.frag.h"
@@ -251,13 +253,13 @@ TEST_F(WindowBackdropTest, WindowMaterialIsOneUnpaddedUniformUpload) {
     const auto& data = metadata->members[0];
     EXPECT_EQ(data.type, ShaderType::kFloat);
     EXPECT_EQ(data.float_type, ShaderFloatType::kVec4);
-    EXPECT_EQ(data.array_elements, 8u);
+    EXPECT_EQ(data.array_elements, 9u);
     EXPECT_EQ(data.size, 16u);
     EXPECT_EQ(data.offset, 0u);
-    EXPECT_EQ(data.byte_length, 128u);
+    EXPECT_EQ(data.byte_length, 144u);
   }
-  EXPECT_EQ(sizeof(WindowSurfaceFragmentShader::FragInfo), 128u);
-  EXPECT_EQ(sizeof(WindowSurfaceTextureFragmentShader::FragInfo), 128u);
+  EXPECT_EQ(sizeof(WindowSurfaceFragmentShader::FragInfo), 144u);
+  EXPECT_EQ(sizeof(WindowSurfaceTextureFragmentShader::FragInfo), 144u);
 }
 
 TEST_F(WindowBackdropTest, WindowSamplingSurvivesAllBufferTransforms) {
@@ -633,6 +635,92 @@ TEST_F(WindowBackdropTest, SampleBoundsClampToEdgeTexelCenters) {
   } else {
     EXPECT_FLOAT_EQ(uvs.y, 10.5f / 100);
     EXPECT_FLOAT_EQ(uvs.w, 89.5f / 100);
+  }
+}
+
+TEST_F(WindowBackdropTest, GlassMaterialSheetReservesDisjointRegions) {
+  GlassMaterialSheet sheet;
+  const Context& context = *renderer_->GetContext();
+  int first = 0;
+  int second = 0;
+  auto target = sheet.Reserve(context, &first, IRect::MakeXYWH(0, 0, 10, 10),
+                              ISize(200, 100));
+  ASSERT_TRUE(target);
+  EXPECT_EQ(target->GetRenderTargetSize(), ISize(200, 100));
+  EXPECT_EQ(target->GetColorAttachment(0).load_action, LoadAction::kLoad);
+  // Regions waiting for their composite never overlap; touching is fine.
+  EXPECT_FALSE(sheet.Reserve(context, &second, IRect::MakeXYWH(5, 5, 10, 10),
+                             ISize(200, 100)));
+  auto adjacent = sheet.Reserve(
+      context, &second, IRect::MakeXYWH(10, 0, 10, 10), ISize(200, 100));
+  ASSERT_TRUE(adjacent);
+  EXPECT_EQ(adjacent->GetRenderTargetTexture(),
+            target->GetRenderTargetTexture());
+  sheet.Release(&first);
+  EXPECT_TRUE(sheet.Reserve(context, &second, IRect::MakeXYWH(0, 0, 10, 10),
+                            ISize(200, 100)));
+  EXPECT_FALSE(sheet.Reserve(context, &first, IRect::MakeXYWH(-1, 0, 4, 4),
+                             ISize(200, 100)));
+  // Growing replaces the sheet; pending regions keep the previous texture.
+  auto grown = sheet.Reserve(context, &first, IRect::MakeXYWH(150, 50, 10, 10),
+                             ISize(300, 100));
+  ASSERT_TRUE(grown);
+  EXPECT_EQ(grown->GetRenderTargetSize(), ISize(300, 100));
+  EXPECT_NE(grown->GetRenderTargetTexture(), target->GetRenderTargetTexture());
+  EXPECT_TRUE(sheet.Reserve(context, &second, IRect::MakeXYWH(0, 0, 10, 10),
+                            ISize(300, 100)));
+  auto beyond = sheet.Reserve(
+      context, &second, IRect::MakeXYWH(295, 95, 10, 10), ISize(300, 100));
+  ASSERT_TRUE(beyond);
+  EXPECT_EQ(beyond->GetRenderTargetSize(), ISize(305, 105));
+}
+
+TEST_F(WindowBackdropTest, SheetMaterialMatchesDedicatedTargetGeometry) {
+  for (const Rect window : {Rect::MakeLTRB(55.25f, 10.5f, 195.75f, 97.5f),
+                            Rect::MakeLTRB(0, 0, 120, 64)}) {
+    SCOPED_TRACE(window);
+    const std::optional<Rect> bounds = Rect::RoundOut(window).Intersection(
+        Rect::MakeSize(texture_->GetSize()));
+    ASSERT_TRUE(bounds);
+    auto filter = flutter::DlGlassImageFilter::Make(
+        20, 20, RoundRect::MakeRectXY(window, 8, 8), 1, 27, 0.52f, 0.51f, 1,
+        flutter::DlColor::kTransparent(), 0, 1, 0, 1, 1, 0.65f, true);
+    int owner = 0;
+    auto render = [&](bool sheet) {
+      auto contents = WrapInput(*renderer_, filter.get(),
+                                FilterInput::Make(texture_, Matrix(), bounds));
+      contents->SetIsBackdropFilter(true);
+      contents->SetRenderingMode(Entity::RenderingMode::kDirect);
+      if (sheet) {
+        std::static_pointer_cast<GlassFilterContents>(contents)
+            ->SetMaterialSheetOwner(&owner, texture_->GetSize());
+      }
+      return contents->GetEntity(*renderer_, Entity{}, window);
+    };
+    auto dedicated = render(false);
+    auto sheet = render(true);
+    ASSERT_TRUE(dedicated);
+    ASSERT_TRUE(sheet);
+    auto dedicated_contents =
+        std::static_pointer_cast<TextureContents>(dedicated->GetContents());
+    auto sheet_contents =
+        std::static_pointer_cast<TextureContents>(sheet->GetContents());
+    EXPECT_EQ(sheet->GetTransform(), dedicated->GetTransform());
+    EXPECT_EQ(sheet_contents->GetDestinationRect(),
+              dedicated_contents->GetDestinationRect());
+    EXPECT_EQ(sheet_contents->GetSourceRect().GetSize(),
+              dedicated_contents->GetSourceRect().GetSize());
+    EXPECT_EQ(sheet_contents->GetSourceRect().GetOrigin(),
+              Point(std::floor(window.GetLeft()), std::floor(window.GetTop())));
+    EXPECT_TRUE(sheet_contents->GetStrictSourceRect());
+    EXPECT_EQ(sheet_contents->GetTexture()->GetSize(), texture_->GetSize());
+    // Until the pass ends, an overlapping material uses its own target.
+    auto fallback = render(true);
+    ASSERT_TRUE(fallback);
+    EXPECT_NE(std::static_pointer_cast<TextureContents>(fallback->GetContents())
+                  ->GetTexture(),
+              sheet_contents->GetTexture());
+    renderer_->GetGlassMaterialSheet().Release(&owner);
   }
 }
 

@@ -122,6 +122,7 @@ enum ConicalKind {
 
 class Tessellator;
 class RenderTargetCache;
+class GlassMaterialSheet;
 
 class ContentContext {
  public:
@@ -270,6 +271,11 @@ class ContentContext {
     return render_target_cache_;
   }
 
+  /// The persistent target that window glass materials render into.
+  GlassMaterialSheet& GetGlassMaterialSheet() const {
+    return *glass_material_sheet_;
+  }
+
   /// RuntimeEffect pipelines must be obtained via this method to avoid
   /// re-creating them every frame.
   ///
@@ -408,6 +414,7 @@ class ContentContext {
   std::shared_ptr<HostBuffer> indexes_host_buffer_;
   std::shared_ptr<Texture> empty_texture_;
   std::unique_ptr<TextShadowCache> text_shadow_cache_;
+  std::unique_ptr<GlassMaterialSheet> glass_material_sheet_;
 
   bool is_texture_caching_enabled_ = false;
   mutable std::unordered_map<const flutter::DlImage*, std::shared_ptr<Texture>>

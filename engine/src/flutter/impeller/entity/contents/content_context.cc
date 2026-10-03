@@ -15,6 +15,7 @@
 #include "impeller/core/formats.h"
 #include "impeller/core/texture_descriptor.h"
 #include "impeller/entity/contents/framebuffer_blend_contents.h"
+#include "impeller/entity/contents/glass_material_sheet.h"
 #include "impeller/entity/contents/pipelines.h"
 #include "impeller/entity/contents/text_shadow_cache.h"
 #include "impeller/entity/entity.h"
@@ -578,7 +579,8 @@ ContentContext::ContentContext(
           context_->GetResourceAllocator(),
           context_->GetIdleWaiter(),
           context_->GetCapabilities()->GetMinimumUniformAlignment())),
-      text_shadow_cache_(std::make_unique<TextShadowCache>()) {
+      text_shadow_cache_(std::make_unique<TextShadowCache>()),
+      glass_material_sheet_(std::make_unique<GlassMaterialSheet>()) {
   if (!context_ || !context_->IsValid()) {
     return;
   }
