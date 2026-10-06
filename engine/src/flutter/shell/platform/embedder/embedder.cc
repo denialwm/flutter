@@ -3909,8 +3909,7 @@ static std::optional<flutter::DlMatrix> ToDenialRenderOutputTransform(
 
 }  // namespace
 
-FLUTTER_EXPORT
-FlutterEngineResult DenialFlutterEngineRenderOutputs(
+static FlutterEngineResult RenderDenialOutputs(
     FLUTTER_API_SYMBOL(FlutterEngine) engine,
     const int64_t* render_view_ids,
     size_t render_view_count,
@@ -3918,7 +3917,9 @@ FlutterEngineResult DenialFlutterEngineRenderOutputs(
     size_t texture_count,
     bool rebuild_scene,
     uint64_t frame_start_time_nanos,
-    uint64_t frame_target_time_nanos) {
+    uint64_t frame_target_time_nanos,
+    fml::closure on_begin,
+    fml::closure on_complete) {
   if (engine == nullptr || render_view_ids == nullptr ||
       render_view_count == 0 ||
       render_view_count > kMaximumDenialRenderOutputCount ||
@@ -3956,11 +3957,57 @@ FlutterEngineResult DenialFlutterEngineRenderOutputs(
 
   return reinterpret_cast<flutter::EmbedderEngine*>(engine)->RenderOutputs(
              std::move(render_views), std::move(textures), rebuild_scene,
-             frame_start_time_nanos, frame_target_time_nanos)
+             frame_start_time_nanos, frame_target_time_nanos,
+             std::move(on_begin), std::move(on_complete))
              ? kSuccess
              : LOG_EMBEDDER_ERROR(
                    kInternalInconsistency,
                    "Could not authorize Denial output-render transaction.");
+}
+
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineRenderOutputs(
+    FlutterEngine engine,
+    const int64_t* render_view_ids,
+    size_t render_view_count,
+    const int64_t* texture_identifiers,
+    size_t texture_count,
+    bool rebuild_scene,
+    uint64_t frame_start_time_nanos,
+    uint64_t frame_target_time_nanos) {
+  return RenderDenialOutputs(engine, render_view_ids, render_view_count,
+                             texture_identifiers, texture_count, rebuild_scene,
+                             frame_start_time_nanos, frame_target_time_nanos,
+                             {}, {});
+}
+
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineRenderOutputsWithCompletion(
+    FlutterEngine engine,
+    const int64_t* render_view_ids,
+    size_t render_view_count,
+    const int64_t* texture_identifiers,
+    size_t texture_count,
+    bool rebuild_scene,
+    uint64_t frame_start_time_nanos,
+    uint64_t frame_target_time_nanos,
+    uint64_t transaction_id,
+    DenialFlutterRenderCompletionCallback on_complete,
+    void* user_data) {
+  if (transaction_id == 0 || on_complete == nullptr) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Invalid Denial render completion ticket.");
+  }
+  return RenderDenialOutputs(
+      engine, render_view_ids, render_view_count, texture_identifiers,
+      texture_count, rebuild_scene, frame_start_time_nanos,
+      frame_target_time_nanos,
+      [transaction_id, on_complete, user_data] {
+        on_complete(transaction_id, false, user_data);
+      },
+      [transaction_id, on_complete, user_data] {
+        on_complete(transaction_id, true, user_data);
+      });
 }
 
 FLUTTER_EXPORT

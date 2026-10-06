@@ -58,6 +58,11 @@ void Animator::EnqueueTraceFlowId(uint64_t trace_flow_id) {
       });
 }
 
+void Animator::SetDenialRenderTransaction(
+    std::shared_ptr<DenialRenderTransaction> transaction) {
+  pending_denial_transaction_ = std::move(transaction);
+}
+
 void Animator::BeginFrame(
     std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder) {
   TRACE_EVENT_ASYNC_END0("flutter", "Frame Request Pending",
@@ -65,6 +70,7 @@ void Animator::BeginFrame(
   // Clear layer trees rendered out of a frame. Only Animator::Render called
   // within a frame is used.
   layer_trees_tasks_.clear();
+  frame_denial_transaction_ = std::move(pending_denial_transaction_);
 
   frame_request_number_++;
 
@@ -139,9 +145,11 @@ void Animator::EndFrame() {
       layer_tree_task_list.push_back(std::move(layer_tree_task));
     }
     layer_trees_tasks_.clear();
-    PipelineProduceResult result = producer_continuation_.Complete(
-        std::make_unique<FrameItem>(std::move(layer_tree_task_list),
-                                    std::move(frame_timings_recorder_)));
+    auto item = std::make_unique<FrameItem>(std::move(layer_tree_task_list),
+                                            std::move(frame_timings_recorder_));
+    item->denial_transaction = std::move(frame_denial_transaction_);
+    PipelineProduceResult result =
+        producer_continuation_.Complete(std::move(item));
 
     if (!result.success) {
       FML_DLOG(INFO) << "Failed to commit to the pipeline";
@@ -153,6 +161,9 @@ void Animator::EndFrame() {
       delegate_.OnAnimatorDraw(layer_tree_pipeline_);
     }
   }
+  // No layer tree (or a full pipeline) is a completed request too. No raster
+  // marker or elapsed-time guess can safely infer this on another runner.
+  frame_denial_transaction_.reset();
   frame_timings_recorder_ = nullptr;
 
   if (!frame_scheduled_ && has_rendered_) {
@@ -233,6 +244,27 @@ void Animator::DrawLastLayerTrees(
   const auto now = fml::TimePoint::Now();
   frame_timings_recorder->RecordBuildStart(now);
   frame_timings_recorder->RecordBuildEnd(now);
+  if (pending_denial_transaction_) {
+    // A cached-scene transaction still follows a real pipeline item, without
+    // asking Dart to rebuild its scene just to acknowledge an output request.
+    if (!producer_continuation_) {
+      producer_continuation_ = layer_tree_pipeline_->Produce();
+    }
+    if (!producer_continuation_) {
+      pending_denial_transaction_.reset();
+      RequestFrame(false);
+      return;
+    }
+    auto item = std::make_unique<FrameItem>(
+        std::vector<std::unique_ptr<LayerTreeTask>>{},
+        std::move(frame_timings_recorder));
+    item->denial_transaction = std::move(pending_denial_transaction_);
+    auto result = producer_continuation_.Complete(std::move(item));
+    if (result.success && result.is_first_item) {
+      delegate_.OnAnimatorDraw(layer_tree_pipeline_);
+    }
+    return;
+  }
   delegate_.OnAnimatorDrawLastLayerTrees(std::move(frame_timings_recorder));
 }
 

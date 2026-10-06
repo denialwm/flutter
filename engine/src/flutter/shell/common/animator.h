@@ -53,6 +53,9 @@ class Animator final {
 
   void RequestFrame(bool regenerate_layer_trees = true);
 
+  void SetDenialRenderTransaction(
+      std::shared_ptr<DenialRenderTransaction> transaction);
+
   //--------------------------------------------------------------------------
   /// @brief    Tells the Animator that all views that should render for this
   ///           frame have been rendered.
@@ -138,6 +141,8 @@ class Animator final {
   std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder_;
   std::unordered_map<int64_t, std::unique_ptr<LayerTreeTask>>
       layer_trees_tasks_;
+  std::shared_ptr<DenialRenderTransaction> pending_denial_transaction_;
+  std::shared_ptr<DenialRenderTransaction> frame_denial_transaction_;
   uint64_t frame_request_number_ = 1;
   fml::TimeDelta dart_frame_deadline_;
   std::shared_ptr<FramePipeline> layer_tree_pipeline_;

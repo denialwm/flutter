@@ -116,6 +116,22 @@ struct DenialRenderOutput {
   }
 };
 
+// A reservation follows its actual UI/pipeline/raster work, including frames
+// which produce no layer tree. Destruction acknowledges completion on whichever
+// runner owns the final reference; the embedder callback must be thread-safe.
+struct DenialRenderTransaction {
+  std::vector<int64_t> render_view_ids;
+  std::vector<int64_t> texture_identifiers;
+  fml::closure on_begin;
+  fml::closure on_complete;
+
+  ~DenialRenderTransaction() {
+    if (on_complete) {
+      on_complete();
+    }
+  }
+};
+
 // The information to draw to all views of a frame.
 struct FrameItem {
   FrameItem(std::vector<std::unique_ptr<LayerTreeTask>> tasks,
@@ -124,6 +140,7 @@ struct FrameItem {
         frame_timings_recorder(std::move(frame_timings_recorder)) {}
   std::vector<std::unique_ptr<LayerTreeTask>> layer_tree_tasks;
   std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder;
+  std::shared_ptr<DenialRenderTransaction> denial_transaction;
 };
 
 using FramePipeline = Pipeline<FrameItem>;

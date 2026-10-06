@@ -464,6 +464,9 @@ class Engine final : public RuntimeDelegate, PointerDataDispatcher::Delegate {
   ///
   fml::TaskRunnerAffineWeakPtr<Engine> GetWeakPtr() const;
 
+  void SetDenialRenderTransaction(
+      std::shared_ptr<DenialRenderTransaction> transaction);
+
   //----------------------------------------------------------------------------
   /// @brief      Moves the root isolate to the `DartIsolate::Phase::Running`
   ///             phase on a successful call to this method.

@@ -150,6 +150,11 @@ std::unique_ptr<Engine> Engine::Spawn(
 
 Engine::~Engine() = default;
 
+void Engine::SetDenialRenderTransaction(
+    std::shared_ptr<DenialRenderTransaction> transaction) {
+  animator_->SetDenialRenderTransaction(std::move(transaction));
+}
+
 fml::TaskRunnerAffineWeakPtr<Engine> Engine::GetWeakPtr() const {
   return weak_factory_.GetWeakPtr();
 }

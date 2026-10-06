@@ -198,6 +198,19 @@ template("shell_host_executable") {
 }
 
 if (enable_unittests) {
+  # Native render lifecycle tests use the production Slimpeller configuration
+  # without the generic shell tests' Skia software drawing or Dart fixtures.
+  shell_host_executable("denial_render_recovery_unittests") {
+    testonly = true
+    sources = [ "denial_render_recovery_unittests.cc" ]
+    deps = [
+      ":common",
+      "//flutter/flow",
+      "//flutter/third_party/googletest:gmock",
+      "//flutter/third_party/googletest:gtest",
+    ]
+  }
+
   shell_gpu_configuration("shell_unittests_gpu_configuration") {
     enable_software = test_enable_software
     enable_vulkan = test_enable_vulkan

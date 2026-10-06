@@ -1374,11 +1374,34 @@ void Shell::RenderOutputs(std::vector<int64_t> render_view_ids,
                           std::vector<int64_t> texture_identifiers,
                           bool rebuild_scene,
                           uint64_t frame_start_time_nanos,
-                          uint64_t frame_target_time_nanos) {
+                          uint64_t frame_target_time_nanos,
+                          fml::closure on_begin,
+                          fml::closure on_complete) {
   FML_DCHECK(is_set_up_);
   FML_DCHECK(task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread());
   FML_DCHECK(!render_view_ids.empty());
 
+  std::shared_ptr<DenialRenderTransaction> transaction;
+  if (on_complete) {
+    transaction = std::make_shared<DenialRenderTransaction>();
+    transaction->render_view_ids = render_view_ids;
+    transaction->texture_identifiers = texture_identifiers;
+    transaction->on_begin = std::move(on_begin);
+    transaction->on_complete = std::move(on_complete);
+  }
+  if (rebuild_scene && transaction) {
+    // Queue before OnVsync delivers its UI task. The Animator transfers this
+    // ticket to the actual FrameItem, rather than to a marker which can run
+    // before an older pipeline item has finished.
+    task_runners_.GetUITaskRunner()->PostTask(
+        [engine = engine_->GetWeakPtr(),
+         transaction = std::move(transaction)]() mutable {
+          if (engine) {
+            engine->SetDenialRenderTransaction(std::move(transaction));
+          }
+        });
+    return;
+  }
   if (rebuild_scene) {
     task_runners_.GetRasterTaskRunner()->PostTask(
         [rasterizer = rasterizer_->GetWeakPtr(),
@@ -1400,9 +1423,12 @@ void Shell::RenderOutputs(std::vector<int64_t> render_view_ids,
       [rasterizer = rasterizer_->GetWeakPtr(),
        render_view_ids = std::move(render_view_ids),
        texture_identifiers = std::move(texture_identifiers), frame_start,
-       frame_target]() mutable {
+       frame_target, transaction = std::move(transaction)]() mutable {
         if (!rasterizer) {
           return;
+        }
+        if (transaction && transaction->on_begin) {
+          transaction->on_begin();
         }
         auto recorder = std::make_unique<FrameTimingsRecorder>();
         recorder->RecordVsync(frame_start, frame_target);

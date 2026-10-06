@@ -248,7 +248,9 @@ class Shell final : public PlatformView::Delegate,
                      std::vector<int64_t> texture_identifiers,
                      bool rebuild_scene,
                      uint64_t frame_start_time_nanos,
-                     uint64_t frame_target_time_nanos);
+                     uint64_t frame_target_time_nanos,
+                     fml::closure on_begin = {},
+                     fml::closure on_complete = {});
 
   //------------------------------------------------------------------------------
   /// @return     The settings used to launch this shell.

@@ -358,7 +358,13 @@ void Rasterizer::DrawDenialRenderOutputs(
         task->is_reused_layer_tree = true;
       }
     }
-    task->dirty_texture_ids = dirty_texture_ids;
+    // A rejected attempt may already carry dirty textures. Preserve them
+    // across retries, including an engaged empty set for precise damage.
+    if (!task->dirty_texture_ids) {
+      task->dirty_texture_ids.emplace();
+    }
+    task->dirty_texture_ids->insert(dirty_texture_ids.begin(),
+                                    dirty_texture_ids.end());
     tasks.push_back(std::move(task));
   }
   if (tasks.empty()) {
@@ -425,6 +431,7 @@ std::unique_ptr<LayerTreeTask> Rasterizer::ReprojectDenialRenderOutputTask(
       static_cast<float>(output.scale_120) / 120.0f);
   task->render_output_configuration_generation =
       output.configuration_generation;
+  task->dirty_texture_ids = previous_task.dirty_texture_ids;
   return task;
 }
 
@@ -513,6 +520,16 @@ Rasterizer::ExpandDenialRenderOutputTasks(
       output_task->render_output_configuration_generation =
           output.configuration_generation;
       output_task->dirty_texture_ids = task->dirty_texture_ids;
+      auto pending = denial_pending_output_tasks_.find(output.render_view_id);
+      if (pending != denial_pending_output_tasks_.end() &&
+          pending->second->dirty_texture_ids) {
+        if (!output_task->dirty_texture_ids) {
+          output_task->dirty_texture_ids.emplace();
+        }
+        output_task->dirty_texture_ids->insert(
+            pending->second->dirty_texture_ids->begin(),
+            pending->second->dirty_texture_ids->end());
+      }
       const bool selected =
           !denial_render_selection_pending_ ||
           denial_selected_render_view_ids_.contains(output.render_view_id);
@@ -611,6 +628,19 @@ DrawStatus Rasterizer::Draw(const std::shared_ptr<FramePipeline>& pipeline) {
   DoDrawResult draw_result;
   FramePipeline::Consumer consumer = [&draw_result,
                                       this](std::unique_ptr<FrameItem> item) {
+    if (item->denial_transaction) {
+      if (item->denial_transaction->on_begin) {
+        item->denial_transaction->on_begin();
+      }
+      if (item->layer_tree_tasks.empty()) {
+        DrawDenialRenderOutputs(item->denial_transaction->render_view_ids,
+                                item->denial_transaction->texture_identifiers,
+                                std::move(item->frame_timings_recorder));
+        return;
+      }
+      PrepareDenialRenderOutputs(item->denial_transaction->render_view_ids,
+                                 item->denial_transaction->texture_identifiers);
+    }
     auto dirty_texture_ids = std::move(pending_texture_ids_);
     pending_texture_ids_.clear();
     for (auto& task : item->layer_tree_tasks) {
@@ -621,6 +651,10 @@ DrawStatus Rasterizer::Draw(const std::shared_ptr<FramePipeline>& pipeline) {
     }
     draw_result = DoDraw(std::move(item->frame_timings_recorder),
                          std::move(item->layer_tree_tasks));
+    if (draw_result.resubmitted_item) {
+      draw_result.resubmitted_item->denial_transaction =
+          std::move(item->denial_transaction);
+    }
   };
 
   PipelineConsumeResult consume_result = pipeline->Consume(consumer);
@@ -1081,6 +1115,17 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
           view_id, std::move(layer_tree), device_pixel_ratio);
       view_record.last_successful_task->render_output_configuration_generation =
           task->render_output_configuration_generation;
+    } else if (FindDenialRenderOutput(view_id)) {
+      // Moving a retained tree into a redraw must not destroy the only scene
+      // when target acquisition fails. Keep failed new scenes too; the next
+      // output-clock request retries them without requiring a Dart rebuild.
+      auto pending_task = std::make_unique<LayerTreeTask>(
+          view_id, std::move(layer_tree), device_pixel_ratio);
+      pending_task->is_reused_layer_tree = is_reused_layer_tree;
+      pending_task->dirty_texture_ids = std::move(dirty_texture_ids);
+      pending_task->render_output_configuration_generation =
+          task->render_output_configuration_generation;
+      denial_pending_output_tasks_[view_id] = std::move(pending_task);
     } else if (status == DrawSurfaceStatus::kRetry) {
       auto retry_task = std::make_unique<LayerTreeTask>(
           view_id, std::move(layer_tree), device_pixel_ratio);

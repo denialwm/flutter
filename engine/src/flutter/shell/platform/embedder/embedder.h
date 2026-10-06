@@ -3659,6 +3659,28 @@ FlutterEngineResult DenialFlutterEngineRenderOutputs(
     uint64_t frame_target_time_nanos);
 
 //------------------------------------------------------------------------------
+/// Reports actual raster work with completed=false, then acknowledges the
+/// request exactly once with completed=true. No-scene requests only complete.
+/// May run on any engine thread, including during shutdown. Never called when
+/// submission returns an error.
+typedef void (*DenialFlutterRenderCompletionCallback)(uint64_t transaction_id,
+                                                      bool completed,
+                                                      void* user_data);
+
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineRenderOutputsWithCompletion(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const int64_t* render_view_ids,
+    size_t render_view_count,
+    const int64_t* texture_identifiers,
+    size_t texture_count,
+    bool rebuild_scene,
+    uint64_t frame_start_time_nanos,
+    uint64_t frame_target_time_nanos,
+    uint64_t transaction_id,
+    DenialFlutterRenderCompletionCallback on_complete,
+    void* user_data);
+
 /// One physical raster target projected from the implicit Flutter view.
 /// Source coordinates are in the implicit view's physical-pixel coordinate
 /// space. Target dimensions are the scanout buffer's native physical extent.
