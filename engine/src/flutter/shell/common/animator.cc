@@ -42,6 +42,14 @@ Animator::Animator(Delegate& delegate,
 #endif  // SHELL_ENABLE_METAL
       pending_frame_semaphore_(1),
       weak_factory_(this) {
+  waiter_->SetVsyncCompletionCallback([self = weak_factory_.GetWeakPtr()] {
+    if (self) {
+      // Secondary-only vsyncs never call BeginFrame or EndFrame. A ticket
+      // still here was not transferred to a FrameItem and must be released
+      // after this vsync's callbacks, rather than blocking future admission.
+      self->pending_denial_transaction_.reset();
+    }
+  });
 }
 
 Animator::~Animator() = default;

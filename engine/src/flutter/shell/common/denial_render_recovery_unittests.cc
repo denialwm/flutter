@@ -259,41 +259,59 @@ TEST(RasterizerTest, DenialRejectedFramesRecoverWithoutAnotherFrameworkScene) {
   done.Wait();
 }
 
-TEST(AnimatorTest, DenialEmptyFrameworkFrameCompletesItsReservation) {
-  ThreadHost threads("denial.empty.",
-                     ThreadHost::Type::kPlatform | ThreadHost::Type::kRaster |
-                         ThreadHost::Type::kIo | ThreadHost::Type::kUi);
-  TaskRunners runners("test", threads.platform_thread->GetTaskRunner(),
-                      threads.raster_thread->GetTaskRunner(),
-                      threads.ui_thread->GetTaskRunner(),
-                      threads.io_thread->GetTaskRunner());
-  NiceMock<EmptyAnimatorDelegate> delegate;
-  fml::AutoResetWaitableEvent completed;
-  fml::AutoResetWaitableEvent destroyed;
-  std::unique_ptr<Animator> animator;
-  EXPECT_CALL(delegate, OnAnimatorDraw).Times(0);
-  EXPECT_CALL(delegate, OnAnimatorBeginFrame).WillOnce([&] {
-    EXPECT_FALSE(completed.IsSignaledForTest());
-  });
-  runners.GetUITaskRunner()->PostTask([&] {
-    animator = std::make_unique<Animator>(
-        delegate, runners, std::make_unique<ImmediateVsyncWaiter>(runners));
-    auto transaction = std::make_shared<DenialRenderTransaction>();
-    transaction->render_view_ids = {-2};
-    transaction->on_begin = [] {
-      ADD_FAILURE() << "Empty frame began raster work";
-    };
-    transaction->on_complete = [&] { completed.Signal(); };
-    animator->SetDenialRenderTransaction(std::move(transaction));
-    animator->RequestFrame();
-  });
-  EXPECT_FALSE(completed.WaitWithTimeout(fml::TimeDelta::FromSeconds(5)));
-  runners.GetUITaskRunner()->PostTask([&] {
-    animator.reset();
-    destroyed.Signal();
-  });
-  destroyed.Wait();
+TEST(AnimatorTest, DenialNoRasterVsyncCompletesItsReservation) {
+  for (bool secondary_only : {false, true}) {
+    SCOPED_TRACE(secondary_only ? "secondary-only vsync"
+                                : "empty framework frame");
+    ThreadHost threads("denial.empty.",
+                       ThreadHost::Type::kPlatform | ThreadHost::Type::kRaster |
+                           ThreadHost::Type::kIo | ThreadHost::Type::kUi);
+    TaskRunners runners("test", threads.platform_thread->GetTaskRunner(),
+                        threads.raster_thread->GetTaskRunner(),
+                        threads.ui_thread->GetTaskRunner(),
+                        threads.io_thread->GetTaskRunner());
+    NiceMock<EmptyAnimatorDelegate> delegate;
+    fml::AutoResetWaitableEvent completed;
+    fml::AutoResetWaitableEvent destroyed;
+    std::unique_ptr<Animator> animator;
+    EXPECT_CALL(delegate, OnAnimatorDraw).Times(0);
+    if (secondary_only) {
+      EXPECT_CALL(delegate, OnAnimatorBeginFrame).Times(0);
+    } else {
+      EXPECT_CALL(delegate, OnAnimatorBeginFrame).WillOnce([&] {
+        EXPECT_FALSE(completed.IsSignaledForTest());
+      });
+    }
+    runners.GetUITaskRunner()->PostTask([&] {
+      animator = std::make_unique<Animator>(
+          delegate, runners, std::make_unique<ImmediateVsyncWaiter>(runners));
+      // Secondary callbacks can request an embedder vsync without requesting
+      // an Animator frame. Native admission then delivers a reservation too.
+      if (secondary_only) {
+        animator->ScheduleSecondaryVsyncCallback(
+            1, [&] { EXPECT_FALSE(completed.IsSignaledForTest()); });
+      }
+      auto transaction = std::make_shared<DenialRenderTransaction>();
+      transaction->render_view_ids = {-2, -3};
+      transaction->on_begin = [] {
+        ADD_FAILURE() << "No-raster vsync began raster work";
+      };
+      transaction->on_complete = [&] { completed.Signal(); };
+      animator->SetDenialRenderTransaction(std::move(transaction));
+      if (!secondary_only) {
+        animator->RequestFrame();
+      }
+    });
+    EXPECT_FALSE(
+        completed.WaitWithTimeout(fml::TimeDelta::FromMilliseconds(500)));
+    runners.GetUITaskRunner()->PostTask([&] {
+      animator.reset();
+      destroyed.Signal();
+    });
+    destroyed.Wait();
+  }
 }
+
 }  // namespace flutter
 
 int main(int argc, char** argv) {

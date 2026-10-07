@@ -29,6 +29,10 @@ class VsyncWaiter : public std::enable_shared_from_this<VsyncWaiter> {
 
   void AsyncWaitForVsync(const Callback& callback);
 
+  /// Runs on the UI runner after every callback delivered for a vsync,
+  /// including vsyncs which only contain secondary callbacks.
+  void SetVsyncCompletionCallback(fml::closure callback);
+
   /// Add a secondary callback for key |id| for the next vsync.
   ///
   /// See also |PointerDataDispatcher::ScheduleSecondaryVsyncCallback| and
@@ -77,6 +81,7 @@ class VsyncWaiter : public std::enable_shared_from_this<VsyncWaiter> {
  private:
   std::mutex callback_mutex_;
   Callback callback_;
+  fml::closure vsync_completion_callback_;
   std::unordered_map<uintptr_t, fml::closure> secondary_callbacks_;
 
   void PauseDartEventLoopTasks();

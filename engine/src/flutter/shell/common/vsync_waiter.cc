@@ -23,6 +23,11 @@ VsyncWaiter::VsyncWaiter(const TaskRunners& task_runners)
 
 VsyncWaiter::~VsyncWaiter() = default;
 
+void VsyncWaiter::SetVsyncCompletionCallback(fml::closure callback) {
+  std::scoped_lock lock(callback_mutex_);
+  vsync_completion_callback_ = std::move(callback);
+}
+
 // Public method invoked by the animator.
 void VsyncWaiter::AsyncWaitForVsync(const Callback& callback) {
   if (!callback) {
@@ -90,11 +95,13 @@ void VsyncWaiter::FireCallback(fml::TimePoint frame_start_time,
   FML_DCHECK(fml::TimePoint::Now() >= frame_start_time);
 
   Callback callback;
+  fml::closure on_complete;
   std::vector<fml::closure> secondary_callbacks;
 
   {
     std::scoped_lock lock(callback_mutex_);
     callback = std::move(callback_);
+    on_complete = vsync_completion_callback_;
     for (auto& pair : secondary_callbacks_) {
       secondary_callbacks.push_back(std::move(pair.second));
     }
@@ -106,6 +113,9 @@ void VsyncWaiter::FireCallback(fml::TimePoint frame_start_time,
     // request we did not make. This is a paranoid check but we still want to
     // make sure we catch misbehaving vsync implementations.
     TRACE_EVENT_INSTANT0("flutter", "MismatchedFrameCallback");
+    if (on_complete) {
+      task_runners_.GetUITaskRunner()->PostTask(std::move(on_complete));
+    }
     return;
   }
 
@@ -148,6 +158,9 @@ void VsyncWaiter::FireCallback(fml::TimePoint frame_start_time,
 
   for (auto& secondary_callback : secondary_callbacks) {
     task_runners_.GetUITaskRunner()->PostTask(secondary_callback);
+  }
+  if (on_complete) {
+    task_runners_.GetUITaskRunner()->PostTask(std::move(on_complete));
   }
 }
 
