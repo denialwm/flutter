@@ -3967,7 +3967,7 @@ static FlutterEngineResult RenderDenialOutputs(
 
 FLUTTER_EXPORT
 FlutterEngineResult DenialFlutterEngineRenderOutputs(
-    FlutterEngine engine,
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
     const int64_t* render_view_ids,
     size_t render_view_count,
     const int64_t* texture_identifiers,
@@ -3983,7 +3983,7 @@ FlutterEngineResult DenialFlutterEngineRenderOutputs(
 
 FLUTTER_EXPORT
 FlutterEngineResult DenialFlutterEngineRenderOutputsWithCompletion(
-    FlutterEngine engine,
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
     const int64_t* render_view_ids,
     size_t render_view_count,
     const int64_t* texture_identifiers,
