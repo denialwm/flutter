@@ -14,6 +14,7 @@
 #include "flutter/flow/embedded_views.h"
 #include "flutter/fml/hash_combine.h"
 #include "flutter/fml/macros.h"
+#include "flutter/fml/time/time_point.h"
 #include "flutter/shell/platform/embedder/embedder_external_view.h"
 #include "flutter/shell/platform/embedder/embedder_render_target_cache.h"
 
@@ -170,6 +171,42 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   std::unordered_map<int64_t, DenialCutEntry> denial_cuts_;
   std::unordered_map<int64_t, std::vector<DenialSlice>> denial_slices_;
   std::shared_ptr<TextureRegistry> denial_texture_registry_;
+
+  // Per-view layered composition counters. Collected only when
+  // DENIAL_RENDER_AUDIT is on and logged once per second beside deniald's
+  // "Flutter per-output render audit".
+  struct DenialLayeredAudit {
+    fml::TimePoint interval_start;
+    uint64_t layered_frames = 0;
+    uint64_t single_slice_frames = 0;
+    uint64_t failed_frames = 0;
+    // Cuts by kind; material ends are not counted.
+    uint64_t window_cuts = 0;
+    uint64_t material_cuts = 0;
+    uint64_t texture_cuts = 0;
+    uint64_t max_cuts = 0;
+    uint64_t slices = 0;
+    uint64_t max_slices = 0;
+    uint64_t slices_reused = 0;
+    // Why a slice was re-rendered: no retained texture yet, changed bounds,
+    // or an unequal display list.
+    uint64_t rendered_new = 0;
+    uint64_t rendered_bounds = 0;
+    uint64_t rendered_content = 0;
+    // Slice texture pixels cleared and drawn by re-rendering.
+    uint64_t rendered_pixels = 0;
+    uint64_t slice_allocations = 0;
+    fml::TimeDelta slice_render_time;
+    fml::TimeDelta compose_time;
+    fml::TimeDelta compose_max;
+  };
+  const bool denial_layered_audit_enabled_;
+  std::unordered_map<int64_t, DenialLayeredAudit> denial_layered_audits_;
+  // Returns the counters for the frame being submitted, logging and
+  // restarting the interval first when a second has passed, or nullptr when
+  // the audit is off.
+  DenialLayeredAudit* DenialLayeredAuditFrame(int64_t flutter_view_id);
+
   void SubmitDenialLayered(
       int64_t flutter_view_id,
       const std::shared_ptr<impeller::AiksContext>& aiks_context,

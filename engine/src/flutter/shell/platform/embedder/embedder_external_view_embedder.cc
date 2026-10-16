@@ -4,8 +4,11 @@
 
 #include "flutter/shell/platform/embedder/embedder_external_view_embedder.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <cstdlib>
+#include <string>
 #include <utility>
 
 #include "flutter/common/constants.h"
@@ -30,6 +33,28 @@ static bool DenialLayeredCompositionRequested() {
   return value != nullptr && value[0] == '1' && value[1] == '\0';
 }
 
+// Matches deniald's DENIAL_RENDER_AUDIT flag: the canonical name wins over
+// the legacy DENIA_ spelling; 1, true, yes or on, trimmed, any case.
+static bool DenialRenderAuditRequested() {
+  const char* value = std::getenv("DENIAL_RENDER_AUDIT");
+  if (value == nullptr) {
+    value = std::getenv("DENIA_RENDER_AUDIT");
+  }
+  if (value == nullptr) {
+    return false;
+  }
+  std::string flag(value);
+  const auto first = flag.find_first_not_of(" \t\n\r\f\v");
+  if (first == std::string::npos) {
+    return false;
+  }
+  flag = flag.substr(first, flag.find_last_not_of(" \t\n\r\f\v") - first + 1);
+  for (char& c : flag) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return flag == "1" || flag == "true" || flag == "yes" || flag == "on";
+}
+
 // Cut identifiers never collide with Dart platform view identifiers.
 static constexpr int64_t kDenialCutBase = int64_t{1} << 40;
 
@@ -40,9 +65,12 @@ EmbedderExternalViewEmbedder::EmbedderExternalViewEmbedder(
     : avoid_backing_store_cache_(avoid_backing_store_cache),
       create_render_target_callback_(create_render_target_callback),
       present_callback_(present_callback),
-      denial_layered_enabled_(DenialLayeredCompositionRequested()) {
+      denial_layered_enabled_(DenialLayeredCompositionRequested()),
+      denial_layered_audit_enabled_(denial_layered_enabled_ &&
+                                    DenialRenderAuditRequested()) {
   if (denial_layered_enabled_) {
-    FML_LOG(IMPORTANT) << "Denial layered composition enabled for output views";
+    FML_LOG(IMPORTANT) << "Denial layered composition enabled for output views"
+                       << (denial_layered_audit_enabled_ ? " (audited)" : "");
   }
   FML_DCHECK(create_render_target_callback_);
   FML_DCHECK(present_callback_);
@@ -62,11 +90,72 @@ int64_t EmbedderExternalViewEmbedder::DenialRegisterCut(
   return cut_id;
 }
 
+EmbedderExternalViewEmbedder::DenialLayeredAudit*
+EmbedderExternalViewEmbedder::DenialLayeredAuditFrame(int64_t flutter_view_id) {
+  if (!denial_layered_audit_enabled_) {
+    return nullptr;
+  }
+  const fml::TimePoint now = fml::TimePoint::Now();
+  auto [it, inserted] = denial_layered_audits_.try_emplace(flutter_view_id);
+  DenialLayeredAudit& audit = it->second;
+  if (inserted) {
+    audit.interval_start = now;
+    return &audit;
+  }
+  const fml::TimeDelta interval = now - audit.interval_start;
+  if (interval < fml::TimeDelta::FromSeconds(1)) {
+    return &audit;
+  }
+  // The interval is [interval_start, now): the frame being submitted belongs
+  // to the next one. Retained slices are a gauge at the interval's end.
+  uint64_t retained_slices = 0;
+  uint64_t retained_pixels = 0;
+  if (auto slices = denial_slices_.find(flutter_view_id);
+      slices != denial_slices_.end()) {
+    for (const auto& slot : slices->second) {
+      if (slot.texture) {
+        ++retained_slices;
+        retained_pixels += static_cast<uint64_t>(slot.texture_size.width) *
+                           static_cast<uint64_t>(slot.texture_size.height);
+      }
+    }
+  }
+  const uint64_t rendered =
+      audit.rendered_new + audit.rendered_bounds + audit.rendered_content;
+  FML_LOG(IMPORTANT)
+      << "Denial layered composition audit view=" << flutter_view_id
+      << " interval_ms=" << interval.ToMillisecondsF()
+      << " layered_frames=" << audit.layered_frames
+      << " single_slice_frames=" << audit.single_slice_frames
+      << " failed_frames=" << audit.failed_frames
+      << " window_cuts=" << audit.window_cuts
+      << " material_cuts=" << audit.material_cuts
+      << " texture_cuts=" << audit.texture_cuts
+      << " max_cuts=" << audit.max_cuts << " slices=" << audit.slices
+      << " max_slices=" << audit.max_slices
+      << " slices_reused=" << audit.slices_reused
+      << " slices_rendered=" << rendered
+      << " rendered_new=" << audit.rendered_new
+      << " rendered_bounds=" << audit.rendered_bounds
+      << " rendered_content=" << audit.rendered_content
+      << " rendered_pixels=" << audit.rendered_pixels
+      << " slice_allocations=" << audit.slice_allocations
+      << " retained_slices=" << retained_slices
+      << " retained_slice_pixels=" << retained_pixels
+      << " slice_render_total_us=" << audit.slice_render_time.ToMicrosecondsF()
+      << " compose_total_us=" << audit.compose_time.ToMicrosecondsF()
+      << " compose_max_us=" << audit.compose_max.ToMicrosecondsF();
+  audit = DenialLayeredAudit{};
+  audit.interval_start = now;
+  return &audit;
+}
+
 EmbedderExternalViewEmbedder::~EmbedderExternalViewEmbedder() = default;
 
 void EmbedderExternalViewEmbedder::CollectView(int64_t view_id) {
   render_target_caches_.erase(view_id);
   denial_slices_.erase(view_id);
+  denial_layered_audits_.erase(view_id);
 }
 
 void EmbedderExternalViewEmbedder::SetSurfaceTransformationCallback(
@@ -647,6 +736,9 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
       SubmitDenialLayered(flutter_view_id, aiks_context, std::move(frame));
       return;
     }
+    if (auto* audit = DenialLayeredAuditFrame(flutter_view_id)) {
+      ++audit->single_slice_frames;
+    }
     auto root = pending_views_.find(kRootViewIdentifier);
     FML_DCHECK(root != pending_views_.end());
 
@@ -1013,6 +1105,32 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
     int64_t flutter_view_id,
     const std::shared_ptr<impeller::AiksContext>& aiks_context,
     std::unique_ptr<SurfaceFrame> frame) {
+  DenialLayeredAudit* audit = DenialLayeredAuditFrame(flutter_view_id);
+  const fml::TimePoint compose_start =
+      audit ? fml::TimePoint::Now() : fml::TimePoint();
+  if (audit) {
+    ++audit->layered_frames;
+    uint64_t cuts = 0;
+    for (const auto& [cut_id, entry] : denial_cuts_) {
+      switch (entry.kind) {
+        case DenialCutEntry::Kind::kWindowSurface:
+          ++audit->window_cuts;
+          ++cuts;
+          break;
+        case DenialCutEntry::Kind::kMaterialBegin:
+          ++audit->material_cuts;
+          ++cuts;
+          break;
+        case DenialCutEntry::Kind::kTexture:
+          ++audit->texture_cuts;
+          ++cuts;
+          break;
+        case DenialCutEntry::Kind::kMaterialEnd:
+          break;
+      }
+    }
+    audit->max_cuts = std::max(audit->max_cuts, cuts);
+  }
   bool composed = false;
 #ifdef IMPELLER_SUPPORTS_RENDERING
   auto* impeller_target =
@@ -1052,11 +1170,35 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       const bool reuse = slot.image && slot.display_list &&
                          slot.bounds == *bounds &&
                          slot.display_list->Equals(display_list);
+      if (audit) {
+        if (reuse) {
+          ++audit->slices_reused;
+        } else if (!slot.image || !slot.display_list) {
+          ++audit->rendered_new;
+        } else if (slot.bounds != *bounds) {
+          ++audit->rendered_bounds;
+        } else {
+          ++audit->rendered_content;
+        }
+      }
       if (!reuse) {
+        const impeller::Texture* retained = slot.texture.get();
+        const fml::TimePoint render_start =
+            audit ? fml::TimePoint::Now() : fml::TimePoint();
         if (!DenialRenderSlice(content_context, context, slot, *bounds,
                                display_list)) {
           composed = false;
           break;
+        }
+        if (audit) {
+          audit->slice_render_time =
+              audit->slice_render_time + (fml::TimePoint::Now() - render_start);
+          audit->rendered_pixels +=
+              static_cast<uint64_t>(slot.texture_size.width) *
+              static_cast<uint64_t>(slot.texture_size.height);
+          if (slot.texture.get() != retained) {
+            ++audit->slice_allocations;
+          }
         }
         slot.display_list = display_list;
         slot.bounds = *bounds;
@@ -1074,6 +1216,11 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       composition.Restore();
     }
     slices.resize(slice_index);
+    if (audit) {
+      audit->slices += slice_index;
+      audit->max_slices =
+          std::max(audit->max_slices, static_cast<uint64_t>(slice_index));
+    }
     while (open_materials-- > 0) {
       composition.Restore();
       composition.Restore();
@@ -1090,6 +1237,16 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
     }
   }
 #endif  // IMPELLER_SUPPORTS_RENDERING
+  if (audit) {
+    // CPU time to render changed slices and encode the composition, before
+    // the present callback hands the target to deniald.
+    const fml::TimeDelta elapsed = fml::TimePoint::Now() - compose_start;
+    audit->compose_time = audit->compose_time + elapsed;
+    audit->compose_max = std::max(audit->compose_max, elapsed);
+    if (!composed) {
+      ++audit->failed_frames;
+    }
+  }
   if (!composed) {
     FML_LOG(ERROR) << "Denial layered composition failed; frame skipped";
     pending_denial_render_target_.reset();
