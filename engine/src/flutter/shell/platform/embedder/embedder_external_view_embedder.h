@@ -126,10 +126,13 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
     sk_sp<DlImage> image;
   };
 
-  // One retained engine-rendered slice of a Denial output view.
+  // One retained engine-rendered slice of a Denial output view. `rects` are
+  // the parts of `bounds` the slice paints, which composition blits instead
+  // of the whole bounds when they cover markedly less.
   struct DenialSlice {
     sk_sp<DisplayList> display_list;
     DlIRect bounds;
+    std::vector<DlIRect> rects;
     DenialSliceStorage storage;
   };
 
@@ -230,8 +233,10 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
     uint64_t recomposed_frames = 0;
     uint64_t single_slice_frames = 0;
     uint64_t failed_frames = 0;
-    // Output pixels composed: the buffer damage of layered frames.
+    // Output pixels composed: the buffer damage of layered frames; and the
+    // slice pixels blitted there, before the damage clip.
     uint64_t composed_pixels = 0;
+    uint64_t slice_blit_pixels = 0;
     // Cuts by kind; material ends are not counted.
     uint64_t window_cuts = 0;
     uint64_t material_cuts = 0;

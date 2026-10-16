@@ -178,6 +178,7 @@ EmbedderExternalViewEmbedder::DenialLayeredAuditFrame(int64_t flutter_view_id) {
       << " single_slice_frames=" << audit.single_slice_frames
       << " failed_frames=" << audit.failed_frames
       << " composed_pixels=" << audit.composed_pixels
+      << " slice_blit_pixels=" << audit.slice_blit_pixels
       << " window_cuts=" << audit.window_cuts
       << " material_cuts=" << audit.material_cuts
       << " texture_cuts=" << audit.texture_cuts
@@ -998,8 +999,35 @@ int32_t DenialRoundSliceExtent(int32_t extent) {
   return std::max(rounded, 1) * kDenialSliceGranularity;
 }
 
+// Blitting a slice rect by rect pays per draw; the rects are worth it only
+// when few and markedly smaller than the bounds.
+constexpr size_t kDenialSliceRectLimit = 32;
+constexpr uint64_t kDenialSliceRectAreaPercent = 75;
+
 uint64_t DenialSliceArea(const DlISize& size) {
   return static_cast<uint64_t>(size.width) * static_cast<uint64_t>(size.height);
+}
+
+// The parts of `bounds` a slice paints: its region's disjoint rects, or the
+// bounds alone when the rects are too many or save too little. Rects must
+// stay disjoint, since an overlap would blend its pixels twice.
+void DenialSliceRects(const DlRegion& region,
+                      const DlIRect& bounds,
+                      std::vector<DlIRect>& rects) {
+  rects.clear();
+  uint64_t area = 0;
+  for (const DlIRect& rect : region.getRects()) {
+    const auto clipped = rect.Intersection(bounds);
+    if (clipped.has_value() && !clipped->IsEmpty()) {
+      rects.push_back(*clipped);
+      area += DenialSliceArea(clipped->GetSize());
+    }
+  }
+  if (rects.empty() || rects.size() > kDenialSliceRectLimit ||
+      area * 100 >
+          DenialSliceArea(bounds.GetSize()) * kDenialSliceRectAreaPercent) {
+    rects.assign(1, bounds);
+  }
 }
 
 bool DenialStorageFits(
@@ -1337,6 +1365,7 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       DenialSlice& slot = slices[slice_index];
       entries.push_back({.slice = slice_index});
       ++slice_index;
+      DenialSliceRects(view->GetDlRegion(), *bounds, slot.rects);
       const sk_sp<DisplayList>& display_list = view->GetDisplayList();
       const bool reuse = slot.storage.image && slot.display_list &&
                          slot.bounds == *bounds &&
@@ -1511,10 +1540,18 @@ bool EmbedderExternalViewEmbedder::DenialComposeEntries(
     composition.Save();
     composition.TransformReset();
     composition.Transform(pending_surface_transformation_);
-    composition.DrawImageRect(
-        slot.storage.image, DlRect::MakeSize(DlSize(slot.bounds.GetSize())),
-        DlRect::Make(slot.bounds), DlImageSampling::kNearestNeighbor, nullptr,
-        DlSrcRectConstraint::kStrict);
+    // Pixels outside the slice's paint region are transparent; skip them.
+    for (const DlIRect& rect : slot.rects) {
+      if (audit) {
+        audit->slice_blit_pixels += DenialSliceArea(rect.GetSize());
+      }
+      composition.DrawImageRect(slot.storage.image,
+                                DlRect::Make(rect.Shift(-slot.bounds.GetLeft(),
+                                                        -slot.bounds.GetTop())),
+                                DlRect::Make(rect),
+                                DlImageSampling::kNearestNeighbor, nullptr,
+                                DlSrcRectConstraint::kStrict);
+    }
     composition.Restore();
   }
   while (open_materials-- > 0) {
