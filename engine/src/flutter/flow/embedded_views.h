@@ -405,10 +405,15 @@ class DisplayListEmbedderViewSlice : public EmbedderViewSlice {
   // Denial layered composition retains slice textures across frames by
   // comparing the recorded display lists. Valid after end_recording().
   const sk_sp<DisplayList>& display_list() const { return display_list_; }
+  // Records without the rtree that getRegion() derives the paint region from;
+  // the region is then the recorded bounds. Only before anything is recorded.
+  void RecordWithoutRegion();
 
  private:
+  const DlRect view_bounds_;
   std::unique_ptr<DisplayListBuilder> builder_;
   sk_sp<DisplayList> display_list_;
+  mutable std::optional<DlRegion> bounds_region_;
 };
 
 // Facilitates embedding of platform views within the flow layer tree.

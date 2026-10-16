@@ -206,6 +206,11 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   std::optional<DlMatrix> GetRootCanvasToRenderTargetTransform() const override;
 
  private:
+  // The mode policy of DenialBeginOutputFrame.
+  DenialOutputMode DenialChooseOutputMode(int64_t flutter_view_id,
+                                          const void* layer_tree,
+                                          bool texture_only);
+
   const bool avoid_backing_store_cache_;
   const CreateRenderTargetCallback create_render_target_callback_;
   const PresentCallback present_callback_;

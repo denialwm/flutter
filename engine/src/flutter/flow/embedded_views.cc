@@ -6,10 +6,18 @@
 
 namespace flutter {
 
-DisplayListEmbedderViewSlice::DisplayListEmbedderViewSlice(DlRect view_bounds) {
+DisplayListEmbedderViewSlice::DisplayListEmbedderViewSlice(DlRect view_bounds)
+    : view_bounds_(view_bounds) {
   builder_ = std::make_unique<DisplayListBuilder>(
       /*bounds=*/view_bounds,
       /*prepare_rtree=*/true);
+}
+
+void DisplayListEmbedderViewSlice::RecordWithoutRegion() {
+  FML_DCHECK(builder_ && builder_->GetSaveCount() == 1);
+  builder_ = std::make_unique<DisplayListBuilder>(
+      /*bounds=*/view_bounds_,
+      /*prepare_rtree=*/false);
 }
 
 DlCanvas* DisplayListEmbedderViewSlice::canvas() {
@@ -18,12 +26,17 @@ DlCanvas* DisplayListEmbedderViewSlice::canvas() {
 
 void DisplayListEmbedderViewSlice::end_recording() {
   display_list_ = builder_->Build();
-  FML_DCHECK(display_list_->has_rtree());
   builder_ = nullptr;
 }
 
 const DlRegion& DisplayListEmbedderViewSlice::getRegion() const {
-  return display_list_->rtree()->region();
+  if (display_list_->has_rtree()) {
+    return display_list_->rtree()->region();
+  }
+  if (!bounds_region_.has_value()) {
+    bounds_region_ = DlRegion(DlIRect::RoundOut(display_list_->GetBounds()));
+  }
+  return *bounds_region_;
 }
 
 void DisplayListEmbedderViewSlice::render_into(DlCanvas* canvas) {

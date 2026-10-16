@@ -74,6 +74,10 @@ const sk_sp<DisplayList>& EmbedderExternalView::GetDisplayList() const {
   return slice_->display_list();
 }
 
+void EmbedderExternalView::RecordWithoutRegion() {
+  slice_->RecordWithoutRegion();
+}
+
 bool EmbedderExternalView::HasEngineRenderedContents() {
   if (has_engine_rendered_contents_.has_value()) {
     return has_engine_rendered_contents_.value();

@@ -94,10 +94,29 @@ DenialOutputMode EmbedderExternalViewEmbedder::DenialBeginOutputFrame(
     int64_t flutter_view_id,
     const void* layer_tree,
     bool texture_only) {
-  denial_output_mode_ = DenialOutputMode::kDirect;
   denial_frame_tree_ = layer_tree;
+  denial_output_mode_ =
+      DenialChooseOutputMode(flutter_view_id, layer_tree, texture_only);
+  if (denial_output_mode_ == DenialOutputMode::kDirect &&
+      flutter_view_id < kFlutterImplicitViewId) {
+    // A direct frame paints only the root slice and presents the whole
+    // target, so nothing asks for its paint region: record it without the
+    // rtree, which costs a search and copy per picture layer and a region
+    // per frame. Layered builds keep it for slice bounds and blit rects.
+    if (auto root = pending_views_.find(kRootViewIdentifier);
+        root != pending_views_.end()) {
+      root->second->RecordWithoutRegion();
+    }
+  }
+  return denial_output_mode_;
+}
+
+DenialOutputMode EmbedderExternalViewEmbedder::DenialChooseOutputMode(
+    int64_t flutter_view_id,
+    const void* layer_tree,
+    bool texture_only) {
   if (!denial_layered_enabled_ || flutter_view_id >= kFlutterImplicitViewId) {
-    return denial_output_mode_;
+    return DenialOutputMode::kDirect;
   }
   auto& view = denial_slices_[flutter_view_id];
   view.texture_only_streak = texture_only ? view.texture_only_streak + 1 : 0;
@@ -107,8 +126,7 @@ DenialOutputMode EmbedderExternalViewEmbedder::DenialBeginOutputFrame(
   if (texture_only && view.tree == layer_tree &&
       view.frame_size == pending_frame_size_ &&
       view.transformation == pending_surface_transformation_) {
-    denial_output_mode_ = DenialOutputMode::kRecompose;
-    return denial_output_mode_;
+    return DenialOutputMode::kRecompose;
   }
   // Every other frame replaces the target's pixels without the entries, so
   // they no longer describe it.
@@ -116,9 +134,9 @@ DenialOutputMode EmbedderExternalViewEmbedder::DenialBeginOutputFrame(
   view.entries.clear();
   if (texture_only && layer_tree != view.unlayered_tree &&
       view.texture_only_streak >= kDenialLayeredBuildStreak) {
-    denial_output_mode_ = DenialOutputMode::kLayeredBuild;
+    return DenialOutputMode::kLayeredBuild;
   }
-  return denial_output_mode_;
+  return DenialOutputMode::kDirect;
 }
 
 int64_t EmbedderExternalViewEmbedder::DenialRegisterCut(
@@ -834,9 +852,11 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
     EmbedderLayers presented_layers(
         pending_frame_size_, pending_device_pixel_ratio_,
         pending_surface_transformation_, presentation_time);
+    // The target keeps its previous pixels outside the damage, so all of it
+    // is painted content; frame and buffer damage travel with the present.
     presented_layers.PushBackingStoreLayer(
         pending_denial_render_target_->GetBackingStore(),
-        root->second->GetDlRegion().getRects());
+        {DlIRect::MakeSize(pending_frame_size_)});
     presented_layers.InvokePresentCallback(flutter_view_id, present_callback_);
 
     // The embedder owns the FBO allocation. Releasing this temporary wrapper

@@ -1221,6 +1221,11 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
                                previous_layer_tree == &layer_tree &&
                                    dirty_texture_ids != nullptr)
                          : DenialOutputMode::kDirect;
+  if (denial_output_task) {
+    // The mode decides how the root slice records, which may replace its
+    // canvas.
+    embedder_root_canvas = external_view_embedder_->GetRootCanvas();
+  }
 
   // If the external view embedder has specified an optional root surface, the
   // root surface transformation is set by the embedder instead of
