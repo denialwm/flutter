@@ -107,17 +107,26 @@ EmbedderExternalViewEmbedder::DenialLayeredAuditFrame(int64_t flutter_view_id) {
     return &audit;
   }
   // The interval is [interval_start, now): the frame being submitted belongs
-  // to the next one. Retained slices are a gauge at the interval's end.
+  // to the next one. Retained and pooled storage are gauges at its end.
   uint64_t retained_slices = 0;
   uint64_t retained_pixels = 0;
+  uint64_t pooled_slices = 0;
+  uint64_t pooled_pixels = 0;
   if (auto slices = denial_slices_.find(flutter_view_id);
       slices != denial_slices_.end()) {
-    for (const auto& slot : slices->second) {
-      if (slot.texture) {
+    const auto area = [](const DenialSliceStorage& storage) {
+      return static_cast<uint64_t>(storage.size.width) *
+             static_cast<uint64_t>(storage.size.height);
+    };
+    for (const auto& slot : slices->second.slots) {
+      if (slot.storage.image) {
         ++retained_slices;
-        retained_pixels += static_cast<uint64_t>(slot.texture_size.width) *
-                           static_cast<uint64_t>(slot.texture_size.height);
+        retained_pixels += area(slot.storage);
       }
+    }
+    for (const auto& storage : slices->second.pool) {
+      ++pooled_slices;
+      pooled_pixels += area(storage);
     }
   }
   const uint64_t rendered =
@@ -139,9 +148,13 @@ EmbedderExternalViewEmbedder::DenialLayeredAuditFrame(int64_t flutter_view_id) {
       << " rendered_bounds=" << audit.rendered_bounds
       << " rendered_content=" << audit.rendered_content
       << " rendered_pixels=" << audit.rendered_pixels
+      << " rendered_slice_pixels=" << audit.rendered_slice_pixels
       << " slice_allocations=" << audit.slice_allocations
+      << " slice_pool_reuses=" << audit.slice_pool_reuses
       << " retained_slices=" << retained_slices
       << " retained_slice_pixels=" << retained_pixels
+      << " pooled_slices=" << pooled_slices
+      << " pooled_slice_pixels=" << pooled_pixels
       << " slice_render_total_us=" << audit.slice_render_time.ToMicrosecondsF()
       << " compose_total_us=" << audit.compose_time.ToMicrosecondsF()
       << " compose_max_us=" << audit.compose_max.ToMicrosecondsF();
@@ -919,8 +932,12 @@ void DenialReplayMutators(DlCanvas& canvas,
   }
 }
 
-// Slice textures are rounded up so small layout jitter reuses allocations.
+#ifdef IMPELLER_SUPPORTS_RENDERING
+// Slice storage extents are rounded up so small layout jitter fits.
 constexpr int32_t kDenialSliceGranularity = 64;
+// Spare storage kept per view. The pool holds what disappearing or growing
+// slices released; beyond this the smallest entries are freed.
+constexpr size_t kDenialSlicePoolLimit = 4;
 
 int32_t DenialRoundSliceExtent(int32_t extent) {
   const int32_t rounded =
@@ -928,78 +945,157 @@ int32_t DenialRoundSliceExtent(int32_t extent) {
   return std::max(rounded, 1) * kDenialSliceGranularity;
 }
 
-#ifdef IMPELLER_SUPPORTS_RENDERING
-bool DenialRenderSlice(impeller::ContentContext& content_context,
-                       const std::shared_ptr<impeller::Context>& context,
-                       EmbedderExternalViewEmbedder::DenialSlice& slot,
-                       const DlIRect& bounds,
-                       const sk_sp<DisplayList>& display_list) {
-  const DlISize size(DenialRoundSliceExtent(bounds.GetWidth()),
-                     DenialRoundSliceExtent(bounds.GetHeight()));
-  const impeller::ISize texture_size(size.width, size.height);
-  if (!slot.image || slot.texture_size != size) {
-    impeller::TextureDescriptor descriptor;
-    descriptor.storage_mode = impeller::StorageMode::kDevicePrivate;
-    descriptor.type = impeller::TextureType::kTexture2D;
-    descriptor.format = context->GetCapabilities()->GetDefaultColorFormat();
-    descriptor.size = texture_size;
-    descriptor.mip_count = 1u;
-    descriptor.usage = impeller::TextureUsage::kRenderTarget |
-                       impeller::TextureUsage::kShaderRead;
-    auto texture = context->GetResourceAllocator()->CreateTexture(descriptor);
-    if (!texture) {
-      FML_LOG(ERROR) << "Denial slice texture allocation failed";
-      return false;
-    }
-    texture->SetLabel("Denial slice");
-    slot.image = impeller::DlImageImpeller::Make(
-        texture, DlImage::OwningContext::kRaster);
-    slot.texture = std::move(texture);
-    slot.texture_size = size;
-    slot.msaa.reset();
-    slot.depth_stencil.reset();
+uint64_t DenialSliceArea(const DlISize& size) {
+  return static_cast<uint64_t>(size.width) * static_cast<uint64_t>(size.height);
+}
+
+bool DenialStorageFits(
+    const EmbedderExternalViewEmbedder::DenialSliceStorage& storage,
+    const DlISize& needed) {
+  return storage.image && storage.size.width >= needed.width &&
+         storage.size.height >= needed.height;
+}
+
+// An extent that has to grow grows by at least half, up to the output's
+// extent, so a steadily growing slice reallocates only a few times.
+int32_t DenialGrowExtent(int32_t current, int32_t needed, int32_t limit) {
+  if (needed <= current) {
+    return current;
   }
+  const int32_t grown =
+      DenialRoundSliceExtent(std::max(needed, current + current / 2));
+  return std::max(needed, std::min(grown, limit));
+}
+
+void DenialPoolSliceStorage(
+    std::vector<EmbedderExternalViewEmbedder::DenialSliceStorage>& pool,
+    EmbedderExternalViewEmbedder::DenialSliceStorage&& storage) {
+  if (!storage.image) {
+    return;
+  }
+  pool.push_back(std::move(storage));
+  storage = {};
+  if (pool.size() > kDenialSlicePoolLimit) {
+    auto smallest = std::min_element(
+        pool.begin(), pool.end(), [](const auto& a, const auto& b) {
+          return DenialSliceArea(a.size) < DenialSliceArea(b.size);
+        });
+    pool.erase(smallest);
+  }
+}
+
+std::shared_ptr<impeller::Texture> DenialCreateSliceTexture(
+    const std::shared_ptr<impeller::Context>& context,
+    const DlISize& size,
+    impeller::PixelFormat format,
+    bool multisample,
+    bool sampled,
+    const char* label) {
+  impeller::TextureDescriptor descriptor;
+  descriptor.storage_mode = sampled ? impeller::StorageMode::kDevicePrivate
+                                    : impeller::StorageMode::kDeviceTransient;
+  descriptor.type = multisample ? impeller::TextureType::kTexture2DMultisample
+                                : impeller::TextureType::kTexture2D;
+  descriptor.sample_count = multisample ? impeller::SampleCount::kCount4
+                                        : impeller::SampleCount::kCount1;
+  descriptor.format = format;
+  descriptor.size = impeller::ISize(size.width, size.height);
+  descriptor.mip_count = 1u;
+  descriptor.usage = sampled ? impeller::TextureUsage::kRenderTarget |
+                                   impeller::TextureUsage::kShaderRead
+                             : impeller::TextureUsage::kRenderTarget;
+  auto texture = context->GetResourceAllocator()->CreateTexture(descriptor);
+  if (!texture) {
+    FML_LOG(ERROR) << label << " allocation failed";
+    return nullptr;
+  }
+  texture->SetLabel(label);
+  return texture;
+}
+
+std::optional<EmbedderExternalViewEmbedder::DenialSliceStorage>
+DenialCreateSliceStorage(const std::shared_ptr<impeller::Context>& context,
+                         const DlISize& size) {
+  const auto& capabilities = context->GetCapabilities();
+  const bool msaa = capabilities->SupportsOffscreenMSAA();
+  EmbedderExternalViewEmbedder::DenialSliceStorage storage;
+  storage.size = size;
+  storage.texture = DenialCreateSliceTexture(
+      context, size, capabilities->GetDefaultColorFormat(),
+      /*multisample=*/false, /*sampled=*/true, "Denial slice");
+  storage.depth_stencil = DenialCreateSliceTexture(
+      context, size, capabilities->GetDefaultDepthStencilFormat(), msaa,
+      /*sampled=*/false, "Denial slice depth/stencil");
+  if (msaa) {
+    storage.msaa = DenialCreateSliceTexture(
+        context, size, capabilities->GetDefaultColorFormat(),
+        /*multisample=*/true, /*sampled=*/false, "Denial slice MSAA");
+  }
+  if (!storage.texture || !storage.depth_stencil || (msaa && !storage.msaa)) {
+    return std::nullopt;
+  }
+  storage.image = impeller::DlImageImpeller::Make(
+      storage.texture, DlImage::OwningContext::kRaster);
+  return storage;
+}
+
+// Makes `storage` hold at least `needed`: keeps it when the slice fits,
+// otherwise swaps in the smallest pooled storage that fits, and only then
+// allocates grown storage. Released storage goes to the pool.
+bool DenialPrepareSliceStorage(
+    const std::shared_ptr<impeller::Context>& context,
+    EmbedderExternalViewEmbedder::DenialViewSlices& view,
+    EmbedderExternalViewEmbedder::DenialSliceStorage& storage,
+    const DlISize& needed,
+    const DlISize& limit,
+    uint64_t& allocations,
+    uint64_t& pool_reuses) {
+  if (DenialStorageFits(storage, needed)) {
+    return true;
+  }
+  auto best = view.pool.end();
+  for (auto it = view.pool.begin(); it != view.pool.end(); ++it) {
+    if (DenialStorageFits(*it, needed) &&
+        (best == view.pool.end() ||
+         DenialSliceArea(it->size) < DenialSliceArea(best->size))) {
+      best = it;
+    }
+  }
+  if (best != view.pool.end()) {
+    std::swap(storage, *best);
+    if (!best->image) {
+      view.pool.erase(best);
+    }
+    ++pool_reuses;
+    return true;
+  }
+  const DlISize grown(
+      DenialGrowExtent(storage.size.width, needed.width, limit.width),
+      DenialGrowExtent(storage.size.height, needed.height, limit.height));
+  auto created = DenialCreateSliceStorage(context, grown);
+  if (!created.has_value()) {
+    return false;
+  }
+  ++allocations;
+  DenialPoolSliceStorage(view.pool, std::move(storage));
+  storage = std::move(created.value());
+  return true;
+}
+
+bool DenialRenderSlice(
+    impeller::ContentContext& content_context,
+    const std::shared_ptr<impeller::Context>& context,
+    const EmbedderExternalViewEmbedder::DenialSliceStorage& storage,
+    const DlIRect& bounds,
+    const DlISize& needed,
+    const sk_sp<DisplayList>& display_list) {
   // The content context's render target cache ignores existing textures and
   // hands out pooled ones, so slice targets are built directly on the
-  // allocator around the retained slice texture.
-  const bool msaa = context->GetCapabilities()->SupportsOffscreenMSAA();
-  if (!slot.depth_stencil) {
-    impeller::TextureDescriptor descriptor;
-    descriptor.storage_mode = impeller::StorageMode::kDeviceTransient;
-    descriptor.type = msaa ? impeller::TextureType::kTexture2DMultisample
-                           : impeller::TextureType::kTexture2D;
-    descriptor.sample_count =
-        msaa ? impeller::SampleCount::kCount4 : impeller::SampleCount::kCount1;
-    descriptor.format =
-        context->GetCapabilities()->GetDefaultDepthStencilFormat();
-    descriptor.size = texture_size;
-    descriptor.usage = impeller::TextureUsage::kRenderTarget;
-    slot.depth_stencil =
-        context->GetResourceAllocator()->CreateTexture(descriptor);
-    if (!slot.depth_stencil) {
-      FML_LOG(ERROR) << "Denial slice depth/stencil allocation failed";
-      return false;
-    }
-    slot.depth_stencil->SetLabel("Denial slice depth/stencil");
-  }
-  if (msaa && !slot.msaa) {
-    impeller::TextureDescriptor descriptor;
-    descriptor.storage_mode = impeller::StorageMode::kDeviceTransient;
-    descriptor.type = impeller::TextureType::kTexture2DMultisample;
-    descriptor.sample_count = impeller::SampleCount::kCount4;
-    descriptor.format = context->GetCapabilities()->GetDefaultColorFormat();
-    descriptor.size = texture_size;
-    descriptor.usage = impeller::TextureUsage::kRenderTarget;
-    slot.msaa = context->GetResourceAllocator()->CreateTexture(descriptor);
-    if (!slot.msaa) {
-      FML_LOG(ERROR) << "Denial slice MSAA allocation failed";
-      return false;
-    }
-    slot.msaa->SetLabel("Denial slice MSAA");
-  }
+  // allocator around the retained slice storage.
+  const impeller::ISize texture_size(storage.size.width, storage.size.height);
   impeller::RenderTargetAllocator allocator(context->GetResourceAllocator());
   impeller::RenderTarget target;
-  if (msaa) {
+  if (storage.msaa) {
     target = allocator.CreateOffscreenMSAA(
         *context, texture_size, /*mip_count=*/1, "Denial slice",
         impeller::RenderTarget::AttachmentConfigMSAA{
@@ -1008,8 +1104,8 @@ bool DenialRenderSlice(impeller::ContentContext& content_context,
             .load_action = impeller::LoadAction::kClear,
             .store_action = impeller::StoreAction::kMultisampleResolve,
             .clear_color = impeller::Color::BlackTransparent()},
-        impeller::RenderTarget::kDefaultStencilAttachmentConfig, slot.msaa,
-        slot.texture, slot.depth_stencil);
+        impeller::RenderTarget::kDefaultStencilAttachmentConfig, storage.msaa,
+        storage.texture, storage.depth_stencil);
   } else {
     target = allocator.CreateOffscreen(
         *context, texture_size, /*mip_count=*/1, "Denial slice",
@@ -1018,20 +1114,21 @@ bool DenialRenderSlice(impeller::ContentContext& content_context,
             .load_action = impeller::LoadAction::kClear,
             .store_action = impeller::StoreAction::kStore,
             .clear_color = impeller::Color::BlackTransparent()},
-        impeller::RenderTarget::kDefaultStencilAttachmentConfig, slot.texture,
-        slot.depth_stencil);
+        impeller::RenderTarget::kDefaultStencilAttachmentConfig,
+        storage.texture, storage.depth_stencil);
   }
   if (!target.IsValid()) {
     FML_LOG(ERROR) << "Denial slice render target is invalid";
     return false;
   }
-  DisplayListBuilder builder(DlRect::MakeSize(DlSize(size)));
+  DisplayListBuilder builder(DlRect::MakeSize(DlSize(needed)));
   builder.Translate(-bounds.GetLeft(), -bounds.GetTop());
   builder.DrawDisplayList(display_list);
-  return impeller::RenderToTarget(content_context, target, builder.Build(),
-                                  impeller::Rect::MakeSize(texture_size),
-                                  /*reset_host_buffer=*/false,
-                                  /*is_onscreen=*/false);
+  return impeller::RenderToTarget(
+      content_context, target, builder.Build(),
+      impeller::Rect::MakeSize(impeller::ISize(needed.width, needed.height)),
+      /*reset_host_buffer=*/false,
+      /*is_onscreen=*/false);
 }
 
 void DenialComposeCut(DlCanvas& canvas,
@@ -1138,8 +1235,12 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
   if (impeller_target && aiks_context) {
     auto& content_context = aiks_context->GetContentContext();
     const auto context = aiks_context->GetContext();
-    auto& slices = denial_slices_[flutter_view_id];
+    auto& view_slices = denial_slices_[flutter_view_id];
+    auto& slices = view_slices.slots;
     const DlIRect frame_rect = DlIRect::MakeSize(pending_frame_size_);
+    const DlISize storage_limit(
+        DenialRoundSliceExtent(pending_frame_size_.width),
+        DenialRoundSliceExtent(pending_frame_size_.height));
     DisplayListBuilder composition(DlRect::Make(frame_rect));
     composition.Transform(pending_surface_transformation_);
     size_t slice_index = 0;
@@ -1167,13 +1268,13 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       }
       DenialSlice& slot = slices[slice_index++];
       const sk_sp<DisplayList>& display_list = view->GetDisplayList();
-      const bool reuse = slot.image && slot.display_list &&
+      const bool reuse = slot.storage.image && slot.display_list &&
                          slot.bounds == *bounds &&
                          slot.display_list->Equals(display_list);
       if (audit) {
         if (reuse) {
           ++audit->slices_reused;
-        } else if (!slot.image || !slot.display_list) {
+        } else if (!slot.storage.image || !slot.display_list) {
           ++audit->rendered_new;
         } else if (slot.bounds != *bounds) {
           ++audit->rendered_bounds;
@@ -1182,23 +1283,30 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
         }
       }
       if (!reuse) {
-        const impeller::Texture* retained = slot.texture.get();
         const fml::TimePoint render_start =
             audit ? fml::TimePoint::Now() : fml::TimePoint();
-        if (!DenialRenderSlice(content_context, context, slot, *bounds,
-                               display_list)) {
+        const DlISize needed(DenialRoundSliceExtent(bounds->GetWidth()),
+                             DenialRoundSliceExtent(bounds->GetHeight()));
+        uint64_t allocations = 0;
+        uint64_t pool_reuses = 0;
+        // The slot's content is replaced either way; drop it first so a
+        // failure never leaves stale content marked reusable.
+        slot.display_list.reset();
+        if (!DenialPrepareSliceStorage(context, view_slices, slot.storage,
+                                       needed, storage_limit, allocations,
+                                       pool_reuses) ||
+            !DenialRenderSlice(content_context, context, slot.storage, *bounds,
+                               needed, display_list)) {
           composed = false;
           break;
         }
         if (audit) {
           audit->slice_render_time =
               audit->slice_render_time + (fml::TimePoint::Now() - render_start);
-          audit->rendered_pixels +=
-              static_cast<uint64_t>(slot.texture_size.width) *
-              static_cast<uint64_t>(slot.texture_size.height);
-          if (slot.texture.get() != retained) {
-            ++audit->slice_allocations;
-          }
+          audit->rendered_pixels += DenialSliceArea(slot.storage.size);
+          audit->rendered_slice_pixels += DenialSliceArea(needed);
+          audit->slice_allocations += allocations;
+          audit->slice_pool_reuses += pool_reuses;
         }
         slot.display_list = display_list;
         slot.bounds = *bounds;
@@ -1210,12 +1318,18 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       composition.TransformReset();
       composition.Transform(pending_surface_transformation_);
       composition.DrawImageRect(
-          slot.image, DlRect::MakeSize(DlSize(bounds->GetSize())),
+          slot.storage.image, DlRect::MakeSize(DlSize(bounds->GetSize())),
           DlRect::Make(*bounds), DlImageSampling::kNearestNeighbor, nullptr,
           DlSrcRectConstraint::kStrict);
       composition.Restore();
     }
-    slices.resize(slice_index);
+    if (composed) {
+      // Slices beyond this frame's last give their storage to the pool.
+      for (size_t i = slice_index; i < slices.size(); ++i) {
+        DenialPoolSliceStorage(view_slices.pool, std::move(slices[i].storage));
+      }
+      slices.resize(slice_index);
+    }
     if (audit) {
       audit->slices += slice_index;
       audit->max_slices =

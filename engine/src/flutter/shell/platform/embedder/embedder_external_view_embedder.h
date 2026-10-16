@@ -103,15 +103,30 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   int64_t DenialRegisterCut(std::unique_ptr<EmbeddedViewParams> params,
                             DenialCutEntry entry) override;
 
-  // One retained engine-rendered slice of a Denial output view.
-  struct DenialSlice {
-    sk_sp<DisplayList> display_list;
-    DlIRect bounds;
-    DlISize texture_size;
+  // GPU storage of one slice: the sampled color texture and its MSAA and
+  // depth/stencil attachments, all of `size`. A slice renders into the
+  // top-left corner, so storage is reused while the slice fits and otherwise
+  // grows; it never shrinks while its view exists.
+  struct DenialSliceStorage {
+    DlISize size;
     std::shared_ptr<impeller::Texture> texture;
     std::shared_ptr<impeller::Texture> msaa;
     std::shared_ptr<impeller::Texture> depth_stencil;
     sk_sp<DlImage> image;
+  };
+
+  // One retained engine-rendered slice of a Denial output view.
+  struct DenialSlice {
+    sk_sp<DisplayList> display_list;
+    DlIRect bounds;
+    DenialSliceStorage storage;
+  };
+
+  // The slices of one output view, in entry order, and the storage of slices
+  // that disappeared or outgrew it, kept for the next slice that fits.
+  struct DenialViewSlices {
+    std::vector<DenialSlice> slots;
+    std::vector<DenialSliceStorage> pool;
   };
 
   void SetExistingDamageCallback(
@@ -169,7 +184,7 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   int64_t pending_flutter_view_id_ = kFlutterImplicitViewId;
   int64_t denial_next_cut_ = 0;
   std::unordered_map<int64_t, DenialCutEntry> denial_cuts_;
-  std::unordered_map<int64_t, std::vector<DenialSlice>> denial_slices_;
+  std::unordered_map<int64_t, DenialViewSlices> denial_slices_;
   std::shared_ptr<TextureRegistry> denial_texture_registry_;
 
   // Per-view layered composition counters. Collected only when
@@ -193,9 +208,14 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
     uint64_t rendered_new = 0;
     uint64_t rendered_bounds = 0;
     uint64_t rendered_content = 0;
-    // Slice texture pixels cleared and drawn by re-rendering.
+    // Re-rendering clears and draws the whole storage (`rendered_pixels`),
+    // which can exceed the slice's own rounded extent (`rendered_slice_pixels`)
+    // when storage grew for an earlier, larger slice.
     uint64_t rendered_pixels = 0;
+    uint64_t rendered_slice_pixels = 0;
+    // Storage created, and storage taken from the pool instead.
     uint64_t slice_allocations = 0;
+    uint64_t slice_pool_reuses = 0;
     fml::TimeDelta slice_render_time;
     fml::TimeDelta compose_time;
     fml::TimeDelta compose_max;
