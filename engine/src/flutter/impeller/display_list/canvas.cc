@@ -2068,7 +2068,13 @@ void Canvas::SetupRenderPass() {
 
   const TextureDescriptor& root_texture =
       color0.texture->GetTextureDescriptor();
-  const bool preserve_depth_stencil_between_passes = requires_readback_;
+  // On GLES, keep depth/stencil transient and replay the active clips after
+  // a backdrop split. Preserving an output-sized depth/stencil attachment
+  // forces tile stores and loads for every split even when only a small clip
+  // program is needed. The color target still loads its previous contents.
+  const bool preserve_depth_stencil_between_passes =
+      requires_readback_ && renderer_.GetContext()->GetBackendType() !=
+                                Context::BackendType::kOpenGLES;
   if (requires_readback_ && (root_texture.usage & TextureUsage::kShaderRead) &&
       root_texture.sample_count == SampleCount::kCount1) {
     requires_readback_ = false;
@@ -2100,13 +2106,12 @@ void Canvas::SetupRenderPass() {
   // a second save layer with the same dimensions as the onscreen. When
   // rendering is completed, we must blit this saveLayer to the onscreen.
   if (requires_readback_) {
-    auto entity_pass_target =
-        CreateRenderTarget(renderer_,                  //
-                           color0.texture->GetSize(),  //
-                           /*clear_color=*/Color::BlackTransparent(),
-                           /*use_msaa=*/true,
-                           /*preserve_depth_stencil_between_passes=*/true,
-                           /*label=*/"Denial root readback layer");
+    auto entity_pass_target = CreateRenderTarget(
+        renderer_,                  //
+        color0.texture->GetSize(),  //
+        /*clear_color=*/Color::BlackTransparent(),
+        /*use_msaa=*/true, preserve_depth_stencil_between_passes,
+        /*label=*/"Denial root readback layer");
     render_passes_.push_back(
         LazyRenderingConfig(renderer_, std::move(entity_pass_target),
                             preserve_depth_stencil_between_passes));
@@ -2829,10 +2834,13 @@ void Canvas::SaveLayer(const Paint& paint,
   // coarse size, or reuse a slightly larger cached target, and use only the
   // exact region: coverage, origin, clip state and restore geometry remain
   // exact. A clamped blur of the restored layer clamps its reads to that
-  // region too. Other filters and threshold composites read the whole
-  // texture, so those layers keep exact allocations.
+  // region too. WindowSurface also clamps its composed client input to
+  // this region before evaluating alpha, so its threshold does not require
+  // an exact allocation. Generic threshold composites still read the whole
+  // texture and retain exact allocations.
   const bool pooled_layer =
-      !backdrop_alpha_threshold.has_value() && !paint.color_filter &&
+      (!backdrop_alpha_threshold.has_value() || window != nullptr) &&
+      !paint.color_filter &&
       (!paint.image_filter ||
        (paint.image_filter->type() == flutter::DlImageFilterType::kBlur &&
         FilterReadsWithinSampleBounds(*paint.image_filter)));

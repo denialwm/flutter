@@ -15,6 +15,7 @@
 #include "impeller/entity/contents/glass_material_sheet.h"
 #include "impeller/entity/contents/texture_contents.h"
 #include "impeller/entity/geometry/rect_geometry.h"
+#include "impeller/entity/geometry/round_rect_geometry.h"
 #include "impeller/entity/render_target_cache.h"
 #include "impeller/entity/window_surface.frag.h"
 #include "impeller/entity/window_surface.vert.h"
@@ -643,6 +644,95 @@ TEST_F(WindowBackdropTest, SampleBoundsClampToEdgeTexelCenters) {
   }
 }
 
+TEST_F(WindowBackdropTest, GLESBackdropReplaysClipsWithTransientRootDepth) {
+  for (bool rounded : {false, true}) {
+    SCOPED_TRACE(rounded);
+    TextureDescriptor desc;
+    desc.size = {200, 100};
+    desc.format = PixelFormat::kR8G8B8A8UNormInt;
+    desc.usage = TextureUsage::kRenderTarget | TextureUsage::kShaderRead;
+    desc.storage_mode = StorageMode::kDevicePrivate;
+    ColorAttachment color;
+    color.texture =
+        renderer_->GetContext()->GetResourceAllocator()->CreateTexture(desc);
+    color.load_action = LoadAction::kClear;
+    RenderTarget target;
+    target.SetColorAttachment(color, 0);
+    Canvas canvas(*renderer_, target, false, true);
+    canvas.SetBackdropData({}, 1);
+    const auto check_transient = [](const RenderTarget& target) {
+      ASSERT_TRUE(target.GetDepthAttachment());
+      ASSERT_TRUE(target.GetStencilAttachment());
+      EXPECT_EQ(target.GetDepthAttachment()->load_action, LoadAction::kClear);
+      EXPECT_EQ(target.GetDepthAttachment()->store_action,
+                StoreAction::kDontCare);
+      EXPECT_EQ(target.GetStencilAttachment()->load_action, LoadAction::kClear);
+      EXPECT_EQ(target.GetStencilAttachment()->store_action,
+                StoreAction::kDontCare);
+    };
+    check_transient(canvas.GetRenderPassForTesting().GetRenderTarget());
+    canvas.Save();
+    const Rect clip = Rect::MakeLTRB(10, 10, 190, 90);
+    if (rounded) {
+      canvas.ClipGeometry(RoundRectGeometry(clip, Size(12, 12)),
+                          Entity::ClipOperation::kIntersect);
+    } else {
+      canvas.ClipGeometry(FillRectGeometry(clip),
+                          Entity::ClipOperation::kIntersect);
+    }
+    Paint paint;
+    paint.color = Color::Blue();
+    canvas.DrawRect(Rect::MakeWH(200, 100), paint);
+    // GLES keeps the current scissor when a draw supplies no new value.
+    // Fold encoder state across commands rather than treating null as reset.
+    const auto effective_scissor = [](const RenderPass& pass) {
+      std::optional<IRect32> scissor;
+      for (const auto& command : pass.GetCommands()) {
+        if (command.scissor) {
+          scissor = command.scissor;
+        }
+      }
+      return scissor;
+    };
+    const auto original_scissor =
+        effective_scissor(canvas.GetRenderPassForTesting());
+    ASSERT_TRUE(original_scissor);
+    auto filter = flutter::DlBlurImageFilter::Make(
+        3, 3, flutter::DlTileMode::kClamp, std::nullopt, 1, 0.65f, false);
+    flutter::DlWindowSurfaceFilter::Style style{clip, clip, 12,
+                                                flutter::DlColor::kRed()};
+    flutter::DlWindowSurfaceFilter window(style, filter, true);
+    Paint restore;
+    restore.blend_mode = BlendMode::kSrc;
+    canvas.SaveLayer(restore, clip, &window, ContentBoundsPromise::kUnknown, 1,
+                     false);
+    canvas.DrawImageRect(texture_, Rect::MakeSize(texture_->GetSize()), clip,
+                         {}, {}, SourceRectConstraint::kStrict, true);
+    canvas.Restore();
+    const auto& resumed = canvas.GetRenderPassForTesting();
+    check_transient(resumed.GetRenderTarget());
+    EXPECT_EQ(resumed.GetRenderTarget().GetRenderTargetTexture(),
+              color.texture);
+    EXPECT_EQ(resumed.GetRenderTarget().GetColorAttachment(0).load_action,
+              LoadAction::kLoad);
+    size_t replay_stencil = 0, replay_cover = 0;
+    for (const auto& command : resumed.GetCommands()) {
+      replay_stencil +=
+          command.audit_category == CommandAuditCategory::kClipReplayStencil;
+      replay_cover +=
+          command.audit_category == CommandAuditCategory::kClipReplayCover;
+    }
+    EXPECT_EQ(replay_stencil, rounded ? 1u : 0u);
+    EXPECT_EQ(replay_cover, rounded ? 1u : 0u);
+    paint.color = Color::Green();
+    canvas.DrawRect(Rect::MakeWH(200, 100), paint);
+    EXPECT_EQ(effective_scissor(canvas.GetRenderPassForTesting()),
+              original_scissor);
+    canvas.Restore();
+    canvas.EndReplay();
+  }
+}
+
 TEST_F(WindowBackdropTest, GlassMaterialSheetReservesDisjointRegions) {
   GlassMaterialSheet sheet;
   const Context& context = *renderer_->GetContext();
@@ -878,6 +968,100 @@ TEST_F(WindowBackdropTest,
   EXPECT_LE(layer_textures.size(), 2u);
   EXPECT_GE(layer_textures.size(), 1u);
 }
+TEST_F(WindowBackdropTest, ComposedWindowThresholdReusesTargetAndClampsInput) {
+  auto cache = std::static_pointer_cast<RenderTargetCache>(
+      renderer_->GetRenderTargetCache());
+  // A composed client remains a separate pass. Only its allocation is pooled;
+  // content bounds, UVs and alpha-threshold sampling must remain exact.
+  for (int material = 0; material < 3; ++material) {
+    SCOPED_TRACE(material);
+    std::set<const Texture*> client_targets;
+    for (int frame = 0; frame < 8; ++frame) {
+      SCOPED_TRACE(frame);
+      cache->Start();
+      TextureDescriptor desc;
+      desc.size = {200, 100};
+      desc.format = PixelFormat::kR8G8B8A8UNormInt;
+      desc.usage = TextureUsage::kRenderTarget;
+      desc.storage_mode = StorageMode::kDevicePrivate;
+      ColorAttachment color;
+      color.texture =
+          renderer_->GetContext()->GetResourceAllocator()->CreateTexture(desc);
+      color.load_action = LoadAction::kClear;
+      RenderTarget target;
+      target.SetColorAttachment(color, 0);
+      Canvas canvas(*renderer_, target, false, true);
+      flutter::DlWindowSurfaceFilter::Style style{
+          Rect::MakeXYWH(10.5f, 10.25f, 30 + frame, 40 + frame),
+          {},
+          8,
+          flutter::DlColor::kRed()};
+      style.content_bounds = style.bounds;
+      std::shared_ptr<flutter::DlImageFilter> filter;
+      if (material == 1) {
+        filter = flutter::DlBlurImageFilter::Make(
+            3, 3, flutter::DlTileMode::kClamp, std::nullopt, 1, 0.65f, false);
+      } else if (material == 2) {
+        filter = flutter::DlGlassImageFilter::Make(
+            3, 3, RoundRect::MakeRectXY(style.content_bounds, 8, 8), 1, 27,
+            0.52f, 0.51f, 1, flutter::DlColor::kTransparent(), 0, 1, 0, 1, 1,
+            0.65f, false);
+      }
+      flutter::DlWindowSurfaceFilter window(style, filter, false);
+      Paint restore;
+      restore.blend_mode = BlendMode::kSrc;
+      canvas.SaveLayer(restore, style.bounds, &window,
+                       ContentBoundsPromise::kUnknown, 2, false);
+      auto client = canvas.GetRenderPassForTesting()
+                        .GetRenderTarget()
+                        .GetRenderTargetTexture();
+      ASSERT_TRUE(client);
+      client_targets.insert(client.get());
+      EXPECT_EQ(client->GetSize(), ISize(64, 64));
+      for (int surface = 0; surface < 2; ++surface) {
+        canvas.DrawImageRect(texture_, Rect::MakeSize(texture_->GetSize()),
+                             style.content_bounds, {}, {},
+                             SourceRectConstraint::kStrict, true);
+      }
+      canvas.Restore();
+      const auto& pass = canvas.GetRenderPassForTesting();
+      ASSERT_EQ(pass.GetCommands().back().audit_category,
+                CommandAuditCategory::kBackdropSurfaceComposite);
+      bool checked = false;
+      for (const auto& binding : pass.GetBoundBuffersForTesting()) {
+        if (binding.GetMetadata() !=
+            &WindowSurfaceTextureFragmentShader::kMetadataFragInfo) {
+          continue;
+        }
+        const auto* info = reinterpret_cast<
+            const WindowSurfaceTextureFragmentShader::FragInfo*>(
+            DeviceBufferGLES::Cast(*binding.resource.GetBuffer())
+                .GetBufferData() +
+            binding.resource.GetRange().offset);
+        EXPECT_EQ(info->data[1], Vector4(style.content_bounds.GetLTRB()));
+        const auto extent = IRect::RoundOut(style.content_bounds).GetSize();
+        const Scalar right = extent.width / 64.0f;
+        const Scalar bottom = extent.height / 64.0f;
+        EXPECT_EQ(info->data[3], client->GetYCoordScale() < 0
+                                     ? Vector4(0, 1 - bottom, right, 1)
+                                     : Vector4(0, 0, right, bottom));
+        // Sampling may reach the valid region's texel centres, never padding.
+        const Scalar half = 0.5f / 64;
+        EXPECT_EQ(info->data[2],
+                  client->GetYCoordScale() < 0
+                      ? Vector4(half, 1 - bottom + half, right - half, 1 - half)
+                      : Vector4(half, half, right - half, bottom - half));
+        EXPECT_NEAR(info->data[6].x, material ? 0.65f : 0, 0.00001f);
+        checked = true;
+      }
+      EXPECT_TRUE(checked);
+      canvas.EndReplay();
+      cache->End();
+    }
+    EXPECT_EQ(client_targets.size(), 1u);
+  }
+}
+
 TEST_F(WindowBackdropTest, ClampedBlurLayersArePooledButOtherFiltersStayExact) {
   // SetUp gives ContentContext no allocator, so it owns a RenderTargetCache.
   auto cache = std::static_pointer_cast<RenderTargetCache>(
