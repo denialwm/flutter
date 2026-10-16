@@ -8,11 +8,13 @@
 #include <cassert>
 #include <cctype>
 #include <cstdlib>
+#include <sstream>
 #include <string>
 #include <utility>
 
 #include "flutter/common/constants.h"
 #include "flutter/display_list/geometry/dl_path_builder.h"
+#include "flutter/display_list/utils/dl_receiver_utils.h"
 #include "flutter/flow/diff_context.h"
 #include "flutter/shell/platform/embedder/embedder_layers.h"
 #include "flutter/shell/platform/embedder/embedder_render_target.h"
@@ -1030,6 +1032,57 @@ void DenialSliceRects(const DlRegion& region,
   }
 }
 
+// Audit diagnostics: captures the nested display list of one
+// DrawDisplayList op.
+class DenialNestedCapture final : public virtual DlOpReceiver,
+                                  private IgnoreAttributeDispatchHelper,
+                                  private IgnoreClipDispatchHelper,
+                                  private IgnoreTransformDispatchHelper,
+                                  private IgnoreDrawDispatchHelper {
+ public:
+  void drawDisplayList(const sk_sp<DisplayList> display_list,
+                       DlScalar opacity) override {
+    nested = display_list;
+  }
+  sk_sp<DisplayList> nested;
+};
+
+// Lists the ops of `display_list` whose bounds cover at least `threshold`
+// pixels, descending into nested display lists up to `depth` levels.
+void DenialDescribeLargeOps(const sk_sp<DisplayList>& display_list,
+                            uint64_t threshold,
+                            int depth,
+                            std::ostringstream& out) {
+  const auto rtree = display_list->rtree();
+  if (!rtree) {
+    out << " [no-rtree ops=" << display_list->op_count(true) << "]";
+    return;
+  }
+  int shown = 0;
+  for (int i = 0; i < rtree->leaf_count() && shown < 4; ++i) {
+    const DlIRect leaf = DlIRect::RoundOut(rtree->bounds(i));
+    if (static_cast<uint64_t>(leaf.GetWidth()) * leaf.GetHeight() < threshold) {
+      continue;
+    }
+    const int id = rtree->id(i);
+    const auto type = display_list->GetOpType(id);
+    out << " op" << id << ":type" << static_cast<int>(type) << "@"
+        << leaf.GetLeft() << "," << leaf.GetTop() << "," << leaf.GetWidth()
+        << "x" << leaf.GetHeight();
+    ++shown;
+    if (type == DisplayListOpType::kDrawDisplayList && depth > 0) {
+      DenialNestedCapture capture;
+      display_list->Dispatch(capture, id);
+      if (capture.nested) {
+        out << " {ops=" << capture.nested->op_count(true)
+            << " unbounded=" << capture.nested->root_is_unbounded();
+        DenialDescribeLargeOps(capture.nested, threshold, depth - 1, out);
+        out << " }";
+      }
+    }
+  }
+}
+
 bool DenialStorageFits(
     const EmbedderExternalViewEmbedder::DenialSliceStorage& storage,
     const DlISize& needed) {
@@ -1367,6 +1420,33 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       ++slice_index;
       DenialSliceRects(view->GetDlRegion(), *bounds, slot.rects);
       const sk_sp<DisplayList>& display_list = view->GetDisplayList();
+      if (audit) {
+        // Which ops make a slice's paint region large: a slice blitted by
+        // its bounds costs those pixels on every composition.
+        const auto& region = view->GetDlRegion();
+        uint64_t region_area = 0;
+        for (const DlIRect& rect : region.getRects()) {
+          region_area += DenialSliceArea(rect.GetSize());
+        }
+        std::ostringstream large;
+        DenialDescribeLargeOps(display_list,
+                               DenialSliceArea(pending_frame_size_) / 8,
+                               /*depth=*/3, large);
+        FML_LOG(IMPORTANT)
+            << "Denial layered slice view=" << flutter_view_id
+            << " index=" << slice_index - 1 << " after_cut="
+            << (entries.size() > 1 &&
+                        !entries[entries.size() - 2].slice.has_value()
+                    ? static_cast<int>(entries[entries.size() - 2].cut.kind)
+                    : -1)
+            << " bounds=" << bounds->GetLeft() << "," << bounds->GetTop() << ","
+            << bounds->GetWidth() << "x" << bounds->GetHeight()
+            << " region_rects=" << region.getRects().size()
+            << " region_px=" << region_area
+            << " blit_rects=" << slot.rects.size()
+            << " ops=" << display_list->op_count(true)
+            << " large:" << large.str();
+      }
       const bool reuse = slot.storage.image && slot.display_list &&
                          slot.bounds == *bounds &&
                          slot.display_list->Equals(display_list);
