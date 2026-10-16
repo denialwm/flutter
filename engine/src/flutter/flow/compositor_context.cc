@@ -323,6 +323,12 @@ RasterStatus CompositorContext::ScopedFrame::Raster(
   }
 #endif
 
+  if (paint_scope_ == RasterPaintScope::kNone) {
+    return RasterStatus::kSuccess;
+  }
+  if (paint_scope_ == RasterPaintScope::kUnclipped) {
+    clip_region.reset();
+  }
   const DlRect preroll_cull =
       clip_region ? DlRect::Make(clip_region->bounds()) : kGiantRect;
   bool root_needs_readback =

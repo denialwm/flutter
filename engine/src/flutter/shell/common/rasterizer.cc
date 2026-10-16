@@ -1212,10 +1212,15 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     denial_existing_damage = std::move(prepared_target->existing_damage);
   }
   // Layered composition retains engine-rendered slices by comparing complete
-  // display lists, so every slice must be recorded in full: no diffing and
-  // no damage clip. The composition covers the whole target.
-  const bool denial_layered =
-      denial_output_task && external_view_embedder_->DenialLayeredComposition();
+  // display lists, so a layered build records every slice in full; damage
+  // still clips the composition. A recomposition paints nothing from the
+  // tree: the embedder composes its retained entries inside the damage.
+  const DenialOutputMode denial_mode =
+      denial_output_task ? external_view_embedder_->DenialBeginOutputFrame(
+                               view_id, &layer_tree,
+                               previous_layer_tree == &layer_tree &&
+                                   dirty_texture_ids != nullptr)
+                         : DenialOutputMode::kDirect;
 
   // If the external view embedder has specified an optional root surface, the
   // root surface transformation is set by the embedder instead of
@@ -1243,9 +1248,8 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     RasterDamagePolicy damage_policy = RasterDamagePolicy::kFullRepaint;
     // when leaf layer tracing is enabled we wish to repaint the whole frame
     // for accurate performance metrics.
-    if (!denial_layered &&
-        (denial_output_task ||
-         frame->framebuffer_info().supports_partial_repaint)) {
+    if (denial_output_task ||
+        frame->framebuffer_info().supports_partial_repaint) {
       // Disable partial repaint if external_view_embedder_ SubmitFlutterView is
       // involved - ExternalViewEmbedder unconditionally clears the entire
       // surface and also partial repaint with platform view present is
@@ -1278,6 +1282,16 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
       ignore_raster_cache = false;
     }
 
+    switch (denial_mode) {
+      case DenialOutputMode::kDirect:
+        break;
+      case DenialOutputMode::kLayeredBuild:
+        compositor_frame->set_paint_scope(RasterPaintScope::kUnclipped);
+        break;
+      case DenialOutputMode::kRecompose:
+        compositor_frame->set_paint_scope(RasterPaintScope::kNone);
+        break;
+    }
     RasterStatus frame_status =
         compositor_frame->Raster(layer_tree,           // layer tree
                                  ignore_raster_cache,  // ignore raster cache
@@ -1293,10 +1307,6 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     if (damage) {
       submit_info.frame_damage = damage->GetFrameDamage();
       submit_info.buffer_damage = damage->GetBufferDamage();
-    } else if (denial_layered) {
-      const DlRegion full(DlIRect::MakeSize(layer_tree.frame_size()));
-      submit_info.frame_damage = full;
-      submit_info.buffer_damage = full;
     }
 
     frame->set_submit_info(submit_info);
@@ -1304,9 +1314,14 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     if (external_view_embedder_ &&
         (!raster_thread_merger_ || raster_thread_merger_->IsMerged())) {
       FML_DCHECK(!frame->IsSubmitted());
-      external_view_embedder_->SubmitFlutterView(
-          view_id, surface_->GetContext(), surface_->GetAiksContext(),
-          std::move(frame));
+      if (denial_mode == DenialOutputMode::kRecompose) {
+        external_view_embedder_->DenialRecompose(
+            view_id, surface_->GetAiksContext(), std::move(frame));
+      } else {
+        external_view_embedder_->SubmitFlutterView(
+            view_id, surface_->GetContext(), surface_->GetAiksContext(),
+            std::move(frame));
+      }
     } else {
       frame->Submit();
     }

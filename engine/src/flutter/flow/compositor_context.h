@@ -59,6 +59,17 @@ enum class RasterDamagePolicy {
   kFullRepaint,
 };
 
+// What ScopedFrame::Raster paints after computing the frame damage.
+enum class RasterPaintScope {
+  // Preroll and Paint clipped to the repaint region.
+  kDamage,
+  // Preroll and Paint the whole tree. Denial layered builds record complete
+  // slices; the embedder clips their composition to the damage instead.
+  kUnclipped,
+  // Damage only: a Denial recomposition paints nothing from the tree.
+  kNone,
+};
+
 // Identifies the raster backend capabilities that affect damage planning.
 enum class RasterBackend {
   kSkiaGanesh,
@@ -182,6 +193,8 @@ class CompositorContext {
                                 RasterDamagePolicy damage_policy =
                                     RasterDamagePolicy::kUseDamageRegion);
 
+    void set_paint_scope(RasterPaintScope scope) { paint_scope_ = scope; }
+
    private:
     void PaintLayerTreeSkia(flutter::LayerTree& layer_tree,
                             const std::optional<DlRegion>& clip_region,
@@ -204,6 +217,7 @@ class CompositorContext {
     const bool instrumentation_enabled_;
     const bool surface_supports_readback_;
     fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger_;
+    RasterPaintScope paint_scope_ = RasterPaintScope::kDamage;
 
     FML_DISALLOW_COPY_AND_ASSIGN(ScopedFrame);
   };

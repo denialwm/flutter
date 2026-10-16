@@ -36,6 +36,8 @@ class GrDirectContext;
 
 namespace flutter {
 
+class BackdropFilterCacheState;
+
 enum class MutatorType {
   kClipRect,
   kClipRRect,
@@ -469,8 +471,27 @@ struct DenialCutEntry {
   DlRect bounds;
   DlBlendMode blend_mode = DlBlendMode::kSrcOver;
   std::optional<DlRect> content_clip;
+  // kWindowSurface and kMaterialBegin: the layer's backdrop snapshot cache.
+  // Its token is read when composing, so a texture-only recomposition sees
+  // the invalidations of that frame's damage pass. `backdrop_id` is the
+  // fallback when the layer prepared no cache state.
+  std::shared_ptr<BackdropFilterCacheState> backdrop_cache;
+  std::optional<int64_t> backdrop_id;
   // kMaterialEnd.
   int64_t begin_cut = -1;
+};
+
+// How a Denial output view is drawn this frame.
+enum class DenialOutputMode {
+  // Layers paint inline into the root slice, clipped to the frame damage.
+  kDirect,
+  // Layers register cuts; engine slices are recorded in full, re-rendered
+  // when changed, and composed with the cuts inside the frame damage.
+  kLayeredBuild,
+  // The layer tree is unchanged and only external textures are dirty: the
+  // entries retained by the last build are composed again inside the damage
+  // without Preroll or Paint.
+  kRecompose,
 };
 
 class ExternalViewEmbedder {
@@ -492,6 +513,24 @@ class ExternalViewEmbedder {
   virtual int64_t DenialRegisterCut(std::unique_ptr<EmbeddedViewParams> params,
                                     DenialCutEntry entry) {
     return -1;
+  }
+
+  // Chooses how a Denial output view draws `layer_tree` (an identity only,
+  // never dereferenced), after PrepareFlutterView. `texture_only` means the
+  // tree is the view's last one and only external textures changed.
+  virtual DenialOutputMode DenialBeginOutputFrame(int64_t flutter_view_id,
+                                                  const void* layer_tree,
+                                                  bool texture_only) {
+    return DenialOutputMode::kDirect;
+  }
+
+  // Composes the retained entries of a kRecompose frame inside the frame's
+  // buffer damage, presents and submits `frame`.
+  virtual void DenialRecompose(
+      int64_t flutter_view_id,
+      const std::shared_ptr<impeller::AiksContext>& aiks_context,
+      std::unique_ptr<SurfaceFrame> frame) {
+    frame->Submit();
   }
 
   ExternalViewEmbedder() = default;

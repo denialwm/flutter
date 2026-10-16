@@ -86,6 +86,9 @@ void WindowSurfaceLayer::Preroll(PrerollContext* context) {
     entry.window = material_;
     entry.window_bounds = style_.bounds;
     entry.content_bounds = style_.content_bounds;
+    if (cache_prepared_) {
+      entry.backdrop_cache = cache_;
+    }
     if (texture_id_ >= 0) {
       entry.kind = DenialCutEntry::Kind::kWindowSurface;
       entry.texture_id = texture_id_;

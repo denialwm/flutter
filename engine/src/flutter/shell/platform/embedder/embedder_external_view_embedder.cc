@@ -12,6 +12,8 @@
 #include <utility>
 
 #include "flutter/common/constants.h"
+#include "flutter/display_list/geometry/dl_path_builder.h"
+#include "flutter/flow/diff_context.h"
 #include "flutter/shell/platform/embedder/embedder_layers.h"
 #include "flutter/shell/platform/embedder/embedder_render_target.h"
 #include "third_party/skia/include/gpu/ganesh/GrDirectContext.h"
@@ -58,6 +60,12 @@ static bool DenialRenderAuditRequested() {
 // Cut identifiers never collide with Dart platform view identifiers.
 static constexpr int64_t kDenialCutBase = int64_t{1} << 40;
 
+// Texture-only frames of one tree that are drawn directly before a layered
+// build. A build records and renders every changed slice, which only pays off
+// once the tree has stopped changing; a shorter streak would build between
+// the frames of an animation.
+static constexpr uint32_t kDenialLayeredBuildStreak = 4;
+
 EmbedderExternalViewEmbedder::EmbedderExternalViewEmbedder(
     bool avoid_backing_store_cache,
     const CreateRenderTargetCallback& create_render_target_callback,
@@ -77,8 +85,38 @@ EmbedderExternalViewEmbedder::EmbedderExternalViewEmbedder(
 }
 
 bool EmbedderExternalViewEmbedder::DenialLayeredComposition() const {
-  return denial_layered_enabled_ &&
-         pending_flutter_view_id_ < kFlutterImplicitViewId;
+  return denial_output_mode_ == DenialOutputMode::kLayeredBuild;
+}
+
+DenialOutputMode EmbedderExternalViewEmbedder::DenialBeginOutputFrame(
+    int64_t flutter_view_id,
+    const void* layer_tree,
+    bool texture_only) {
+  denial_output_mode_ = DenialOutputMode::kDirect;
+  denial_frame_tree_ = layer_tree;
+  if (!denial_layered_enabled_ || flutter_view_id >= kFlutterImplicitViewId) {
+    return denial_output_mode_;
+  }
+  auto& view = denial_slices_[flutter_view_id];
+  view.texture_only_streak = texture_only ? view.texture_only_streak + 1 : 0;
+  if (!texture_only) {
+    view.unlayered_tree = nullptr;
+  }
+  if (texture_only && view.tree == layer_tree &&
+      view.frame_size == pending_frame_size_ &&
+      view.transformation == pending_surface_transformation_) {
+    denial_output_mode_ = DenialOutputMode::kRecompose;
+    return denial_output_mode_;
+  }
+  // Every other frame replaces the target's pixels without the entries, so
+  // they no longer describe it.
+  view.tree = nullptr;
+  view.entries.clear();
+  if (texture_only && layer_tree != view.unlayered_tree &&
+      view.texture_only_streak >= kDenialLayeredBuildStreak) {
+    denial_output_mode_ = DenialOutputMode::kLayeredBuild;
+  }
+  return denial_output_mode_;
 }
 
 int64_t EmbedderExternalViewEmbedder::DenialRegisterCut(
@@ -134,9 +172,12 @@ EmbedderExternalViewEmbedder::DenialLayeredAuditFrame(int64_t flutter_view_id) {
   FML_LOG(IMPORTANT)
       << "Denial layered composition audit view=" << flutter_view_id
       << " interval_ms=" << interval.ToMillisecondsF()
+      << " direct_frames=" << audit.direct_frames
       << " layered_frames=" << audit.layered_frames
+      << " recomposed_frames=" << audit.recomposed_frames
       << " single_slice_frames=" << audit.single_slice_frames
       << " failed_frames=" << audit.failed_frames
+      << " composed_pixels=" << audit.composed_pixels
       << " window_cuts=" << audit.window_cuts
       << " material_cuts=" << audit.material_cuts
       << " texture_cuts=" << audit.texture_cuts
@@ -157,7 +198,9 @@ EmbedderExternalViewEmbedder::DenialLayeredAuditFrame(int64_t flutter_view_id) {
       << " pooled_slice_pixels=" << pooled_pixels
       << " slice_render_total_us=" << audit.slice_render_time.ToMicrosecondsF()
       << " compose_total_us=" << audit.compose_time.ToMicrosecondsF()
-      << " compose_max_us=" << audit.compose_max.ToMicrosecondsF();
+      << " compose_max_us=" << audit.compose_max.ToMicrosecondsF()
+      << " recompose_total_us=" << audit.recompose_time.ToMicrosecondsF()
+      << " recompose_max_us=" << audit.recompose_max.ToMicrosecondsF();
   audit = DenialLayeredAudit{};
   audit.interval_start = now;
   return &audit;
@@ -227,6 +270,8 @@ void EmbedderExternalViewEmbedder::Reset() {
   composition_order_.clear();
   denial_cuts_.clear();
   denial_next_cut_ = 0;
+  denial_output_mode_ = DenialOutputMode::kDirect;
+  denial_frame_tree_ = nullptr;
 }
 
 // |ExternalViewEmbedder|
@@ -749,8 +794,16 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
       SubmitDenialLayered(flutter_view_id, aiks_context, std::move(frame));
       return;
     }
+    if (denial_output_mode_ == DenialOutputMode::kLayeredBuild) {
+      // Nothing to layer: draw this tree directly until it changes.
+      denial_slices_[flutter_view_id].unlayered_tree = denial_frame_tree_;
+    }
     if (auto* audit = DenialLayeredAuditFrame(flutter_view_id)) {
-      ++audit->single_slice_frames;
+      if (denial_output_mode_ == DenialOutputMode::kLayeredBuild) {
+        ++audit->single_slice_frames;
+      } else {
+        ++audit->direct_frames;
+      }
     }
     auto root = pending_views_.find(kRootViewIdentifier);
     FML_DCHECK(root != pending_views_.end());
@@ -1155,6 +1208,10 @@ void DenialComposeCut(DlCanvas& canvas,
   canvas.Save();
   DlPaint paint;
   DenialReplayMutators(canvas, params.mutatorsStack(), paint);
+  // Read now: a recomposition's damage pass may have invalidated the cache.
+  const std::optional<int64_t> backdrop_token =
+      entry.backdrop_cache ? std::make_optional(entry.backdrop_cache->token())
+                           : entry.backdrop_id;
   switch (entry.kind) {
     case DenialCutEntry::Kind::kWindowSurface: {
       auto texture =
@@ -1165,11 +1222,12 @@ void DenialComposeCut(DlCanvas& canvas,
                                   .aiks_context = aiks_context,
                                   .paint = &paint};
         texture->PaintWindow(ctx, entry.texture_bounds, entry.texture_transform,
-                             *entry.window, std::nullopt, entry.sampling,
+                             *entry.window, backdrop_token, entry.sampling,
                              entry.surface_opacity);
       } else {
         paint.setBlendMode(DlBlendMode::kSrc);
-        canvas.SaveLayer(entry.window_bounds, &paint, entry.window.get());
+        canvas.SaveLayer(entry.window_bounds, &paint, entry.window.get(),
+                         backdrop_token);
         canvas.Restore();
       }
       break;
@@ -1188,7 +1246,8 @@ void DenialComposeCut(DlCanvas& canvas,
     }
     case DenialCutEntry::Kind::kMaterialBegin: {
       paint.setBlendMode(entry.blend_mode);
-      canvas.SaveLayer(entry.bounds, &paint, entry.filter.get());
+      canvas.SaveLayer(entry.bounds, &paint, entry.filter.get(),
+                       backdrop_token);
       if (entry.content_clip.has_value()) {
         canvas.ClipRect(*entry.content_clip, DlClipOp::kIntersect, false);
       }
@@ -1237,30 +1296,32 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
   }
   bool composed = false;
 #ifdef IMPELLER_SUPPORTS_RENDERING
-  auto* impeller_target =
-      pending_denial_render_target_->GetImpellerRenderTarget();
-  if (impeller_target && aiks_context) {
+  if (pending_denial_render_target_->GetImpellerRenderTarget() &&
+      aiks_context) {
     auto& content_context = aiks_context->GetContentContext();
     const auto context = aiks_context->GetContext();
     auto& view_slices = denial_slices_[flutter_view_id];
     auto& slices = view_slices.slots;
+    auto& entries = view_slices.entries;
+    entries.clear();
     const DlIRect frame_rect = DlIRect::MakeSize(pending_frame_size_);
     const DlISize storage_limit(
         DenialRoundSliceExtent(pending_frame_size_.width),
         DenialRoundSliceExtent(pending_frame_size_.height));
-    DisplayListBuilder composition(DlRect::Make(frame_rect));
-    composition.Transform(pending_surface_transformation_);
+    // The repaint bounds describe the output's damage clip; slices render
+    // in full into their own targets.
+    const auto repaint_bounds = content_context.GetFrameRepaintBounds();
+    content_context.SetFrameRepaintBounds(std::nullopt);
     size_t slice_index = 0;
-    int open_materials = 0;
     composed = true;
     for (const auto& view_id : composition_order_) {
       auto& view = pending_views_[view_id];
       if (view_id.platform_view_id.has_value()) {
         auto cut = denial_cuts_.find(view_id.platform_view_id.value());
         if (cut != denial_cuts_.end() && view->GetEmbeddedViewParams()) {
-          DenialComposeCut(composition, *view->GetEmbeddedViewParams(),
-                           cut->second, aiks_context.get(),
-                           denial_texture_registry_.get(), open_materials);
+          entries.push_back({.slice = std::nullopt,
+                             .cut = std::move(cut->second),
+                             .params = *view->GetEmbeddedViewParams()});
         }
       }
       if (!view->HasEngineRenderedContents()) {
@@ -1273,7 +1334,9 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       if (slices.size() <= slice_index) {
         slices.resize(slice_index + 1);
       }
-      DenialSlice& slot = slices[slice_index++];
+      DenialSlice& slot = slices[slice_index];
+      entries.push_back({.slice = slice_index});
+      ++slice_index;
       const sk_sp<DisplayList>& display_list = view->GetDisplayList();
       const bool reuse = slot.storage.image && slot.display_list &&
                          slot.bounds == *bounds &&
@@ -1289,47 +1352,37 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
           ++audit->rendered_content;
         }
       }
-      if (!reuse) {
-        const fml::TimePoint render_start =
-            audit ? fml::TimePoint::Now() : fml::TimePoint();
-        const DlISize needed(DenialRoundSliceExtent(bounds->GetWidth()),
-                             DenialRoundSliceExtent(bounds->GetHeight()));
-        uint64_t allocations = 0;
-        uint64_t pool_reuses = 0;
-        // The slot's content is replaced either way; drop it first so a
-        // failure never leaves stale content marked reusable.
-        slot.display_list.reset();
-        if (!DenialPrepareSliceStorage(context, view_slices, slot.storage,
-                                       needed, storage_limit, allocations,
-                                       pool_reuses) ||
-            !DenialRenderSlice(content_context, context, slot.storage, *bounds,
-                               needed, display_list)) {
-          composed = false;
-          break;
-        }
-        if (audit) {
-          audit->slice_render_time =
-              audit->slice_render_time + (fml::TimePoint::Now() - render_start);
-          audit->rendered_pixels += DenialSliceArea(slot.storage.size);
-          audit->rendered_slice_pixels += DenialSliceArea(needed);
-          audit->slice_allocations += allocations;
-          audit->slice_pool_reuses += pool_reuses;
-        }
-        slot.display_list = display_list;
-        slot.bounds = *bounds;
+      if (reuse) {
+        continue;
       }
-      // Slices are recorded in the frame's top-left space. Inside an open
-      // material the replayed mutators are active, so return to the root
-      // transformation for the slice image.
-      composition.Save();
-      composition.TransformReset();
-      composition.Transform(pending_surface_transformation_);
-      composition.DrawImageRect(
-          slot.storage.image, DlRect::MakeSize(DlSize(bounds->GetSize())),
-          DlRect::Make(*bounds), DlImageSampling::kNearestNeighbor, nullptr,
-          DlSrcRectConstraint::kStrict);
-      composition.Restore();
+      const fml::TimePoint render_start =
+          audit ? fml::TimePoint::Now() : fml::TimePoint();
+      const DlISize needed(DenialRoundSliceExtent(bounds->GetWidth()),
+                           DenialRoundSliceExtent(bounds->GetHeight()));
+      uint64_t allocations = 0;
+      uint64_t pool_reuses = 0;
+      // The slot's content is replaced either way; drop it first so a
+      // failure never leaves stale content marked reusable.
+      slot.display_list.reset();
+      if (!DenialPrepareSliceStorage(context, view_slices, slot.storage, needed,
+                                     storage_limit, allocations, pool_reuses) ||
+          !DenialRenderSlice(content_context, context, slot.storage, *bounds,
+                             needed, display_list)) {
+        composed = false;
+        break;
+      }
+      if (audit) {
+        audit->slice_render_time =
+            audit->slice_render_time + (fml::TimePoint::Now() - render_start);
+        audit->rendered_pixels += DenialSliceArea(slot.storage.size);
+        audit->rendered_slice_pixels += DenialSliceArea(needed);
+        audit->slice_allocations += allocations;
+        audit->slice_pool_reuses += pool_reuses;
+      }
+      slot.display_list = display_list;
+      slot.bounds = *bounds;
     }
+    content_context.SetFrameRepaintBounds(repaint_bounds);
     if (composed) {
       // Slices beyond this frame's last give their storage to the pool.
       for (size_t i = slice_index; i < slices.size(); ++i) {
@@ -1342,19 +1395,15 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       audit->max_slices =
           std::max(audit->max_slices, static_cast<uint64_t>(slice_index));
     }
-    while (open_materials-- > 0) {
-      composition.Restore();
-      composition.Restore();
-    }
+    composed = composed &&
+               DenialComposeEntries(view_slices, aiks_context,
+                                    frame->submit_info().buffer_damage, audit);
     if (composed) {
-      auto color0 = impeller_target->GetColorAttachment(0u);
-      color0.load_action = impeller::LoadAction::kClear;
-      impeller_target->SetColorAttachment(color0, 0u);
-      composed = impeller::RenderToTarget(
-          content_context, *impeller_target, composition.Build(),
-          impeller::Rect::MakeSize(impeller_target->GetRenderTargetSize()),
-          /*reset_host_buffer=*/true,
-          /*is_onscreen=*/false);
+      view_slices.tree = denial_frame_tree_;
+      view_slices.frame_size = pending_frame_size_;
+      view_slices.transformation = pending_surface_transformation_;
+    } else {
+      entries.clear();
     }
   }
 #endif  // IMPELLER_SUPPORTS_RENDERING
@@ -1368,6 +1417,128 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       ++audit->failed_frames;
     }
   }
+  DenialPresentLayered(flutter_view_id, composed, std::move(frame));
+}
+
+void EmbedderExternalViewEmbedder::DenialRecompose(
+    int64_t flutter_view_id,
+    const std::shared_ptr<impeller::AiksContext>& aiks_context,
+    std::unique_ptr<SurfaceFrame> frame) {
+  DenialLayeredAudit* audit = DenialLayeredAuditFrame(flutter_view_id);
+  const fml::TimePoint start = audit ? fml::TimePoint::Now() : fml::TimePoint();
+  bool composed = false;
+  auto view = denial_slices_.find(flutter_view_id);
+#ifdef IMPELLER_SUPPORTS_RENDERING
+  if (view != denial_slices_.end() && pending_denial_render_target_) {
+    composed = DenialComposeEntries(view->second, aiks_context,
+                                    frame->submit_info().buffer_damage, audit);
+  }
+#endif  // IMPELLER_SUPPORTS_RENDERING
+  if (!composed && view != denial_slices_.end()) {
+    view->second.tree = nullptr;
+    view->second.entries.clear();
+  }
+  if (audit) {
+    ++audit->recomposed_frames;
+    const fml::TimeDelta elapsed = fml::TimePoint::Now() - start;
+    audit->recompose_time = audit->recompose_time + elapsed;
+    audit->recompose_max = std::max(audit->recompose_max, elapsed);
+    if (!composed) {
+      ++audit->failed_frames;
+    }
+  }
+  DenialPresentLayered(flutter_view_id, composed, std::move(frame));
+}
+
+bool EmbedderExternalViewEmbedder::DenialComposeEntries(
+    const DenialViewSlices& view,
+    const std::shared_ptr<impeller::AiksContext>& aiks_context,
+    const std::optional<DlRegion>& buffer_damage,
+    DenialLayeredAudit* audit) {
+#ifdef IMPELLER_SUPPORTS_RENDERING
+  auto* impeller_target =
+      pending_denial_render_target_->GetImpellerRenderTarget();
+  if (!impeller_target || !aiks_context) {
+    return false;
+  }
+  const DlIRect frame_rect = DlIRect::MakeSize(pending_frame_size_);
+  const bool full_repaint =
+      !buffer_damage.has_value() ||
+      (buffer_damage->isSimple() && !buffer_damage->isEmpty() &&
+       buffer_damage->bounds() == frame_rect);
+  if (!full_repaint && buffer_damage->isEmpty()) {
+    // The target already holds this frame.
+    return true;
+  }
+  if (audit) {
+    if (full_repaint) {
+      audit->composed_pixels += DenialSliceArea(pending_frame_size_);
+    } else {
+      for (const DlIRect& rect : buffer_damage->getRects()) {
+        audit->composed_pixels += DenialSliceArea(rect.GetSize());
+      }
+    }
+  }
+  DisplayListBuilder composition(DlRect::Make(frame_rect));
+  composition.Transform(pending_surface_transformation_);
+  if (!full_repaint) {
+    // As the direct path's partial repaint: keep the target outside the
+    // damage and clear the repaired pixels themselves.
+    const std::vector<DlIRect> rects = buffer_damage->getRects();
+    if (rects.size() == 1u) {
+      composition.ClipRect(DlRect::Make(rects.front()), DlClipOp::kIntersect,
+                           false);
+    } else {
+      DlPathBuilder path;
+      for (const DlIRect& rect : rects) {
+        path.AddRect(DlRect::Make(rect));
+      }
+      composition.ClipPath(path.TakePath(), DlClipOp::kIntersect, false);
+    }
+    composition.Clear(DlColor::kTransparent());
+  }
+  int open_materials = 0;
+  for (const auto& entry : view.entries) {
+    if (!entry.slice.has_value()) {
+      DenialComposeCut(composition, entry.params, entry.cut, aiks_context.get(),
+                       denial_texture_registry_.get(), open_materials);
+      continue;
+    }
+    const DenialSlice& slot = view.slots[entry.slice.value()];
+    // Slices are recorded in the frame's top-left space. Inside an open
+    // material the replayed mutators are active, so return to the root
+    // transformation for the slice image.
+    composition.Save();
+    composition.TransformReset();
+    composition.Transform(pending_surface_transformation_);
+    composition.DrawImageRect(
+        slot.storage.image, DlRect::MakeSize(DlSize(slot.bounds.GetSize())),
+        DlRect::Make(slot.bounds), DlImageSampling::kNearestNeighbor, nullptr,
+        DlSrcRectConstraint::kStrict);
+    composition.Restore();
+  }
+  while (open_materials-- > 0) {
+    composition.Restore();
+    composition.Restore();
+  }
+  auto color0 = impeller_target->GetColorAttachment(0u);
+  color0.load_action =
+      full_repaint ? impeller::LoadAction::kClear : impeller::LoadAction::kLoad;
+  impeller_target->SetColorAttachment(color0, 0u);
+  return impeller::RenderToTarget(
+      aiks_context->GetContentContext(), *impeller_target, composition.Build(),
+      impeller::Rect::MakeSize(impeller_target->GetRenderTargetSize()),
+      /*reset_host_buffer=*/true,
+      /*is_onscreen=*/false);
+#else
+  return false;
+#endif  // IMPELLER_SUPPORTS_RENDERING
+}
+
+void EmbedderExternalViewEmbedder::DenialPresentLayered(
+    int64_t flutter_view_id,
+    bool composed,
+    std::unique_ptr<SurfaceFrame> frame) {
   if (!composed) {
     FML_LOG(ERROR) << "Denial layered composition failed; frame skipped";
     pending_denial_render_target_.reset();

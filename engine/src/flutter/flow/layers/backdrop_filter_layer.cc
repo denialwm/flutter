@@ -83,6 +83,10 @@ void BackdropFilterLayer::Preroll(PrerollContext* context) {
     entry.filter = filter_;
     entry.bounds = bounds;
     entry.blend_mode = blend_mode_;
+    if (backdrop_cache_prepared_) {
+      entry.backdrop_cache = backdrop_cache_state_;
+    }
+    entry.backdrop_id = backdrop_id_;
     denial_cut_ = context->view_embedder->DenialRegisterCut(
         std::make_unique<EmbeddedViewParams>(context->state_stack.matrix(),
                                              bounds.GetSize(), mutators),

@@ -102,6 +102,17 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   bool DenialLayeredComposition() const override;
   int64_t DenialRegisterCut(std::unique_ptr<EmbeddedViewParams> params,
                             DenialCutEntry entry) override;
+  // Only texture-only frames are layered: once a view has drawn the same tree
+  // for kDenialLayeredBuildStreak texture-only frames, one layered build
+  // retains its entries, and the following texture-only frames recompose
+  // them. Any other frame draws directly and drops the retained entries.
+  DenialOutputMode DenialBeginOutputFrame(int64_t flutter_view_id,
+                                          const void* layer_tree,
+                                          bool texture_only) override;
+  void DenialRecompose(
+      int64_t flutter_view_id,
+      const std::shared_ptr<impeller::AiksContext>& aiks_context,
+      std::unique_ptr<SurfaceFrame> frame) override;
 
   // GPU storage of one slice: the sampled color texture and its MSAA and
   // depth/stencil attachments, all of `size`. A slice renders into the
@@ -122,11 +133,29 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
     DenialSliceStorage storage;
   };
 
+  // One entry of a layered build, in paint order: an engine slice (an index
+  // into the view's slots) or a cut with its mutators.
+  struct DenialComposedEntry {
+    std::optional<size_t> slice;
+    DenialCutEntry cut;
+    EmbeddedViewParams params;
+  };
+
   // The slices of one output view, in entry order, and the storage of slices
   // that disappeared or outgrew it, kept for the next slice that fits.
+  // `entries` are the last layered build's, valid for recomposing `tree` at
+  // `frame_size` and `transformation` while `tree` is set.
   struct DenialViewSlices {
     std::vector<DenialSlice> slots;
     std::vector<DenialSliceStorage> pool;
+    std::vector<DenialComposedEntry> entries;
+    const void* tree = nullptr;
+    DlISize frame_size;
+    DlMatrix transformation;
+    // Consecutive texture-only frames, and a tree whose build registered no
+    // cuts, which then stays direct.
+    uint32_t texture_only_streak = 0;
+    const void* unlayered_tree = nullptr;
   };
 
   void SetExistingDamageCallback(
@@ -182,6 +211,8 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   std::unique_ptr<EmbedderRenderTarget> pending_denial_render_target_;
   const bool denial_layered_enabled_;
   int64_t pending_flutter_view_id_ = kFlutterImplicitViewId;
+  DenialOutputMode denial_output_mode_ = DenialOutputMode::kDirect;
+  const void* denial_frame_tree_ = nullptr;
   int64_t denial_next_cut_ = 0;
   std::unordered_map<int64_t, DenialCutEntry> denial_cuts_;
   std::unordered_map<int64_t, DenialViewSlices> denial_slices_;
@@ -192,9 +223,15 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   // "Flutter per-output render audit".
   struct DenialLayeredAudit {
     fml::TimePoint interval_start;
+    // Frames by mode: drawn directly, layered builds, recompositions; and
+    // builds whose tree registered no cuts.
+    uint64_t direct_frames = 0;
     uint64_t layered_frames = 0;
+    uint64_t recomposed_frames = 0;
     uint64_t single_slice_frames = 0;
     uint64_t failed_frames = 0;
+    // Output pixels composed: the buffer damage of layered frames.
+    uint64_t composed_pixels = 0;
     // Cuts by kind; material ends are not counted.
     uint64_t window_cuts = 0;
     uint64_t material_cuts = 0;
@@ -219,6 +256,8 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
     fml::TimeDelta slice_render_time;
     fml::TimeDelta compose_time;
     fml::TimeDelta compose_max;
+    fml::TimeDelta recompose_time;
+    fml::TimeDelta recompose_max;
   };
   const bool denial_layered_audit_enabled_;
   std::unordered_map<int64_t, DenialLayeredAudit> denial_layered_audits_;
@@ -231,6 +270,18 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
       int64_t flutter_view_id,
       const std::shared_ptr<impeller::AiksContext>& aiks_context,
       std::unique_ptr<SurfaceFrame> frame);
+  // Composes `view`'s entries onto the pending output target inside
+  // `buffer_damage`, keeping the target's pixels outside it.
+  bool DenialComposeEntries(
+      const DenialViewSlices& view,
+      const std::shared_ptr<impeller::AiksContext>& aiks_context,
+      const std::optional<DlRegion>& buffer_damage,
+      DenialLayeredAudit* audit);
+  // Presents the pending output target, or skips the frame when it was not
+  // composed, then submits `frame`.
+  void DenialPresentLayered(int64_t flutter_view_id,
+                            bool composed,
+                            std::unique_ptr<SurfaceFrame> frame);
   DlISize pending_frame_size_;
   double pending_device_pixel_ratio_ = 1.0;
   DlMatrix pending_surface_transformation_;
