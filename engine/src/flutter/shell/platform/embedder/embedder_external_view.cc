@@ -69,6 +69,11 @@ const DlRegion& EmbedderExternalView::GetDlRegion() const {
   return slice_->getRegion();
 }
 
+const sk_sp<DisplayList>& EmbedderExternalView::GetDisplayList() const {
+  TryEndRecording();
+  return slice_->display_list();
+}
+
 bool EmbedderExternalView::HasEngineRenderedContents() {
   if (has_engine_rendered_contents_.has_value()) {
     return has_engine_rendered_contents_.value();

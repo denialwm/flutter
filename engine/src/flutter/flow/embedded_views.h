@@ -13,7 +13,9 @@
 
 #include "display_list/geometry/dl_geometry_types.h"
 #include "display_list/geometry/dl_path.h"
+#include "flutter/common/graphics/texture.h"
 #include "flutter/display_list/dl_builder.h"
+#include "flutter/display_list/effects/image_filters/dl_window_surface_filter.h"
 #include "flutter/display_list/geometry/dl_geometry_conversions.h"
 #include "flutter/display_list/geometry/dl_region.h"
 #include "flutter/flow/surface_frame.h"
@@ -398,6 +400,9 @@ class DisplayListEmbedderViewSlice : public EmbedderViewSlice {
   void dispatch(DlOpReceiver& receiver);
   bool is_empty();
   bool recording_ended();
+  // Denial layered composition retains slice textures across frames by
+  // comparing the recorded display lists. Valid after end_recording().
+  const sk_sp<DisplayList>& display_list() const { return display_list_; }
 
  private:
   std::unique_ptr<DisplayListBuilder> builder_;
@@ -431,6 +436,43 @@ class DisplayListEmbedderViewSlice : public EmbedderViewSlice {
 //   2. For each view to be drawn, call |PrepareFlutterView|, then
 //   |SubmitFlutterView|.
 //   3. At the end of a frame, if |GetUsedThisFrame| is true, call |EndFrame|.
+// A Denial composition cut. In layered composition the flow layers that read
+// the scene below them (window surfaces, backdrop filters) or that scan out
+// external textures do not paint inline. They end the current engine-rendered
+// slice, register one of these entries, and continue painting into the next
+// slice. The embedder later composes slices and cut entries in paint order.
+struct DenialCutEntry {
+  enum class Kind {
+    // A client window: material, frame, rounded edges and client texture.
+    kWindowSurface,
+    // Opens a backdrop save layer; the following slice is its content.
+    kMaterialBegin,
+    // Closes the save layer opened by `begin_cut`.
+    kMaterialEnd,
+    // An external texture drawn without window treatment.
+    kTexture,
+  };
+  Kind kind = Kind::kTexture;
+  // kWindowSurface and kMaterialBegin (window child mode).
+  std::shared_ptr<const DlWindowSurfaceFilter> window;
+  DlRect window_bounds;
+  DlRect content_bounds;
+  // kWindowSurface and kTexture.
+  int64_t texture_id = -1;
+  DlRect texture_bounds;
+  DlMatrix texture_transform;
+  DlImageSampling sampling = DlImageSampling::kLinear;
+  DlScalar surface_opacity = 1;
+  bool freeze = false;
+  // kMaterialBegin.
+  std::shared_ptr<DlImageFilter> filter;
+  DlRect bounds;
+  DlBlendMode blend_mode = DlBlendMode::kSrcOver;
+  std::optional<DlRect> content_clip;
+  // kMaterialEnd.
+  int64_t begin_cut = -1;
+};
+
 class ExternalViewEmbedder {
   // TODO(cyanglaz): Make embedder own the `EmbeddedViewParams`.
 
@@ -440,6 +482,17 @@ class ExternalViewEmbedder {
     // An empty region means that it already represents the current scene.
     std::optional<DlRegion> existing_damage;
   };
+
+  // True while the view being prerolled or painted composes Denial cuts
+  // through the embedder instead of painting them inline.
+  virtual bool DenialLayeredComposition() const { return false; }
+
+  // Registers a cut during Preroll, in paint order. Returns the identifier
+  // that Paint passes to CompositeEmbeddedView to start the next slice.
+  virtual int64_t DenialRegisterCut(std::unique_ptr<EmbeddedViewParams> params,
+                                    DenialCutEntry entry) {
+    return -1;
+  }
 
   ExternalViewEmbedder() = default;
 
@@ -513,7 +566,8 @@ class ExternalViewEmbedder {
   virtual std::optional<PreparedRenderTarget> PrepareDenialRenderTarget(
       int64_t flutter_view_id,
       GrDirectContext* context,
-      const std::shared_ptr<impeller::AiksContext>& aiks_context) {
+      const std::shared_ptr<impeller::AiksContext>& aiks_context,
+      const std::shared_ptr<TextureRegistry>& texture_registry) {
     return std::nullopt;
   }
 

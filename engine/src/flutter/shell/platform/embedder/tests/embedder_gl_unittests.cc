@@ -154,7 +154,8 @@ TEST(EmbedderExternalViewEmbedderTest,
   });
 
   EmbedderExternalViewEmbedderTestPeer::Prepare(embedder, -1, size);
-  auto prepared = embedder.PrepareDenialRenderTarget(-1, nullptr, nullptr);
+  auto prepared =
+      embedder.PrepareDenialRenderTarget(-1, nullptr, nullptr, nullptr);
 
   ASSERT_TRUE(prepared.has_value());
   ASSERT_TRUE(prepared->existing_damage.has_value());

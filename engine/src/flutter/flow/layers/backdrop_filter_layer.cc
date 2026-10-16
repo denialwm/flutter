@@ -68,6 +68,40 @@ void BackdropFilterLayer::Diff(DiffContext* context, const Layer* old_layer) {
 }
 
 void BackdropFilterLayer::Preroll(PrerollContext* context) {
+  denial_cut_ = -1;
+  denial_end_cut_ = -1;
+  if (filter_ && context->view_embedder &&
+      context->view_embedder->DenialLayeredComposition()) {
+    // The filter reads the composed scene below it. Open the material as a
+    // cut, record the children in their own slice, and close it after them.
+    context->has_texture_layer = true;
+    const DlRect bounds = context->state_stack.local_cull_rect();
+    MutatorsStack mutators;
+    context->state_stack.fill(&mutators);
+    DenialCutEntry entry;
+    entry.kind = DenialCutEntry::Kind::kMaterialBegin;
+    entry.filter = filter_;
+    entry.bounds = bounds;
+    entry.blend_mode = blend_mode_;
+    denial_cut_ = context->view_embedder->DenialRegisterCut(
+        std::make_unique<EmbeddedViewParams>(context->state_stack.matrix(),
+                                             bounds.GetSize(), mutators),
+        std::move(entry));
+    DlRect child_paint_bounds;
+    PrerollChildren(context, &child_paint_bounds);
+    DenialCutEntry end;
+    end.kind = DenialCutEntry::Kind::kMaterialEnd;
+    end.begin_cut = denial_cut_;
+    MutatorsStack end_mutators;
+    context->state_stack.fill(&end_mutators);
+    denial_end_cut_ = context->view_embedder->DenialRegisterCut(
+        std::make_unique<EmbeddedViewParams>(context->state_stack.matrix(),
+                                             bounds.GetSize(), end_mutators),
+        std::move(end));
+    set_paint_bounds(child_paint_bounds.Union(bounds));
+    context->renderable_state_flags = LayerStateStack::kCallerCanApplyOpacity;
+    return;
+  }
   Layer::AutoPrerollSaveLayerState save =
       Layer::AutoPrerollSaveLayerState::Create(context, true, bool{filter_});
   if (filter_ && context->view_embedder != nullptr) {
@@ -84,6 +118,17 @@ void BackdropFilterLayer::Preroll(PrerollContext* context) {
 
 void BackdropFilterLayer::Paint(PaintContext& context) const {
   FML_DCHECK(needs_painting(context));
+  if (denial_cut_ >= 0 && context.view_embedder) {
+    DlCanvas* canvas =
+        context.view_embedder->CompositeEmbeddedView(denial_cut_);
+    context.canvas = canvas;
+    context.state_stack.set_delegate(canvas);
+    PaintChildren(context);
+    canvas = context.view_embedder->CompositeEmbeddedView(denial_end_cut_);
+    context.canvas = canvas;
+    context.state_stack.set_delegate(canvas);
+    return;
+  }
 
   auto mutator = context.state_stack.save();
   mutator.applyBackdropFilter(

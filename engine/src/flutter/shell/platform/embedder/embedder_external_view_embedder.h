@@ -10,6 +10,7 @@
 #include <optional>
 #include <unordered_map>
 
+#include "flutter/common/constants.h"
 #include "flutter/flow/embedded_views.h"
 #include "flutter/fml/hash_combine.h"
 #include "flutter/fml/macros.h"
@@ -89,7 +90,28 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   std::optional<PreparedRenderTarget> PrepareDenialRenderTarget(
       int64_t flutter_view_id,
       GrDirectContext* context,
-      const std::shared_ptr<impeller::AiksContext>& aiks_context) override;
+      const std::shared_ptr<impeller::AiksContext>& aiks_context,
+      const std::shared_ptr<TextureRegistry>& texture_registry) override;
+
+  // Denial layered composition (docs/LAYERED_COMPOSITION.md in Denial).
+  // Enabled by DENIAL_LAYERED_COMPOSITION=1 for Denial output views: cuts
+  // registered during Preroll split the frame into engine-rendered slices
+  // that are retained as textures while their display lists are unchanged.
+  // The scanout target then receives one composition of slices and cuts.
+  bool DenialLayeredComposition() const override;
+  int64_t DenialRegisterCut(std::unique_ptr<EmbeddedViewParams> params,
+                            DenialCutEntry entry) override;
+
+  // One retained engine-rendered slice of a Denial output view.
+  struct DenialSlice {
+    sk_sp<DisplayList> display_list;
+    DlIRect bounds;
+    DlISize texture_size;
+    std::shared_ptr<impeller::Texture> texture;
+    std::shared_ptr<impeller::Texture> msaa;
+    std::shared_ptr<impeller::Texture> depth_stencil;
+    sk_sp<DlImage> image;
+  };
 
   void SetExistingDamageCallback(
       ExistingDamageCallback existing_damage_callback);
@@ -142,6 +164,16 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   ExistingDamageCallback existing_damage_callback_;
   SurfaceTransformationCallback surface_transformation_callback_;
   std::unique_ptr<EmbedderRenderTarget> pending_denial_render_target_;
+  const bool denial_layered_enabled_;
+  int64_t pending_flutter_view_id_ = kFlutterImplicitViewId;
+  int64_t denial_next_cut_ = 0;
+  std::unordered_map<int64_t, DenialCutEntry> denial_cuts_;
+  std::unordered_map<int64_t, std::vector<DenialSlice>> denial_slices_;
+  std::shared_ptr<TextureRegistry> denial_texture_registry_;
+  void SubmitDenialLayered(
+      int64_t flutter_view_id,
+      const std::shared_ptr<impeller::AiksContext>& aiks_context,
+      std::unique_ptr<SurfaceFrame> frame);
   DlISize pending_frame_size_;
   double pending_device_pixel_ratio_ = 1.0;
   DlMatrix pending_surface_transformation_;

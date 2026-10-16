@@ -34,6 +34,8 @@ class TextureLayer : public Layer {
   int64_t texture_id_;
   bool freeze_;
   DlImageSampling sampling_;
+  // Denial layered composition cut.
+  int64_t denial_cut_ = -1;
 
   FML_DISALLOW_COPY_AND_ASSIGN(TextureLayer);
 };

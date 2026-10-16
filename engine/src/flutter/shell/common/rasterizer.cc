@@ -1204,12 +1204,18 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
       return DrawSurfaceStatus::kFailed;
     }
     auto prepared_target = external_view_embedder_->PrepareDenialRenderTarget(
-        view_id, surface_->GetContext(), surface_->GetAiksContext());
+        view_id, surface_->GetContext(), surface_->GetAiksContext(),
+        compositor_context_->texture_registry());
     if (!prepared_target.has_value()) {
       return DrawSurfaceStatus::kFailed;
     }
     denial_existing_damage = std::move(prepared_target->existing_damage);
   }
+  // Layered composition retains engine-rendered slices by comparing complete
+  // display lists, so every slice must be recorded in full: no diffing and
+  // no damage clip. The composition covers the whole target.
+  const bool denial_layered =
+      denial_output_task && external_view_embedder_->DenialLayeredComposition();
 
   // If the external view embedder has specified an optional root surface, the
   // root surface transformation is set by the embedder instead of
@@ -1237,8 +1243,9 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     RasterDamagePolicy damage_policy = RasterDamagePolicy::kFullRepaint;
     // when leaf layer tracing is enabled we wish to repaint the whole frame
     // for accurate performance metrics.
-    if (denial_output_task ||
-        frame->framebuffer_info().supports_partial_repaint) {
+    if (!denial_layered &&
+        (denial_output_task ||
+         frame->framebuffer_info().supports_partial_repaint)) {
       // Disable partial repaint if external_view_embedder_ SubmitFlutterView is
       // involved - ExternalViewEmbedder unconditionally clears the entire
       // surface and also partial repaint with platform view present is
@@ -1286,6 +1293,10 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     if (damage) {
       submit_info.frame_damage = damage->GetFrameDamage();
       submit_info.buffer_damage = damage->GetBufferDamage();
+    } else if (denial_layered) {
+      const DlRegion full(DlIRect::MakeSize(layer_tree.frame_size()));
+      submit_info.frame_damage = full;
+      submit_info.buffer_damage = full;
     }
 
     frame->set_submit_info(submit_info);

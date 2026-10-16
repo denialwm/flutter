@@ -110,6 +110,9 @@ class EmbedderExternalView {
 
   const DlRegion& GetDlRegion() const;
 
+  // The recorded slice, for Denial layered composition retention.
+  const sk_sp<DisplayList>& GetDisplayList() const;
+
  private:
   // End the recording of the slice.
   // Noop if the slice's recording has already ended.

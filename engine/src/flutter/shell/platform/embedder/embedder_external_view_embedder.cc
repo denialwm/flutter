@@ -5,6 +5,7 @@
 #include "flutter/shell/platform/embedder/embedder_external_view_embedder.h"
 
 #include <cassert>
+#include <cstdlib>
 #include <utility>
 
 #include "flutter/common/constants.h"
@@ -13,12 +14,24 @@
 #include "third_party/skia/include/gpu/ganesh/GrDirectContext.h"
 
 #ifdef IMPELLER_SUPPORTS_RENDERING
-#include "impeller/display_list/dl_dispatcher.h"  // nogncheck
-#endif                                            // IMPELLER_SUPPORTS_RENDERING
+#include "impeller/core/texture_descriptor.h"         // nogncheck
+#include "impeller/display_list/dl_dispatcher.h"      // nogncheck
+#include "impeller/display_list/dl_image_impeller.h"  // nogncheck
+#include "impeller/renderer/capabilities.h"           // nogncheck
+#include "impeller/renderer/render_target.h"          // nogncheck
+#endif  // IMPELLER_SUPPORTS_RENDERING
 
 namespace flutter {
 
 static const auto kRootViewIdentifier = EmbedderExternalView::ViewIdentifier{};
+
+static bool DenialLayeredCompositionRequested() {
+  const char* value = std::getenv("DENIAL_LAYERED_COMPOSITION");
+  return value != nullptr && value[0] == '1' && value[1] == '\0';
+}
+
+// Cut identifiers never collide with Dart platform view identifiers.
+static constexpr int64_t kDenialCutBase = int64_t{1} << 40;
 
 EmbedderExternalViewEmbedder::EmbedderExternalViewEmbedder(
     bool avoid_backing_store_cache,
@@ -26,15 +39,34 @@ EmbedderExternalViewEmbedder::EmbedderExternalViewEmbedder(
     const PresentCallback& present_callback)
     : avoid_backing_store_cache_(avoid_backing_store_cache),
       create_render_target_callback_(create_render_target_callback),
-      present_callback_(present_callback) {
+      present_callback_(present_callback),
+      denial_layered_enabled_(DenialLayeredCompositionRequested()) {
+  if (denial_layered_enabled_) {
+    FML_LOG(IMPORTANT) << "Denial layered composition enabled for output views";
+  }
   FML_DCHECK(create_render_target_callback_);
   FML_DCHECK(present_callback_);
+}
+
+bool EmbedderExternalViewEmbedder::DenialLayeredComposition() const {
+  return denial_layered_enabled_ &&
+         pending_flutter_view_id_ < kFlutterImplicitViewId;
+}
+
+int64_t EmbedderExternalViewEmbedder::DenialRegisterCut(
+    std::unique_ptr<EmbeddedViewParams> params,
+    DenialCutEntry entry) {
+  const int64_t cut_id = kDenialCutBase + denial_next_cut_++;
+  PrerollCompositeEmbeddedView(cut_id, std::move(params));
+  denial_cuts_.emplace(cut_id, std::move(entry));
+  return cut_id;
 }
 
 EmbedderExternalViewEmbedder::~EmbedderExternalViewEmbedder() = default;
 
 void EmbedderExternalViewEmbedder::CollectView(int64_t view_id) {
   render_target_caches_.erase(view_id);
+  denial_slices_.erase(view_id);
 }
 
 void EmbedderExternalViewEmbedder::SetSurfaceTransformationCallback(
@@ -51,9 +83,11 @@ std::optional<ExternalViewEmbedder::PreparedRenderTarget>
 EmbedderExternalViewEmbedder::PrepareDenialRenderTarget(
     int64_t flutter_view_id,
     GrDirectContext* context,
-    const std::shared_ptr<impeller::AiksContext>& aiks_context) {
+    const std::shared_ptr<impeller::AiksContext>& aiks_context,
+    const std::shared_ptr<TextureRegistry>& texture_registry) {
   FML_DCHECK(flutter_view_id < kFlutterImplicitViewId);
   FML_DCHECK(!pending_denial_render_target_);
+  denial_texture_registry_ = texture_registry;
 
   FlutterBackingStoreConfig config = {};
   config.struct_size = sizeof(config);
@@ -89,6 +123,8 @@ void EmbedderExternalViewEmbedder::Reset() {
   pending_denial_render_target_.reset();
   pending_views_.clear();
   composition_order_.clear();
+  denial_cuts_.clear();
+  denial_next_cut_ = 0;
 }
 
 // |ExternalViewEmbedder|
@@ -115,6 +151,7 @@ void EmbedderExternalViewEmbedder::PrepareFlutterView(
     double device_pixel_ratio) {
   Reset();
 
+  pending_flutter_view_id_ = flutter_view_id;
   pending_frame_size_ = frame_size;
   pending_device_pixel_ratio_ = device_pixel_ratio;
   if (flutter_view_id < kFlutterImplicitViewId) {
@@ -605,7 +642,11 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
     std::unique_ptr<SurfaceFrame> frame) {
   if (flutter_view_id < kFlutterImplicitViewId &&
       pending_denial_render_target_) {
-    FML_DCHECK(composition_order_.size() == 1u);
+    if (composition_order_.size() > 1u) {
+      // Cuts were registered: compose slices and cuts onto the scanout target.
+      SubmitDenialLayered(flutter_view_id, aiks_context, std::move(frame));
+      return;
+    }
     auto root = pending_views_.find(kRootViewIdentifier);
     FML_DCHECK(root != pending_views_.end());
 
@@ -741,6 +782,335 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
     }
   }
 
+  frame->Submit();
+}
+
+// Denial layered composition ------------------------------------------------
+
+namespace {
+
+// Replays a cut's accumulated transforms, clips and opacity onto the
+// composition canvas, exactly as the state stack would have applied them to
+// the inline paint. Opacity is folded into the entry's paint.
+void DenialReplayMutators(DlCanvas& canvas,
+                          const MutatorsStack& mutators,
+                          DlPaint& paint) {
+  for (auto it = mutators.Begin(); it != mutators.End(); ++it) {
+    const auto& mutator = *it;
+    switch (mutator->GetType()) {
+      case MutatorType::kClipRect:
+        canvas.ClipRect(mutator->GetRect(), DlClipOp::kIntersect, false);
+        break;
+      case MutatorType::kClipRRect:
+        canvas.ClipRoundRect(mutator->GetRRect(), DlClipOp::kIntersect, true);
+        break;
+      case MutatorType::kClipRSE:
+        canvas.ClipRoundSuperellipse(mutator->GetRSE(), DlClipOp::kIntersect,
+                                     true);
+        break;
+      case MutatorType::kClipPath:
+        canvas.ClipPath(mutator->GetPath(), DlClipOp::kIntersect, true);
+        break;
+      case MutatorType::kTransform:
+        canvas.Transform(mutator->GetMatrix());
+        break;
+      case MutatorType::kOpacity:
+        paint.setOpacity(paint.getOpacity() * mutator->GetAlphaFloat());
+        break;
+      case MutatorType::kBackdropFilter:
+      case MutatorType::kBackdropClipRect:
+      case MutatorType::kBackdropClipRRect:
+      case MutatorType::kBackdropClipRSuperellipse:
+      case MutatorType::kBackdropClipPath:
+        break;
+    }
+  }
+}
+
+// Slice textures are rounded up so small layout jitter reuses allocations.
+constexpr int32_t kDenialSliceGranularity = 64;
+
+int32_t DenialRoundSliceExtent(int32_t extent) {
+  const int32_t rounded =
+      (extent + kDenialSliceGranularity - 1) / kDenialSliceGranularity;
+  return std::max(rounded, 1) * kDenialSliceGranularity;
+}
+
+#ifdef IMPELLER_SUPPORTS_RENDERING
+bool DenialRenderSlice(impeller::ContentContext& content_context,
+                       const std::shared_ptr<impeller::Context>& context,
+                       EmbedderExternalViewEmbedder::DenialSlice& slot,
+                       const DlIRect& bounds,
+                       const sk_sp<DisplayList>& display_list) {
+  const DlISize size(DenialRoundSliceExtent(bounds.GetWidth()),
+                     DenialRoundSliceExtent(bounds.GetHeight()));
+  const impeller::ISize texture_size(size.width, size.height);
+  if (!slot.image || slot.texture_size != size) {
+    impeller::TextureDescriptor descriptor;
+    descriptor.storage_mode = impeller::StorageMode::kDevicePrivate;
+    descriptor.type = impeller::TextureType::kTexture2D;
+    descriptor.format = context->GetCapabilities()->GetDefaultColorFormat();
+    descriptor.size = texture_size;
+    descriptor.mip_count = 1u;
+    descriptor.usage = impeller::TextureUsage::kRenderTarget |
+                       impeller::TextureUsage::kShaderRead;
+    auto texture = context->GetResourceAllocator()->CreateTexture(descriptor);
+    if (!texture) {
+      FML_LOG(ERROR) << "Denial slice texture allocation failed";
+      return false;
+    }
+    texture->SetLabel("Denial slice");
+    slot.image = impeller::DlImageImpeller::Make(
+        texture, DlImage::OwningContext::kRaster);
+    slot.texture = std::move(texture);
+    slot.texture_size = size;
+    slot.msaa.reset();
+    slot.depth_stencil.reset();
+  }
+  // The content context's render target cache ignores existing textures and
+  // hands out pooled ones, so slice targets are built directly on the
+  // allocator around the retained slice texture.
+  const bool msaa = context->GetCapabilities()->SupportsOffscreenMSAA();
+  if (!slot.depth_stencil) {
+    impeller::TextureDescriptor descriptor;
+    descriptor.storage_mode = impeller::StorageMode::kDeviceTransient;
+    descriptor.type = msaa ? impeller::TextureType::kTexture2DMultisample
+                           : impeller::TextureType::kTexture2D;
+    descriptor.sample_count =
+        msaa ? impeller::SampleCount::kCount4 : impeller::SampleCount::kCount1;
+    descriptor.format =
+        context->GetCapabilities()->GetDefaultDepthStencilFormat();
+    descriptor.size = texture_size;
+    descriptor.usage = impeller::TextureUsage::kRenderTarget;
+    slot.depth_stencil =
+        context->GetResourceAllocator()->CreateTexture(descriptor);
+    if (!slot.depth_stencil) {
+      FML_LOG(ERROR) << "Denial slice depth/stencil allocation failed";
+      return false;
+    }
+    slot.depth_stencil->SetLabel("Denial slice depth/stencil");
+  }
+  if (msaa && !slot.msaa) {
+    impeller::TextureDescriptor descriptor;
+    descriptor.storage_mode = impeller::StorageMode::kDeviceTransient;
+    descriptor.type = impeller::TextureType::kTexture2DMultisample;
+    descriptor.sample_count = impeller::SampleCount::kCount4;
+    descriptor.format = context->GetCapabilities()->GetDefaultColorFormat();
+    descriptor.size = texture_size;
+    descriptor.usage = impeller::TextureUsage::kRenderTarget;
+    slot.msaa = context->GetResourceAllocator()->CreateTexture(descriptor);
+    if (!slot.msaa) {
+      FML_LOG(ERROR) << "Denial slice MSAA allocation failed";
+      return false;
+    }
+    slot.msaa->SetLabel("Denial slice MSAA");
+  }
+  impeller::RenderTargetAllocator allocator(context->GetResourceAllocator());
+  impeller::RenderTarget target;
+  if (msaa) {
+    target = allocator.CreateOffscreenMSAA(
+        *context, texture_size, /*mip_count=*/1, "Denial slice",
+        impeller::RenderTarget::AttachmentConfigMSAA{
+            .storage_mode = impeller::StorageMode::kDeviceTransient,
+            .resolve_storage_mode = impeller::StorageMode::kDevicePrivate,
+            .load_action = impeller::LoadAction::kClear,
+            .store_action = impeller::StoreAction::kMultisampleResolve,
+            .clear_color = impeller::Color::BlackTransparent()},
+        impeller::RenderTarget::kDefaultStencilAttachmentConfig, slot.msaa,
+        slot.texture, slot.depth_stencil);
+  } else {
+    target = allocator.CreateOffscreen(
+        *context, texture_size, /*mip_count=*/1, "Denial slice",
+        impeller::RenderTarget::AttachmentConfig{
+            .storage_mode = impeller::StorageMode::kDevicePrivate,
+            .load_action = impeller::LoadAction::kClear,
+            .store_action = impeller::StoreAction::kStore,
+            .clear_color = impeller::Color::BlackTransparent()},
+        impeller::RenderTarget::kDefaultStencilAttachmentConfig, slot.texture,
+        slot.depth_stencil);
+  }
+  if (!target.IsValid()) {
+    FML_LOG(ERROR) << "Denial slice render target is invalid";
+    return false;
+  }
+  DisplayListBuilder builder(DlRect::MakeSize(DlSize(size)));
+  builder.Translate(-bounds.GetLeft(), -bounds.GetTop());
+  builder.DrawDisplayList(display_list);
+  return impeller::RenderToTarget(content_context, target, builder.Build(),
+                                  impeller::Rect::MakeSize(texture_size),
+                                  /*reset_host_buffer=*/false,
+                                  /*is_onscreen=*/false);
+}
+
+void DenialComposeCut(DlCanvas& canvas,
+                      const EmbeddedViewParams& params,
+                      const DenialCutEntry& entry,
+                      impeller::AiksContext* aiks_context,
+                      TextureRegistry* registry,
+                      int& open_materials) {
+  if (entry.kind == DenialCutEntry::Kind::kMaterialEnd) {
+    if (open_materials > 0) {
+      --open_materials;
+      canvas.Restore();  // The material's save layer.
+      canvas.Restore();  // Its replayed mutators.
+    }
+    return;
+  }
+  canvas.Save();
+  DlPaint paint;
+  DenialReplayMutators(canvas, params.mutatorsStack(), paint);
+  switch (entry.kind) {
+    case DenialCutEntry::Kind::kWindowSurface: {
+      auto texture =
+          registry ? registry->GetTexture(entry.texture_id) : nullptr;
+      if (texture) {
+        Texture::PaintContext ctx{.canvas = &canvas,
+                                  .gr_context = nullptr,
+                                  .aiks_context = aiks_context,
+                                  .paint = &paint};
+        texture->PaintWindow(ctx, entry.texture_bounds, entry.texture_transform,
+                             *entry.window, std::nullopt, entry.sampling,
+                             entry.surface_opacity);
+      } else {
+        paint.setBlendMode(DlBlendMode::kSrc);
+        canvas.SaveLayer(entry.window_bounds, &paint, entry.window.get());
+        canvas.Restore();
+      }
+      break;
+    }
+    case DenialCutEntry::Kind::kTexture: {
+      auto texture =
+          registry ? registry->GetTexture(entry.texture_id) : nullptr;
+      if (texture) {
+        Texture::PaintContext ctx{.canvas = &canvas,
+                                  .gr_context = nullptr,
+                                  .aiks_context = aiks_context,
+                                  .paint = &paint};
+        texture->Paint(ctx, entry.texture_bounds, entry.freeze, entry.sampling);
+      }
+      break;
+    }
+    case DenialCutEntry::Kind::kMaterialBegin: {
+      paint.setBlendMode(entry.blend_mode);
+      canvas.SaveLayer(entry.bounds, &paint, entry.filter.get());
+      if (entry.content_clip.has_value()) {
+        canvas.ClipRect(*entry.content_clip, DlClipOp::kIntersect, false);
+      }
+      ++open_materials;
+      // Closed, with the mutator save, by the matching kMaterialEnd.
+      return;
+    }
+    case DenialCutEntry::Kind::kMaterialEnd:
+      break;
+  }
+  canvas.Restore();
+}
+#endif  // IMPELLER_SUPPORTS_RENDERING
+
+}  // namespace
+
+void EmbedderExternalViewEmbedder::SubmitDenialLayered(
+    int64_t flutter_view_id,
+    const std::shared_ptr<impeller::AiksContext>& aiks_context,
+    std::unique_ptr<SurfaceFrame> frame) {
+  bool composed = false;
+#ifdef IMPELLER_SUPPORTS_RENDERING
+  auto* impeller_target =
+      pending_denial_render_target_->GetImpellerRenderTarget();
+  if (impeller_target && aiks_context) {
+    auto& content_context = aiks_context->GetContentContext();
+    const auto context = aiks_context->GetContext();
+    auto& slices = denial_slices_[flutter_view_id];
+    const DlIRect frame_rect = DlIRect::MakeSize(pending_frame_size_);
+    DisplayListBuilder composition(DlRect::Make(frame_rect));
+    composition.Transform(pending_surface_transformation_);
+    size_t slice_index = 0;
+    int open_materials = 0;
+    composed = true;
+    for (const auto& view_id : composition_order_) {
+      auto& view = pending_views_[view_id];
+      if (view_id.platform_view_id.has_value()) {
+        auto cut = denial_cuts_.find(view_id.platform_view_id.value());
+        if (cut != denial_cuts_.end() && view->GetEmbeddedViewParams()) {
+          DenialComposeCut(composition, *view->GetEmbeddedViewParams(),
+                           cut->second, aiks_context.get(),
+                           denial_texture_registry_.get(), open_materials);
+        }
+      }
+      if (!view->HasEngineRenderedContents()) {
+        continue;
+      }
+      const auto bounds = view->GetDlRegion().bounds().Intersection(frame_rect);
+      if (!bounds.has_value() || bounds->IsEmpty()) {
+        continue;
+      }
+      if (slices.size() <= slice_index) {
+        slices.resize(slice_index + 1);
+      }
+      DenialSlice& slot = slices[slice_index++];
+      const sk_sp<DisplayList>& display_list = view->GetDisplayList();
+      const bool reuse = slot.image && slot.display_list &&
+                         slot.bounds == *bounds &&
+                         slot.display_list->Equals(display_list);
+      if (!reuse) {
+        if (!DenialRenderSlice(content_context, context, slot, *bounds,
+                               display_list)) {
+          composed = false;
+          break;
+        }
+        slot.display_list = display_list;
+        slot.bounds = *bounds;
+      }
+      // Slices are recorded in the frame's top-left space. Inside an open
+      // material the replayed mutators are active, so return to the root
+      // transformation for the slice image.
+      composition.Save();
+      composition.TransformReset();
+      composition.Transform(pending_surface_transformation_);
+      composition.DrawImageRect(
+          slot.image, DlRect::MakeSize(DlSize(bounds->GetSize())),
+          DlRect::Make(*bounds), DlImageSampling::kNearestNeighbor, nullptr,
+          DlSrcRectConstraint::kStrict);
+      composition.Restore();
+    }
+    slices.resize(slice_index);
+    while (open_materials-- > 0) {
+      composition.Restore();
+      composition.Restore();
+    }
+    if (composed) {
+      auto color0 = impeller_target->GetColorAttachment(0u);
+      color0.load_action = impeller::LoadAction::kClear;
+      impeller_target->SetColorAttachment(color0, 0u);
+      composed = impeller::RenderToTarget(
+          content_context, *impeller_target, composition.Build(),
+          impeller::Rect::MakeSize(impeller_target->GetRenderTargetSize()),
+          /*reset_host_buffer=*/true,
+          /*is_onscreen=*/false);
+    }
+  }
+#endif  // IMPELLER_SUPPORTS_RENDERING
+  if (!composed) {
+    FML_LOG(ERROR) << "Denial layered composition failed; frame skipped";
+    pending_denial_render_target_.reset();
+    frame->Submit();
+    return;
+  }
+
+  const auto presentation_time_optional =
+      frame->submit_info().presentation_time;
+  const uint64_t presentation_time =
+      presentation_time_optional.has_value()
+          ? presentation_time_optional->ToEpochDelta().ToNanoseconds()
+          : 0;
+  EmbedderLayers presented_layers(
+      pending_frame_size_, pending_device_pixel_ratio_,
+      pending_surface_transformation_, presentation_time);
+  presented_layers.PushBackingStoreLayer(
+      pending_denial_render_target_->GetBackingStore(),
+      {DlIRect::MakeSize(pending_frame_size_)});
+  presented_layers.InvokePresentCallback(flutter_view_id, present_callback_);
+  pending_denial_render_target_.reset();
   frame->Submit();
 }
 

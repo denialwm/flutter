@@ -34,6 +34,10 @@ class WindowSurfaceLayer final : public ContainerLayer {
   DlIRect cache_target_;
   DlMatrix cache_matrix_;
   bool cache_prepared_ = false;
+  // Denial layered composition: the cut registered in Preroll, and for the
+  // child constructor the cut that closes its material after the children.
+  int64_t denial_cut_ = -1;
+  int64_t denial_end_cut_ = -1;
 };
 }  // namespace flutter
 #endif  // FLUTTER_FLOW_LAYERS_WINDOW_SURFACE_LAYER_H_

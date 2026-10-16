@@ -53,10 +53,34 @@ void TextureLayer::Preroll(PrerollContext* context) {
   set_paint_bounds(DlRect::MakeOriginSize(offset_, size_));
   context->has_texture_layer = true;
   context->renderable_state_flags = LayerStateStack::kCallerCanApplyOpacity;
+  denial_cut_ = -1;
+  if (context->view_embedder &&
+      context->view_embedder->DenialLayeredComposition()) {
+    // External textures are composed directly, never baked into a slice.
+    MutatorsStack mutators;
+    context->state_stack.fill(&mutators);
+    DenialCutEntry entry;
+    entry.kind = DenialCutEntry::Kind::kTexture;
+    entry.texture_id = texture_id_;
+    entry.texture_bounds = paint_bounds();
+    entry.freeze = freeze_;
+    entry.sampling = sampling_;
+    denial_cut_ = context->view_embedder->DenialRegisterCut(
+        std::make_unique<EmbeddedViewParams>(context->state_stack.matrix(),
+                                             size_, mutators),
+        std::move(entry));
+  }
 }
 
 void TextureLayer::Paint(PaintContext& context) const {
   FML_DCHECK(needs_painting(context));
+  if (denial_cut_ >= 0 && context.view_embedder) {
+    DlCanvas* canvas =
+        context.view_embedder->CompositeEmbeddedView(denial_cut_);
+    context.canvas = canvas;
+    context.state_stack.set_delegate(canvas);
+    return;
+  }
 
   std::shared_ptr<Texture> texture =
       context.texture_registry

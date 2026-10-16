@@ -73,6 +73,57 @@ void WindowSurfaceLayer::Diff(DiffContext* context, const Layer* old_layer) {
   context->SetLayerPaintRegion(this, context->CurrentSubtreeRegion());
 }
 void WindowSurfaceLayer::Preroll(PrerollContext* context) {
+  denial_cut_ = -1;
+  denial_end_cut_ = -1;
+  if (context->view_embedder &&
+      context->view_embedder->DenialLayeredComposition()) {
+    // The material reads the composed scene below this window, so the window
+    // is a cut: the embedder composes it after the slice recorded so far.
+    context->has_texture_layer = true;
+    MutatorsStack mutators;
+    context->state_stack.fill(&mutators);
+    DenialCutEntry entry;
+    entry.window = material_;
+    entry.window_bounds = style_.bounds;
+    entry.content_bounds = style_.content_bounds;
+    if (texture_id_ >= 0) {
+      entry.kind = DenialCutEntry::Kind::kWindowSurface;
+      entry.texture_id = texture_id_;
+      entry.texture_bounds = texture_bounds_;
+      entry.texture_transform = texture_transform_;
+      entry.sampling = sampling_;
+      entry.surface_opacity = surface_opacity_;
+    } else {
+      entry.kind = DenialCutEntry::Kind::kMaterialBegin;
+      entry.filter = material_;
+      entry.bounds = style_.bounds;
+      entry.blend_mode = DlBlendMode::kSrc;
+      entry.content_clip = style_.content_bounds;
+    }
+    denial_cut_ = context->view_embedder->DenialRegisterCut(
+        std::make_unique<EmbeddedViewParams>(context->state_stack.matrix(),
+                                             style_.bounds.GetSize(), mutators),
+        std::move(entry));
+    if (texture_id_ < 0) {
+      auto clip = context->state_stack.save();
+      clip.clipRect(style_.content_bounds, false);
+      DlRect child_bounds;
+      PrerollChildren(context, &child_bounds);
+      DenialCutEntry end;
+      end.kind = DenialCutEntry::Kind::kMaterialEnd;
+      end.begin_cut = denial_cut_;
+      MutatorsStack end_mutators;
+      context->state_stack.fill(&end_mutators);
+      denial_end_cut_ = context->view_embedder->DenialRegisterCut(
+          std::make_unique<EmbeddedViewParams>(context->state_stack.matrix(),
+                                               style_.bounds.GetSize(),
+                                               end_mutators),
+          std::move(end));
+    }
+    set_paint_bounds(style_.bounds.Expand(1));
+    context->renderable_state_flags = LayerStateStack::kCallerCanApplyOpacity;
+    return;
+  }
   auto saved =
       Layer::AutoPrerollSaveLayerState::Create(context, true, bool{backdrop_});
   if (texture_id_ >= 0) {
@@ -86,8 +137,25 @@ void WindowSurfaceLayer::Preroll(PrerollContext* context) {
   set_paint_bounds(style_.bounds.Expand(1));
   context->renderable_state_flags = LayerStateStack::kCallerCanApplyOpacity;
 }
+static void DenialContinueInSlice(PaintContext& context, int64_t cut) {
+  DlCanvas* canvas = context.view_embedder->CompositeEmbeddedView(cut);
+  context.canvas = canvas;
+  context.state_stack.set_delegate(canvas);
+}
 void WindowSurfaceLayer::Paint(PaintContext& context) const {
   FML_DCHECK(needs_painting(context));
+  if (denial_cut_ >= 0 && context.view_embedder) {
+    DenialContinueInSlice(context, denial_cut_);
+    if (texture_id_ < 0) {
+      {
+        auto state = context.state_stack.save();
+        state.clipRect(style_.content_bounds, false);
+        PaintChildren(context);
+      }
+      DenialContinueInSlice(context, denial_end_cut_);
+    }
+    return;
+  }
   const auto token =
       cache_prepared_ ? std::make_optional(cache_->token()) : std::nullopt;
   auto applied = context.state_stack.applyState(

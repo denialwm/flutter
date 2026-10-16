@@ -31,6 +31,9 @@ class BackdropFilterLayer : public ContainerLayer {
   DlIRect backdrop_cache_input_;
   DlMatrix backdrop_cache_matrix_;
   bool backdrop_cache_prepared_ = false;
+  // Denial layered composition cuts around the children.
+  int64_t denial_cut_ = -1;
+  int64_t denial_end_cut_ = -1;
 
   FML_DISALLOW_COPY_AND_ASSIGN(BackdropFilterLayer);
 };
