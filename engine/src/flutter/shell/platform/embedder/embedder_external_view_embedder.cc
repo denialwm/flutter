@@ -1041,7 +1041,9 @@ DenialCreateSliceStorage(const std::shared_ptr<impeller::Context>& context,
 
 // Makes `storage` hold at least `needed`: keeps it when the slice fits,
 // otherwise swaps in the smallest pooled storage that fits, and only then
-// allocates grown storage. Released storage goes to the pool.
+// allocates grown storage. Storage over twice the slice's area is also traded
+// for a tighter pooled one, because every re-render clears and resolves the
+// whole storage. Released storage goes to the pool.
 bool DenialPrepareSliceStorage(
     const std::shared_ptr<impeller::Context>& context,
     EmbedderExternalViewEmbedder::DenialViewSlices& view,
@@ -1050,7 +1052,8 @@ bool DenialPrepareSliceStorage(
     const DlISize& limit,
     uint64_t& allocations,
     uint64_t& pool_reuses) {
-  if (DenialStorageFits(storage, needed)) {
+  const bool fits = DenialStorageFits(storage, needed);
+  if (fits && DenialSliceArea(storage.size) <= 2 * DenialSliceArea(needed)) {
     return true;
   }
   auto best = view.pool.end();
@@ -1061,12 +1064,16 @@ bool DenialPrepareSliceStorage(
       best = it;
     }
   }
-  if (best != view.pool.end()) {
+  if (best != view.pool.end() &&
+      (!fits || DenialSliceArea(best->size) < DenialSliceArea(storage.size))) {
     std::swap(storage, *best);
     if (!best->image) {
       view.pool.erase(best);
     }
     ++pool_reuses;
+    return true;
+  }
+  if (fits) {
     return true;
   }
   const DlISize grown(
