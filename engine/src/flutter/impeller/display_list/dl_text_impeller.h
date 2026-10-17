@@ -28,6 +28,8 @@ class DlTextImpeller : public DlText {
 
   const SkTextBlob* GetTextBlob() const { return nullptr; }
 
+  bool IsSingleGlyph() const;
+
  private:
   std::shared_ptr<impeller::TextFrame> frame_;
 

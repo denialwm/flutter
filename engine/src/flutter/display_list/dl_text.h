@@ -22,6 +22,10 @@ class DlText {
   virtual std::shared_ptr<impeller::TextFrame> GetTextFrame() const = 0;
   virtual const SkTextBlob* GetTextBlob() const = 0;
 
+  // Whether the text draws exactly one glyph. One glyph cannot overdraw
+  // itself, so it can take an inherited group opacity.
+  virtual bool IsSingleGlyph() const = 0;
+
   bool operator==(const DlText& other) const;
 
  protected:

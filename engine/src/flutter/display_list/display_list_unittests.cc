@@ -1242,10 +1242,21 @@ TEST_F(DisplayListTest, SingleOpsMightSupportGroupOpacityBlendMode) {
   }
   RUN_TESTS2(canvas.DrawText(DlTextSkia::Make(GetTestTextBlob(1)), 0, 0, paint);
              , false);
+  RUN_TESTS(
+      canvas.DrawText(DlTextSkia::Make(GetTestTextBlob("1")), 0, 0, paint););
+  {
+    DisplayListBuilder builder;
+    DlPaint blurred;
+    blurred.setMaskFilter(DlBlurMaskFilter::Make(DlBlurStyle::kNormal, 2.0f));
+    builder.DrawText(DlTextSkia::Make(GetTestTextBlob("1")), 0, 0, blurred);
+    EXPECT_FALSE(builder.Build()->can_apply_group_opacity());
+  }
 #if IMPELLER_SUPPORTS_RENDERING
   RUN_TESTS2(
       canvas.DrawText(DlTextImpeller::Make(GetTestTextFrame(1)), 0, 0, paint);
       , false);
+  RUN_TESTS(canvas.DrawText(DlTextImpeller::MakeFromBlob(GetTestTextBlob("1")),
+                            0, 0, paint););
 #endif
   RUN_TESTS2(canvas.DrawShadow(kTestPath1, DlColor::kBlack(), 1.0, false, 1.0);
              , false);

@@ -1868,8 +1868,16 @@ void DisplayListBuilder::drawText(const std::shared_ptr<DlText>& text,
     // there are no current guarantees from either Skia or Impeller that
     // they will protect overlapping glyphs from the effects of overdraw
     // so we must make the conservative assessment that this DL layer is
-    // not compatible with group opacity inheritance.
-    UpdateLayerOpacityCompatibility(false);
+    // not compatible with group opacity inheritance. A single glyph is
+    // drawn once, like any other primitive, so fading a one-glyph label
+    // needs no offscreen layer. A mask or image filter turns the text into
+    // filter contents, which cannot take an inherited opacity.
+    if (text->IsSingleGlyph() && !current_.getMaskFilter() &&
+        !current_.getImageFilter()) {
+      CheckLayerOpacityCompatibility();
+    } else {
+      UpdateLayerOpacityCompatibility(false);
+    }
     UpdateLayerResult(result);
   }
 }

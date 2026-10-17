@@ -22,4 +22,12 @@ DlTextImpeller::DlTextImpeller(
     const std::shared_ptr<impeller::TextFrame>& frame)
     : frame_(frame) {}
 
+bool DlTextImpeller::IsSingleGlyph() const {
+  size_t glyphs = 0;
+  for (const impeller::TextRun& run : frame_->GetRuns()) {
+    glyphs += run.GetGlyphCount();
+  }
+  return glyphs == 1;
+}
+
 }  // namespace flutter

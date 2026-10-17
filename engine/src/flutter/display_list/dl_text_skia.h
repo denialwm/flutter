@@ -24,6 +24,8 @@ class DlTextSkia : public DlText {
 
   const SkTextBlob* GetTextBlob() const { return blob_.get(); }
 
+  bool IsSingleGlyph() const;
+
  private:
   sk_sp<SkTextBlob> blob_;
 
