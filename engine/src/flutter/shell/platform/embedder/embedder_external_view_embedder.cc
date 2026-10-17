@@ -32,11 +32,6 @@ namespace flutter {
 
 static const auto kRootViewIdentifier = EmbedderExternalView::ViewIdentifier{};
 
-static bool DenialLayeredCompositionRequested() {
-  const char* value = std::getenv("DENIAL_LAYERED_COMPOSITION");
-  return value != nullptr && value[0] == '1' && value[1] == '\0';
-}
-
 // Matches deniald's DENIAL_RENDER_AUDIT flag: the canonical name wins over
 // the legacy DENIA_ spelling; 1, true, yes or on, trimmed, any case.
 static bool DenialRenderAuditRequested() {
@@ -75,13 +70,7 @@ EmbedderExternalViewEmbedder::EmbedderExternalViewEmbedder(
     : avoid_backing_store_cache_(avoid_backing_store_cache),
       create_render_target_callback_(create_render_target_callback),
       present_callback_(present_callback),
-      denial_layered_enabled_(DenialLayeredCompositionRequested()),
-      denial_layered_audit_enabled_(denial_layered_enabled_ &&
-                                    DenialRenderAuditRequested()) {
-  if (denial_layered_enabled_) {
-    FML_LOG(IMPORTANT) << "Denial layered composition enabled for output views"
-                       << (denial_layered_audit_enabled_ ? " (audited)" : "");
-  }
+      denial_layered_audit_enabled_(DenialRenderAuditRequested()) {
   FML_DCHECK(create_render_target_callback_);
   FML_DCHECK(present_callback_);
 }
@@ -115,7 +104,7 @@ DenialOutputMode EmbedderExternalViewEmbedder::DenialChooseOutputMode(
     int64_t flutter_view_id,
     const void* layer_tree,
     bool texture_only) {
-  if (!denial_layered_enabled_ || flutter_view_id >= kFlutterImplicitViewId) {
+  if (flutter_view_id >= kFlutterImplicitViewId) {
     return DenialOutputMode::kDirect;
   }
   auto& view = denial_slices_[flutter_view_id];

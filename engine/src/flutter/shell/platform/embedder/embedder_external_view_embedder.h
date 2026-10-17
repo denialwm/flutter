@@ -95,7 +95,7 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
       const std::shared_ptr<TextureRegistry>& texture_registry) override;
 
   // Denial layered composition (docs/LAYERED_COMPOSITION.md in Denial).
-  // Enabled by DENIAL_LAYERED_COMPOSITION=1 for Denial output views: cuts
+  // Always on for Denial output views (negative view ids): cuts
   // registered during Preroll split the frame into engine-rendered slices
   // that are retained as textures while their display lists are unchanged.
   // The scanout target then receives one composition of slices and cuts.
@@ -217,7 +217,6 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   ExistingDamageCallback existing_damage_callback_;
   SurfaceTransformationCallback surface_transformation_callback_;
   std::unique_ptr<EmbedderRenderTarget> pending_denial_render_target_;
-  const bool denial_layered_enabled_;
   int64_t pending_flutter_view_id_ = kFlutterImplicitViewId;
   DenialOutputMode denial_output_mode_ = DenialOutputMode::kDirect;
   const void* denial_frame_tree_ = nullptr;
