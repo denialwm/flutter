@@ -530,8 +530,11 @@ Rasterizer::ExpandDenialRenderOutputTasks(
             pending->second->dirty_texture_ids->begin(),
             pending->second->dirty_texture_ids->end());
       }
+      // Only Denial's output request selects a target. A scene Dart renders
+      // outside one, such as runApp's warm-up frame, waits for the next
+      // request instead of taking a target no output clock authorized.
       const bool selected =
-          !denial_render_selection_pending_ ||
+          denial_render_selection_pending_ &&
           denial_selected_render_view_ids_.contains(output.render_view_id);
       if (selected) {
         denial_pending_output_tasks_.erase(output.render_view_id);
