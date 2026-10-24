@@ -154,26 +154,17 @@ EmbedderExternalViewEmbedder::DenialLayeredAuditFrame(int64_t flutter_view_id) {
     return &audit;
   }
   // The interval is [interval_start, now): the frame being submitted belongs
-  // to the next one. Retained and pooled storage are gauges at its end.
+  // to the next one. Retained storage is a gauge at its end.
   uint64_t retained_slices = 0;
   uint64_t retained_pixels = 0;
-  uint64_t pooled_slices = 0;
-  uint64_t pooled_pixels = 0;
   if (auto slices = denial_slices_.find(flutter_view_id);
       slices != denial_slices_.end()) {
-    const auto area = [](const DenialSliceStorage& storage) {
-      return static_cast<uint64_t>(storage.size.width) *
-             static_cast<uint64_t>(storage.size.height);
-    };
     for (const auto& slot : slices->second.slots) {
       if (slot.storage.image) {
         ++retained_slices;
-        retained_pixels += area(slot.storage);
+        retained_pixels += static_cast<uint64_t>(slot.storage.size.width) *
+                           static_cast<uint64_t>(slot.storage.size.height);
       }
-    }
-    for (const auto& storage : slices->second.pool) {
-      ++pooled_slices;
-      pooled_pixels += area(storage);
     }
   }
   const uint64_t rendered =
@@ -204,8 +195,6 @@ EmbedderExternalViewEmbedder::DenialLayeredAuditFrame(int64_t flutter_view_id) {
       << " slice_pool_reuses=" << audit.slice_pool_reuses
       << " retained_slices=" << retained_slices
       << " retained_slice_pixels=" << retained_pixels
-      << " pooled_slices=" << pooled_slices
-      << " pooled_slice_pixels=" << pooled_pixels
       << " slice_render_total_us=" << audit.slice_render_time.ToMicrosecondsF()
       << " compose_total_us=" << audit.compose_time.ToMicrosecondsF()
       << " compose_max_us=" << audit.compose_max.ToMicrosecondsF()
@@ -961,11 +950,15 @@ namespace {
 
 // Replays a cut's accumulated transforms, clips and opacity onto the
 // composition canvas, exactly as the state stack would have applied them to
-// the inline paint. Opacity is folded into the entry's paint.
+// the inline paint. Opacity is folded into the entry's paint. The first
+// `applied` mutators are already on the canvas: those of an open material,
+// which the cuts it contains share as the bottom of their own stacks.
 void DenialReplayMutators(DlCanvas& canvas,
                           const MutatorsStack& mutators,
+                          size_t applied,
                           DlPaint& paint) {
-  for (auto it = mutators.Begin(); it != mutators.End(); ++it) {
+  auto it = mutators.Begin() + std::min(applied, mutators.stack_count());
+  for (; it != mutators.End(); ++it) {
     const auto& mutator = *it;
     switch (mutator->GetType()) {
       case MutatorType::kClipRect:
@@ -1000,9 +993,6 @@ void DenialReplayMutators(DlCanvas& canvas,
 #ifdef IMPELLER_SUPPORTS_RENDERING
 // Slice storage extents are rounded up so small layout jitter fits.
 constexpr int32_t kDenialSliceGranularity = 64;
-// Spare storage kept per view. The pool holds what disappearing or growing
-// slices released; beyond this the smallest entries are freed.
-constexpr size_t kDenialSlicePoolLimit = 4;
 
 int32_t DenialRoundSliceExtent(int32_t extent) {
   const int32_t rounded =
@@ -1092,160 +1082,109 @@ void DenialDescribeLargeOps(const sk_sp<DisplayList>& display_list,
   }
 }
 
-bool DenialStorageFits(
+// Storage suits a slice when the slice fits and the storage is at most twice
+// its area, since every re-render clears the whole storage.
+bool DenialStorageSuits(
     const EmbedderExternalViewEmbedder::DenialSliceStorage& storage,
     const DlISize& needed) {
   return storage.image && storage.size.width >= needed.width &&
-         storage.size.height >= needed.height;
+         storage.size.height >= needed.height &&
+         DenialSliceArea(storage.size) <= 2 * DenialSliceArea(needed);
 }
 
-// An extent that has to grow grows by at least half, up to the output's
-// extent, so a steadily growing slice reallocates only a few times.
-int32_t DenialGrowExtent(int32_t current, int32_t needed, int32_t limit) {
-  if (needed <= current) {
-    return current;
-  }
-  const int32_t grown =
-      DenialRoundSliceExtent(std::max(needed, current + current / 2));
-  return std::max(needed, std::min(grown, limit));
-}
-
-void DenialPoolSliceStorage(
-    std::vector<EmbedderExternalViewEmbedder::DenialSliceStorage>& pool,
-    EmbedderExternalViewEmbedder::DenialSliceStorage&& storage) {
-  if (!storage.image) {
-    return;
-  }
-  pool.push_back(std::move(storage));
-  storage = {};
-  if (pool.size() > kDenialSlicePoolLimit) {
-    auto smallest = std::min_element(
-        pool.begin(), pool.end(), [](const auto& a, const auto& b) {
-          return DenialSliceArea(a.size) < DenialSliceArea(b.size);
-        });
-    pool.erase(smallest);
-  }
-}
-
-std::shared_ptr<impeller::Texture> DenialCreateSliceTexture(
-    const std::shared_ptr<impeller::Context>& context,
-    const DlISize& size,
-    impeller::PixelFormat format,
-    bool multisample,
-    bool sampled,
-    const char* label) {
-  impeller::TextureDescriptor descriptor;
-  descriptor.storage_mode = sampled ? impeller::StorageMode::kDevicePrivate
-                                    : impeller::StorageMode::kDeviceTransient;
-  descriptor.type = multisample ? impeller::TextureType::kTexture2DMultisample
-                                : impeller::TextureType::kTexture2D;
-  descriptor.sample_count = multisample ? impeller::SampleCount::kCount4
-                                        : impeller::SampleCount::kCount1;
-  descriptor.format = format;
-  descriptor.size = impeller::ISize(size.width, size.height);
-  descriptor.mip_count = 1u;
-  descriptor.usage = sampled ? impeller::TextureUsage::kRenderTarget |
-                                   impeller::TextureUsage::kShaderRead
-                             : impeller::TextureUsage::kRenderTarget;
-  auto texture = context->GetResourceAllocator()->CreateTexture(descriptor);
-  if (!texture) {
-    FML_LOG(ERROR) << label << " allocation failed";
-    return nullptr;
-  }
-  texture->SetLabel(label);
-  return texture;
-}
-
+// The retained part of a slice: its sampled color texture.
 std::optional<EmbedderExternalViewEmbedder::DenialSliceStorage>
 DenialCreateSliceStorage(const std::shared_ptr<impeller::Context>& context,
                          const DlISize& size) {
-  const auto& capabilities = context->GetCapabilities();
-  const bool msaa = capabilities->SupportsOffscreenMSAA();
-  EmbedderExternalViewEmbedder::DenialSliceStorage storage;
-  storage.size = size;
-  storage.texture = DenialCreateSliceTexture(
-      context, size, capabilities->GetDefaultColorFormat(),
-      /*multisample=*/false, /*sampled=*/true, "Denial slice");
-  storage.depth_stencil = DenialCreateSliceTexture(
-      context, size, capabilities->GetDefaultDepthStencilFormat(), msaa,
-      /*sampled=*/false, "Denial slice depth/stencil");
-  if (msaa) {
-    storage.msaa = DenialCreateSliceTexture(
-        context, size, capabilities->GetDefaultColorFormat(),
-        /*multisample=*/true, /*sampled=*/false, "Denial slice MSAA");
-  }
-  if (!storage.texture || !storage.depth_stencil || (msaa && !storage.msaa)) {
+  impeller::TextureDescriptor descriptor;
+  descriptor.storage_mode = impeller::StorageMode::kDevicePrivate;
+  descriptor.format = context->GetCapabilities()->GetDefaultColorFormat();
+  descriptor.size = impeller::ISize(size.width, size.height);
+  descriptor.mip_count = 1u;
+  descriptor.usage = impeller::TextureUsage::kRenderTarget |
+                     impeller::TextureUsage::kShaderRead;
+  auto texture = context->GetResourceAllocator()->CreateTexture(descriptor);
+  if (!texture) {
+    FML_LOG(ERROR) << "Denial slice allocation failed";
     return std::nullopt;
   }
-  storage.image = impeller::DlImageImpeller::Make(
-      storage.texture, DlImage::OwningContext::kRaster);
+  texture->SetLabel("Denial slice");
+  EmbedderExternalViewEmbedder::DenialSliceStorage storage;
+  storage.size = size;
+  storage.texture = texture;
+  storage.image =
+      impeller::DlImageImpeller::Make(texture, DlImage::OwningContext::kRaster);
   return storage;
 }
 
-// Makes `storage` hold at least `needed`: keeps it when the slice fits,
-// otherwise swaps in the smallest pooled storage that fits, and only then
-// allocates grown storage. Storage over twice the slice's area is also traded
-// for a tighter pooled one, because every re-render clears and resolves the
-// whole storage. Released storage goes to the pool.
+// Makes `storage` suit `needed`: keeps it when it does, otherwise takes the
+// smallest suitable storage another slice released earlier in this build
+// (`pool`), and only then allocates exactly `needed`. Storage it replaces
+// goes to `pool` for the build's later slices; the build frees the rest.
 bool DenialPrepareSliceStorage(
     const std::shared_ptr<impeller::Context>& context,
-    EmbedderExternalViewEmbedder::DenialViewSlices& view,
+    std::vector<EmbedderExternalViewEmbedder::DenialSliceStorage>& pool,
     EmbedderExternalViewEmbedder::DenialSliceStorage& storage,
     const DlISize& needed,
-    const DlISize& limit,
     uint64_t& allocations,
     uint64_t& pool_reuses) {
-  const bool fits = DenialStorageFits(storage, needed);
-  if (fits && DenialSliceArea(storage.size) <= 2 * DenialSliceArea(needed)) {
+  if (DenialStorageSuits(storage, needed)) {
     return true;
   }
-  auto best = view.pool.end();
-  for (auto it = view.pool.begin(); it != view.pool.end(); ++it) {
-    if (DenialStorageFits(*it, needed) &&
-        (best == view.pool.end() ||
+  auto best = pool.end();
+  for (auto it = pool.begin(); it != pool.end(); ++it) {
+    if (DenialStorageSuits(*it, needed) &&
+        (best == pool.end() ||
          DenialSliceArea(it->size) < DenialSliceArea(best->size))) {
       best = it;
     }
   }
-  if (best != view.pool.end() &&
-      (!fits || DenialSliceArea(best->size) < DenialSliceArea(storage.size))) {
+  if (best != pool.end()) {
     std::swap(storage, *best);
     if (!best->image) {
-      view.pool.erase(best);
+      pool.erase(best);
     }
     ++pool_reuses;
     return true;
   }
-  if (fits) {
-    return true;
-  }
-  const DlISize grown(
-      DenialGrowExtent(storage.size.width, needed.width, limit.width),
-      DenialGrowExtent(storage.size.height, needed.height, limit.height));
-  auto created = DenialCreateSliceStorage(context, grown);
+  auto created = DenialCreateSliceStorage(context, needed);
   if (!created.has_value()) {
     return false;
   }
   ++allocations;
-  DenialPoolSliceStorage(view.pool, std::move(storage));
+  if (storage.image) {
+    pool.push_back(std::move(storage));
+  }
   storage = std::move(created.value());
   return true;
 }
 
+// A rect of the frame's top-left space in target pixels. Output views flip
+// into the backing store's bottom-left origin (see PrepareFlutterView).
+DlIRect DenialTargetRect(const DlIRect& rect, const DlMatrix& transformation) {
+  return DlIRect::RoundOut(
+      DlRect::Make(rect).TransformAndClipBounds(transformation));
+}
+
+// Renders a slice as the output's root pass would draw it: with the output's
+// sample count (`msaa`), so layered and direct frames match. The content
+// context's render target cache ignores existing textures and hands out
+// pooled ones, so slice targets are built directly on the allocator around
+// the retained texture. Depth/stencil and MSAA color are transient: the
+// allocator creates them for this render and they go with the target.
 bool DenialRenderSlice(
     impeller::ContentContext& content_context,
     const std::shared_ptr<impeller::Context>& context,
     const EmbedderExternalViewEmbedder::DenialSliceStorage& storage,
+    bool msaa,
     const DlIRect& bounds,
     const DlISize& needed,
+    const DlMatrix& transformation,
     const sk_sp<DisplayList>& display_list) {
-  // The content context's render target cache ignores existing textures and
-  // hands out pooled ones, so slice targets are built directly on the
-  // allocator around the retained slice storage.
   const impeller::ISize texture_size(storage.size.width, storage.size.height);
   impeller::RenderTargetAllocator allocator(context->GetResourceAllocator());
   impeller::RenderTarget target;
-  if (storage.msaa) {
+  if (msaa) {
     target = allocator.CreateOffscreenMSAA(
         *context, texture_size, /*mip_count=*/1, "Denial slice",
         impeller::RenderTarget::AttachmentConfigMSAA{
@@ -1254,8 +1193,8 @@ bool DenialRenderSlice(
             .load_action = impeller::LoadAction::kClear,
             .store_action = impeller::StoreAction::kMultisampleResolve,
             .clear_color = impeller::Color::BlackTransparent()},
-        impeller::RenderTarget::kDefaultStencilAttachmentConfig, storage.msaa,
-        storage.texture, storage.depth_stencil);
+        impeller::RenderTarget::kDefaultStencilAttachmentConfig,
+        /*existing_color_msaa_texture=*/nullptr, storage.texture);
   } else {
     target = allocator.CreateOffscreen(
         *context, texture_size, /*mip_count=*/1, "Denial slice",
@@ -1265,14 +1204,19 @@ bool DenialRenderSlice(
             .store_action = impeller::StoreAction::kStore,
             .clear_color = impeller::Color::BlackTransparent()},
         impeller::RenderTarget::kDefaultStencilAttachmentConfig,
-        storage.texture, storage.depth_stencil);
+        storage.texture);
   }
   if (!target.IsValid()) {
     FML_LOG(ERROR) << "Denial slice render target is invalid";
     return false;
   }
+  // Render in target pixels, as the direct path does. Glyphs snap to whole
+  // pixels, and the flip rounds a glyph on a half pixel the other way, so an
+  // unflipped slice moved such text by a row against direct frames.
+  const DlIRect pixels = DenialTargetRect(bounds, transformation);
   DisplayListBuilder builder(DlRect::MakeSize(DlSize(needed)));
-  builder.Translate(-bounds.GetLeft(), -bounds.GetTop());
+  builder.Translate(-pixels.GetLeft(), -pixels.GetTop());
+  builder.Transform(transformation);
   builder.DrawDisplayList(display_list);
   return impeller::RenderToTarget(
       content_context, target, builder.Build(),
@@ -1281,15 +1225,18 @@ bool DenialRenderSlice(
       /*is_onscreen=*/false);
 }
 
+// `open_materials` holds the mutator depth of each open material, innermost
+// last. A cut inside a material composes into its save layer, where the
+// material's mutators are still applied.
 void DenialComposeCut(DlCanvas& canvas,
                       const EmbeddedViewParams& params,
                       const DenialCutEntry& entry,
                       impeller::AiksContext* aiks_context,
                       TextureRegistry* registry,
-                      int& open_materials) {
+                      std::vector<size_t>& open_materials) {
   if (entry.kind == DenialCutEntry::Kind::kMaterialEnd) {
-    if (open_materials > 0) {
-      --open_materials;
+    if (!open_materials.empty()) {
+      open_materials.pop_back();
       canvas.Restore();  // The material's save layer.
       canvas.Restore();  // Its replayed mutators.
     }
@@ -1297,7 +1244,9 @@ void DenialComposeCut(DlCanvas& canvas,
   }
   canvas.Save();
   DlPaint paint;
-  DenialReplayMutators(canvas, params.mutatorsStack(), paint);
+  DenialReplayMutators(canvas, params.mutatorsStack(),
+                       open_materials.empty() ? 0 : open_materials.back(),
+                       paint);
   // Read now: a recomposition's damage pass may have invalidated the cache.
   const std::optional<int64_t> backdrop_token =
       entry.backdrop_cache ? std::make_optional(entry.backdrop_cache->token())
@@ -1341,7 +1290,7 @@ void DenialComposeCut(DlCanvas& canvas,
       if (entry.content_clip.has_value()) {
         canvas.ClipRect(*entry.content_clip, DlClipOp::kIntersect, false);
       }
-      ++open_materials;
+      open_materials.push_back(params.mutatorsStack().stack_count());
       // Closed, with the mutator save, by the matching kMaterialEnd.
       return;
     }
@@ -1395,9 +1344,14 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
     auto& entries = view_slices.entries;
     entries.clear();
     const DlIRect frame_rect = DlIRect::MakeSize(pending_frame_size_);
-    const DlISize storage_limit(
-        DenialRoundSliceExtent(pending_frame_size_.width),
-        DenialRoundSliceExtent(pending_frame_size_.height));
+    // Slices stand in for parts of the output's root pass.
+    const bool msaa = pending_denial_render_target_->GetImpellerRenderTarget()
+                              ->GetColorAttachment(0)
+                              .texture->GetTextureDescriptor()
+                              .sample_count != impeller::SampleCount::kCount1 &&
+                      context->GetCapabilities()->SupportsOffscreenMSAA();
+    // Storage that slices of this build released, for its later slices.
+    std::vector<DenialSliceStorage> pool;
     // The repaint bounds describe the output's damage clip; slices render
     // in full into their own targets.
     const auto repaint_bounds = content_context.GetFrameRepaintBounds();
@@ -1456,9 +1410,10 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
             << " ops=" << display_list->op_count(true)
             << " large:" << large.str();
       }
-      const bool reuse = slot.storage.image && slot.display_list &&
-                         slot.bounds == *bounds &&
-                         slot.display_list->Equals(display_list);
+      const bool reuse =
+          slot.storage.image && slot.display_list && slot.bounds == *bounds &&
+          slot.transformation == pending_surface_transformation_ &&
+          slot.display_list->Equals(display_list);
       if (audit) {
         if (reuse) {
           ++audit->slices_reused;
@@ -1482,10 +1437,11 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       // The slot's content is replaced either way; drop it first so a
       // failure never leaves stale content marked reusable.
       slot.display_list.reset();
-      if (!DenialPrepareSliceStorage(context, view_slices, slot.storage, needed,
-                                     storage_limit, allocations, pool_reuses) ||
-          !DenialRenderSlice(content_context, context, slot.storage, *bounds,
-                             needed, display_list)) {
+      if (!DenialPrepareSliceStorage(context, pool, slot.storage, needed,
+                                     allocations, pool_reuses) ||
+          !DenialRenderSlice(content_context, context, slot.storage, msaa,
+                             *bounds, needed, pending_surface_transformation_,
+                             display_list)) {
         composed = false;
         break;
       }
@@ -1499,13 +1455,11 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       }
       slot.display_list = display_list;
       slot.bounds = *bounds;
+      slot.transformation = pending_surface_transformation_;
     }
     content_context.SetFrameRepaintBounds(repaint_bounds);
     if (composed) {
-      // Slices beyond this frame's last give their storage to the pool.
-      for (size_t i = slice_index; i < slices.size(); ++i) {
-        DenialPoolSliceStorage(view_slices.pool, std::move(slices[i].storage));
-      }
+      // Slices beyond this frame's last free their storage.
       slices.resize(slice_index);
     }
     if (audit) {
@@ -1615,7 +1569,7 @@ bool EmbedderExternalViewEmbedder::DenialComposeEntries(
     }
     composition.Clear(DlColor::kTransparent());
   }
-  int open_materials = 0;
+  std::vector<size_t> open_materials;
   for (const auto& entry : view.entries) {
     if (!entry.slice.has_value()) {
       DenialComposeCut(composition, entry.params, entry.cut, aiks_context.get(),
@@ -1623,27 +1577,28 @@ bool EmbedderExternalViewEmbedder::DenialComposeEntries(
       continue;
     }
     const DenialSlice& slot = view.slots[entry.slice.value()];
-    // Slices are recorded in the frame's top-left space. Inside an open
-    // material the replayed mutators are active, so return to the root
-    // transformation for the slice image.
+    // Slices hold target pixels (DenialRenderSlice). Inside an open material
+    // the replayed mutators are active, so copy them in target space.
     composition.Save();
     composition.TransformReset();
-    composition.Transform(pending_surface_transformation_);
+    const DlIRect slice_target =
+        DenialTargetRect(slot.bounds, slot.transformation);
     // Pixels outside the slice's paint region are transparent; skip them.
     for (const DlIRect& rect : slot.rects) {
       if (audit) {
         audit->slice_blit_pixels += DenialSliceArea(rect.GetSize());
       }
-      composition.DrawImageRect(slot.storage.image,
-                                DlRect::Make(rect.Shift(-slot.bounds.GetLeft(),
-                                                        -slot.bounds.GetTop())),
-                                DlRect::Make(rect),
-                                DlImageSampling::kNearestNeighbor, nullptr,
-                                DlSrcRectConstraint::kStrict);
+      const DlIRect target = DenialTargetRect(rect, slot.transformation);
+      composition.DrawImageRect(
+          slot.storage.image,
+          DlRect::Make(
+              target.Shift(-slice_target.GetLeft(), -slice_target.GetTop())),
+          DlRect::Make(target), DlImageSampling::kNearestNeighbor, nullptr,
+          DlSrcRectConstraint::kStrict);
     }
     composition.Restore();
   }
-  while (open_materials-- > 0) {
+  for (size_t i = 0; i < open_materials.size(); ++i) {
     composition.Restore();
     composition.Restore();
   }

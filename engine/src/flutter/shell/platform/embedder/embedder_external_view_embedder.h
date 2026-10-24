@@ -114,15 +114,14 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
       const std::shared_ptr<impeller::AiksContext>& aiks_context,
       std::unique_ptr<SurfaceFrame> frame) override;
 
-  // GPU storage of one slice: the sampled color texture and its MSAA and
-  // depth/stencil attachments, all of `size`. A slice renders into the
-  // top-left corner, so storage is reused while the slice fits and otherwise
-  // grows; it never shrinks while its view exists.
+  // GPU storage of one slice: its sampled color texture of `size`. The
+  // attachments that only matter while rendering (depth/stencil, and MSAA
+  // when the output uses it) are created per render. A slice renders into
+  // the top-left corner, so storage is reused while the slice fits in at
+  // most twice its area.
   struct DenialSliceStorage {
     DlISize size;
     std::shared_ptr<impeller::Texture> texture;
-    std::shared_ptr<impeller::Texture> msaa;
-    std::shared_ptr<impeller::Texture> depth_stencil;
     sk_sp<DlImage> image;
   };
 
@@ -132,6 +131,8 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   struct DenialSlice {
     sk_sp<DisplayList> display_list;
     DlIRect bounds;
+    // The surface transformation the storage was rendered with.
+    DlMatrix transformation;
     std::vector<DlIRect> rects;
     DenialSliceStorage storage;
   };
@@ -144,13 +145,11 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
     EmbeddedViewParams params;
   };
 
-  // The slices of one output view, in entry order, and the storage of slices
-  // that disappeared or outgrew it, kept for the next slice that fits.
-  // `entries` are the last layered build's, valid for recomposing `tree` at
-  // `frame_size` and `transformation` while `tree` is set.
+  // The slices of one output view, in entry order. `entries` are the last
+  // layered build's, valid for recomposing `tree` at `frame_size` and
+  // `transformation` while `tree` is set.
   struct DenialViewSlices {
     std::vector<DenialSlice> slots;
-    std::vector<DenialSliceStorage> pool;
     std::vector<DenialComposedEntry> entries;
     const void* tree = nullptr;
     DlISize frame_size;
@@ -259,7 +258,8 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
     // when storage grew for an earlier, larger slice.
     uint64_t rendered_pixels = 0;
     uint64_t rendered_slice_pixels = 0;
-    // Storage created, and storage taken from the pool instead.
+    // Storage created, and storage taken over instead from a slice that
+    // released it earlier in the same build.
     uint64_t slice_allocations = 0;
     uint64_t slice_pool_reuses = 0;
     fml::TimeDelta slice_render_time;
