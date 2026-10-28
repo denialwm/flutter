@@ -308,6 +308,76 @@ TEST(RenderPassGLESTest, ResolvingMultisampleTextureCachesResolveFBO) {
   }
 }
 
+TEST(RenderPassGLESTest, CachedFBOFollowsTheDepthStencilOfEachPass) {
+  auto mock_gl_impl = std::make_unique<NiceMock<MockGLESImpl>>();
+  auto& mock_gl_impl_ref = *mock_gl_impl;
+  auto mock_gl =
+      MockGLES::Init(std::move(mock_gl_impl), std::nullopt, "OpenGL ES 3.0");
+
+  auto context = CreateFakeGLESContext();
+  auto dummy_worker = std::make_shared<MockWorker>();
+  context->AddReactorWorker(dummy_worker);
+  auto reactor = context->GetReactor();
+  const auto command_buffer =
+      std::static_pointer_cast<Context>(context)->CreateCommandBuffer();
+
+  // A retained color texture (a Denial layered slice) gets new transient
+  // depth/stencil for each render. Its cached FBO must not keep the first
+  // render's, which are gone, or later renders lose clips and fill rules.
+  auto color = std::make_shared<TextureGLES>(
+      reactor, TextureDescriptor{.storage_mode = StorageMode::kDevicePrivate,
+                                 .format = PixelFormat::kR8G8B8A8UNormInt,
+                                 .size = {10, 10},
+                                 .usage = TextureUsage::kRenderTarget |
+                                          TextureUsage::kShaderRead});
+  const TextureDescriptor depth_stencil_desc{
+      .format = PixelFormat::kD24UnormS8Uint,
+      .size = {10, 10},
+      .usage = TextureUsage::kRenderTarget};
+  const auto encode = [&](const std::shared_ptr<Texture>& depth_stencil) {
+    RenderTarget target;
+    ColorAttachment color0;
+    color0.texture = color;
+    color0.load_action = LoadAction::kClear;
+    color0.store_action = StoreAction::kStore;
+    target.SetColorAttachment(color0, 0);
+    if (depth_stencil) {
+      DepthAttachment depth;
+      depth.texture = depth_stencil;
+      depth.load_action = LoadAction::kClear;
+      depth.store_action = StoreAction::kDontCare;
+      target.SetDepthAttachment(depth);
+      StencilAttachment stencil;
+      stencil.texture = depth_stencil;
+      stencil.load_action = LoadAction::kClear;
+      stencil.store_action = StoreAction::kDontCare;
+      target.SetStencilAttachment(stencil);
+    }
+    const auto render_pass = command_buffer->CreateRenderPass(target);
+    ASSERT_TRUE(render_pass->EncodeCommands());
+    ASSERT_TRUE(reactor->React());
+  };
+
+  EXPECT_CALL(mock_gl_impl_ref, CheckFramebufferStatus(_))
+      .WillRepeatedly(Return(GL_FRAMEBUFFER_COMPLETE));
+  EXPECT_CALL(mock_gl_impl_ref, GenFramebuffers(_, _)).Times(1);
+  // Attached by the first pass, again for the new pair, and detached for the
+  // pass without one. Passes that repeat the cached state attach nothing.
+  for (const GLenum attachment : {GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT}) {
+    EXPECT_CALL(
+        mock_gl_impl_ref,
+        FramebufferRenderbuffer(GL_FRAMEBUFFER, attachment, GL_RENDERBUFFER, _))
+        .Times(3);
+  }
+
+  const auto first = std::make_shared<TextureGLES>(reactor, depth_stencil_desc);
+  encode(first);
+  encode(first);
+  encode(std::make_shared<TextureGLES>(reactor, depth_stencil_desc));
+  encode(nullptr);
+  encode(nullptr);
+}
+
 class RenderPassGLESCommandTest : public ::testing::Test {
  protected:
   // Builds a mock OpenGL ES context with a render pass and a minimal

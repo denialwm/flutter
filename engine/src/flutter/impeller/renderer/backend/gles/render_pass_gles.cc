@@ -292,10 +292,11 @@ static void EncodeViewport(const ProcTableGLES& gl,
       gl.BindFramebuffer(GL_FRAMEBUFFER, *color_gles.GetFBO());
     }
   } else {
-    // Create (once) and bind an offscreen FBO. The cached FBO remembers which
-    // subresource it is bound to, so it is re-attached only when freshly
-    // created or when rendering into a different mip level or slice of the
-    // same texture.
+    // Create (once) and bind an offscreen FBO. The cached FBO remembers what
+    // it is bound to, so it is re-attached only when freshly created, when
+    // rendering into a different mip level or slice of the same texture, or
+    // when the pass brings other depth/stencil textures: a retained color
+    // texture may get new transient ones for every render.
     bool needs_attachment = false;
     if (color_gles.GetCachedFBO().IsDead()) {
       color_gles.SetCachedFBO(
@@ -308,29 +309,37 @@ static void EncodeViewport(const ProcTableGLES& gl,
     }
     gl.BindFramebuffer(GL_FRAMEBUFFER, fbo.value());
 
+    TextureGLES* depth = TextureGLES::Cast(pass_data.depth_attachment.get());
+    TextureGLES* stencil =
+        TextureGLES::Cast(pass_data.stencil_attachment.get());
     if (needs_attachment ||
-        !color_gles.CachedFBOMatchesSubresource(pass_data.color_mip_level,
-                                                pass_data.color_slice)) {
+        !color_gles.CachedFBOMatchesAttachments(
+            pass_data.color_mip_level, pass_data.color_slice, depth, stencil)) {
       if (!color_gles.SetAsFramebufferAttachment(
               GL_FRAMEBUFFER, TextureGLES::AttachmentType::kColor0,
               pass_data.color_mip_level, pass_data.color_slice)) {
         return false;
       }
 
-      if (auto depth = TextureGLES::Cast(pass_data.depth_attachment.get())) {
+      if (depth) {
         if (!depth->SetAsFramebufferAttachment(
                 GL_FRAMEBUFFER, TextureGLES::AttachmentType::kDepth,
                 pass_data.depth_mip_level, pass_data.depth_slice)) {
           return false;
         }
+      } else if (!needs_attachment) {
+        gl.FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                   GL_RENDERBUFFER, 0);
       }
-      if (auto stencil =
-              TextureGLES::Cast(pass_data.stencil_attachment.get())) {
+      if (stencil) {
         if (!stencil->SetAsFramebufferAttachment(
                 GL_FRAMEBUFFER, TextureGLES::AttachmentType::kStencil,
                 pass_data.stencil_mip_level, pass_data.stencil_slice)) {
           return false;
         }
+      } else if (!needs_attachment) {
+        gl.FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT,
+                                   GL_RENDERBUFFER, 0);
       }
 
       auto status = gl.CheckFramebufferStatusDebug(GL_FRAMEBUFFER);
@@ -339,8 +348,8 @@ static void EncodeViewport(const ProcTableGLES& gl,
                        << DebugToFramebufferError(status);
         return false;
       }
-      color_gles.SetCachedFBOSubresource(pass_data.color_mip_level,
-                                         pass_data.color_slice);
+      color_gles.SetCachedFBOAttachments(pass_data.color_mip_level,
+                                         pass_data.color_slice, depth, stencil);
     }
   }
 

@@ -813,14 +813,29 @@ const HandleGLES& TextureGLES::GetCachedFBO() const {
   return cached_fbo_.Get();
 }
 
-void TextureGLES::SetCachedFBOSubresource(uint32_t mip_level, uint32_t slice) {
-  cached_fbo_mip_level_ = mip_level;
-  cached_fbo_slice_ = slice;
+std::optional<UniqueID> TextureGLES::AttachmentName(
+    const TextureGLES* texture) {
+  return texture ? texture->handle_.Get().GetName() : std::nullopt;
 }
 
-bool TextureGLES::CachedFBOMatchesSubresource(uint32_t mip_level,
-                                              uint32_t slice) const {
-  return cached_fbo_mip_level_ == mip_level && cached_fbo_slice_ == slice;
+void TextureGLES::SetCachedFBOAttachments(uint32_t mip_level,
+                                          uint32_t slice,
+                                          const TextureGLES* depth,
+                                          const TextureGLES* stencil) {
+  cached_fbo_mip_level_ = mip_level;
+  cached_fbo_slice_ = slice;
+  cached_fbo_depth_ = AttachmentName(depth);
+  cached_fbo_stencil_ = AttachmentName(stencil);
+}
+
+bool TextureGLES::CachedFBOMatchesAttachments(
+    uint32_t mip_level,
+    uint32_t slice,
+    const TextureGLES* depth,
+    const TextureGLES* stencil) const {
+  return cached_fbo_mip_level_ == mip_level && cached_fbo_slice_ == slice &&
+         cached_fbo_depth_ == AttachmentName(depth) &&
+         cached_fbo_stencil_ == AttachmentName(stencil);
 }
 
 }  // namespace impeller

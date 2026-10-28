@@ -337,6 +337,17 @@ void mockBindFramebuffer(GLenum target, GLuint framebuffer) {
 static_assert(CheckSameSignature<decltype(mockBindFramebuffer),  //
                                  decltype(glBindFramebuffer)>::value);
 
+void mockFramebufferRenderbuffer(GLenum target,
+                                 GLenum attachment,
+                                 GLenum renderbuffertarget,
+                                 GLuint renderbuffer) {
+  return CallMockMethod(&IMockGLESImpl::FramebufferRenderbuffer, target,
+                        attachment, renderbuffertarget, renderbuffer);
+}
+
+static_assert(CheckSameSignature<decltype(mockFramebufferRenderbuffer),  //
+                                 decltype(glFramebufferRenderbuffer)>::value);
+
 void mockReadPixels(GLint x,
                     GLint y,
                     GLsizei width,
@@ -541,6 +552,8 @@ const ProcTableGLES::Resolver kMockResolverGLES = [](const char* name) {
     return reinterpret_cast<void*>(mockGenFramebuffers);
   } else if (strcmp(name, "glBindFramebuffer") == 0) {
     return reinterpret_cast<void*>(mockBindFramebuffer);
+  } else if (strcmp(name, "glFramebufferRenderbuffer") == 0) {
+    return reinterpret_cast<void*>(mockFramebufferRenderbuffer);
   } else if (strcmp(name, "glDiscardFramebufferEXT") == 0) {
     return reinterpret_cast<void*>(mockDiscardFramebufferEXT);
   } else if (strcmp(name, "glInvalidateFramebuffer") == 0) {

@@ -176,12 +176,21 @@ class TextureGLES final : public Texture,
   /// Retrieve the cached FBO object, or a dead handle if there is no object.
   const HandleGLES& GetCachedFBO() const;
 
-  /// Records the subresource the cached FBO is currently bound to.
-  void SetCachedFBOSubresource(uint32_t mip_level, uint32_t slice);
+  /// Records what the cached FBO is currently bound to: this texture's
+  /// `(mip_level, slice)` and the pass's depth and stencil textures, if any.
+  void SetCachedFBOAttachments(uint32_t mip_level,
+                               uint32_t slice,
+                               const TextureGLES* depth,
+                               const TextureGLES* stencil);
 
-  /// Whether the cached FBO is currently bound to `(mip_level, slice)`. When
-  /// false, the FBO must be re-attached before use.
-  bool CachedFBOMatchesSubresource(uint32_t mip_level, uint32_t slice) const;
+  /// Whether the cached FBO is currently bound to `(mip_level, slice)` with
+  /// these depth and stencil textures. When false, the FBO must be
+  /// re-attached before use. A color texture can outlive the depth/stencil
+  /// it was first rendered with, so those are part of the match.
+  bool CachedFBOMatchesAttachments(uint32_t mip_level,
+                                   uint32_t slice,
+                                   const TextureGLES* depth,
+                                   const TextureGLES* stencil) const;
 
   // Visible for testing.
   std::optional<HandleGLES> GetSyncFence() const;
@@ -210,7 +219,13 @@ class TextureGLES final : public Texture,
   UniqueHandleGLES cached_fbo_;
   uint32_t cached_fbo_mip_level_ = 0;
   uint32_t cached_fbo_slice_ = 0;
+  // Handle names are never reused, so a depth/stencil texture allocated after
+  // the attached one was released never matches it.
+  std::optional<UniqueID> cached_fbo_depth_;
+  std::optional<UniqueID> cached_fbo_stencil_;
   bool is_valid_ = false;
+
+  static std::optional<UniqueID> AttachmentName(const TextureGLES* texture);
 
   TextureGLES(std::shared_ptr<ReactorGLES> reactor,
               TextureDescriptor desc,
