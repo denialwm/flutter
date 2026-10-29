@@ -66,7 +66,17 @@ ContextGLES::ContextGLES(
     }
   }
 
-  device_capabilities_ = reactor_->GetProcTable().GetCapabilities();
+  if (flags.float_color) {
+    auto capabilities = std::make_shared<CapabilitiesGLES>(
+        reactor_->GetProcTable(), /*float_color=*/true);
+    if (!capabilities->SupportsHalfFloatColorAttachments()) {
+      VALIDATION_LOG << "Half-float color attachments are unsupported; "
+                        "offscreen targets stay 8-bit.";
+    }
+    device_capabilities_ = std::move(capabilities);
+  } else {
+    device_capabilities_ = reactor_->GetProcTable().GetCapabilities();
+  }
 
   // Create the sampler library.
   {

@@ -451,6 +451,8 @@ Settings SettingsFromCommandLine(const fml::CommandLine& command_line,
 
   settings.denial_gl_fbo_zero_is_no_target =
       command_line.HasOption(FlagForSwitch(Switch::DenialGLFBOZeroIsNoTarget));
+  settings.denial_float_color =
+      command_line.HasOption(FlagForSwitch(Switch::DenialFloatColor));
 
   {
     std::string impeller_backend_value;

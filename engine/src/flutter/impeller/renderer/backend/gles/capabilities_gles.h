@@ -24,7 +24,7 @@ class CapabilitiesGLES final
     : public Capabilities,
       public BackendCast<CapabilitiesGLES, Capabilities> {
  public:
-  explicit CapabilitiesGLES(const ProcTableGLES& gl);
+  explicit CapabilitiesGLES(const ProcTableGLES& gl, bool float_color = false);
 
   CapabilitiesGLES(const CapabilitiesGLES&) = delete;
 
@@ -144,6 +144,9 @@ class CapabilitiesGLES final
   // |Capabilities|
   PixelFormat GetDefaultColorFormat() const override;
 
+  /// Whether half-float textures can be color attachments.
+  bool SupportsHalfFloatColorAttachments() const;
+
   // |Capabilities|
   PixelFormat GetDefaultStencilFormat() const override;
 
@@ -168,6 +171,8 @@ class CapabilitiesGLES final
  private:
   bool supports_texture_to_texture_blits_ = false;
   bool supports_framebuffer_fetch_ = false;
+  bool supports_half_float_color_attachments_ = false;
+  PixelFormat default_color_format_ = PixelFormat::kR8G8B8A8UNormInt;
   bool supports_decal_sampler_address_mode_ = false;
   bool supports_offscreen_msaa_ = false;
   bool supports_implicit_msaa_ = false;

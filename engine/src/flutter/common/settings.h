@@ -237,6 +237,9 @@ struct Settings {
   // no-target response when every atlas image is retained by KMS.
   bool denial_gl_fbo_zero_is_no_target = false;
 
+  // Denial HDR: Impeller's offscreen targets default to half float.
+  bool denial_float_color = false;
+
   bool enable_flutter_gpu = false;
 
   // Enable android surface control swapchains where supported.

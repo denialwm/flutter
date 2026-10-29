@@ -1204,6 +1204,8 @@ static std::optional<impeller::PixelFormat> FlutterFormatToImpellerPixelFormat(
       return impeller::PixelFormat::kR8G8B8A8UNormInt;
     case GL_RGB10_A2:
       return impeller::PixelFormat::kR10G10B10A2UNormInt;
+    case GL_RGBA16F:
+      return impeller::PixelFormat::kR16G16B16A16Float;
     default:
       FML_LOG(ERROR) << "Cannot convert format " << format
                      << " to impeller::PixelFormat.";
@@ -2455,6 +2457,7 @@ FlutterEngineResult FlutterEngineInitialize(size_t version,
   impeller::Flags impeller_flags;
   impeller_flags.use_sdfs = settings.impeller_use_sdfs;
   impeller_flags.antialiased_lines = settings.impeller_antialiased_lines;
+  impeller_flags.float_color = settings.denial_float_color;
 
   auto on_create_platform_view = InferPlatformViewCreationCallback(
       config, user_data, platform_dispatch_table,

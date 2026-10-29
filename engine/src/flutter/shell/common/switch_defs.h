@@ -255,6 +255,10 @@ DEF_SWITCH(DenialGLFBOZeroIsNoTarget,
            "denial-gl-fbo-zero-is-no-target",
            "Treat FBO 0 as an explicit no-target response for Denial's "
            "rotating direct-scanout atlas.")
+DEF_SWITCH(DenialFloatColor,
+           "denial-float-color",
+           "Make Impeller's offscreen render targets half float so content "
+           "brighter than SDR white survives layers and filters.")
 DEF_SWITCH(ImpellerBackend,
            "impeller-backend",
            "Requests a particular Impeller backend on platforms that support "

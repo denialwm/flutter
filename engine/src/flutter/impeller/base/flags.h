@@ -11,6 +11,9 @@ struct Flags {
   bool antialiased_lines = false;
   /// Use SDFs for rendering.
   bool use_sdfs = false;
+  /// Denial: offscreen targets default to half float so content brighter
+  /// than SDR white survives layers and filters.
+  bool float_color = false;
 
   bool operator==(const Flags&) const = default;
 };

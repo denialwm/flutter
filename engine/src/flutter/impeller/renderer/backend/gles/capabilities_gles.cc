@@ -62,7 +62,14 @@ static const constexpr char* kAppleTextureMaxLevelExt =
 static const constexpr char* kTextureFilterAnisotropicExt =
     "GL_EXT_texture_filter_anisotropic";
 
-CapabilitiesGLES::CapabilitiesGLES(const ProcTableGLES& gl) {
+// https://registry.khronos.org/OpenGL/extensions/EXT/EXT_color_buffer_half_float.txt
+static const constexpr char* kColorBufferHalfFloatExt =
+    "GL_EXT_color_buffer_half_float";
+
+// https://registry.khronos.org/OpenGL/extensions/EXT/EXT_color_buffer_float.txt
+static const constexpr char* kColorBufferFloatExt = "GL_EXT_color_buffer_float";
+
+CapabilitiesGLES::CapabilitiesGLES(const ProcTableGLES& gl, bool float_color) {
   {
     GLint value = 0;
     gl.GetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &value);
@@ -154,6 +161,14 @@ CapabilitiesGLES::CapabilitiesGLES(const ProcTableGLES& gl) {
   }
 
   supports_framebuffer_fetch_ = desc->HasExtension(kFramebufferFetchExt);
+
+  supports_half_float_color_attachments_ =
+      !desc->IsES() || desc->GetGlVersion().IsAtLeast(Version(3, 2)) ||
+      desc->HasExtension(kColorBufferHalfFloatExt) ||
+      desc->HasExtension(kColorBufferFloatExt);
+  if (float_color && supports_half_float_color_attachments_) {
+    default_color_format_ = PixelFormat::kR16G16B16A16Float;
+  }
 
   if (desc->HasExtension(kTextureBorderClampExt) ||
       desc->HasExtension(kNvidiaTextureBorderClampExt)) {
@@ -325,7 +340,11 @@ bool CapabilitiesGLES::SupportsTriangleFan() const {
 }
 
 PixelFormat CapabilitiesGLES::GetDefaultColorFormat() const {
-  return PixelFormat::kR8G8B8A8UNormInt;
+  return default_color_format_;
+}
+
+bool CapabilitiesGLES::SupportsHalfFloatColorAttachments() const {
+  return supports_half_float_color_attachments_;
 }
 
 PixelFormat CapabilitiesGLES::GetDefaultStencilFormat() const {
