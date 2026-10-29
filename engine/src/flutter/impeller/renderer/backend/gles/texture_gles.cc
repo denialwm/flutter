@@ -40,6 +40,7 @@ static bool IsDepthStencilFormat(PixelFormat format) {
     case PixelFormat::kB10G10R10XR:
     case PixelFormat::kB10G10R10XRSRGB:
     case PixelFormat::kB10G10R10A10XR:
+    case PixelFormat::kR10G10B10A2UNormInt:
     case PixelFormat::kR32Float:
     case PixelFormat::kBC1RGBAUNormInt:
     case PixelFormat::kBC1RGBAUNormIntSRGB:
@@ -377,6 +378,8 @@ static std::optional<GLenum> ToRenderBufferFormat(PixelFormat format) {
       return GL_RGBA8;
     case PixelFormat::kR32G32B32A32Float:
       return GL_RGBA32F;
+    case PixelFormat::kR10G10B10A2UNormInt:
+      return GL_RGB10_A2;
     case PixelFormat::kR16G16B16A16Float:
       return GL_RGBA16F;
     case PixelFormat::kS8UInt:

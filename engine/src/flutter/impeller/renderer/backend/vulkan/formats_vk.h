@@ -165,6 +165,8 @@ constexpr vk::Format ToVKImageFormat(PixelFormat format) {
       return vk::Format::eR32G32B32A32Sfloat;
     case PixelFormat::kR16G16B16A16Float:
       return vk::Format::eR16G16B16A16Sfloat;
+    case PixelFormat::kR10G10B10A2UNormInt:
+      return vk::Format::eA2B10G10R10UnormPack32;
     case PixelFormat::kS8UInt:
       return vk::Format::eS8Uint;
     case PixelFormat::kD24UnormS8Uint:
@@ -462,6 +464,7 @@ constexpr bool PixelFormatIsDepthStencil(PixelFormat format) {
     case PixelFormat::kB10G10R10XR:
     case PixelFormat::kB10G10R10XRSRGB:
     case PixelFormat::kB10G10R10A10XR:
+    case PixelFormat::kR10G10B10A2UNormInt:
     case PixelFormat::kR32Float:
     case PixelFormat::kBC1RGBAUNormInt:
     case PixelFormat::kBC1RGBAUNormIntSRGB:
@@ -579,6 +582,7 @@ constexpr vk::ImageAspectFlags ToVKImageAspectFlags(PixelFormat format) {
     case PixelFormat::kB10G10R10XR:
     case PixelFormat::kB10G10R10XRSRGB:
     case PixelFormat::kB10G10R10A10XR:
+    case PixelFormat::kR10G10B10A2UNormInt:
     case PixelFormat::kR32Float:
     case PixelFormat::kBC1RGBAUNormInt:
     case PixelFormat::kBC1RGBAUNormIntSRGB:
@@ -671,6 +675,7 @@ constexpr vk::ImageAspectFlags ToImageAspectFlags(PixelFormat format) {
     case PixelFormat::kB10G10R10XR:
     case PixelFormat::kB10G10R10XRSRGB:
     case PixelFormat::kB10G10R10A10XR:
+    case PixelFormat::kR10G10B10A2UNormInt:
     case PixelFormat::kR32Float:
     case PixelFormat::kBC1RGBAUNormInt:
     case PixelFormat::kBC1RGBAUNormIntSRGB:

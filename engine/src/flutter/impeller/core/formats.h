@@ -110,6 +110,9 @@ enum class PixelFormat : uint8_t {
   kB10G10R10XR,
   kB10G10R10XRSRGB,
   kB10G10R10A10XR,
+  // 10-bit unsigned normalized color with 2-bit alpha: GL_RGB10_A2,
+  // Vulkan A2B10G10R10_UNORM_PACK32, Metal RGB10A2Unorm.
+  kR10G10B10A2UNormInt,
   kR32Float,
   // Depth and stencil formats.
   kS8UInt,
@@ -317,6 +320,8 @@ constexpr const char* PixelFormatToString(PixelFormat format) {
       return "B10G10R10XRSRGB";
     case PixelFormat::kB10G10R10A10XR:
       return "B10G10R10A10XR";
+    case PixelFormat::kR10G10B10A2UNormInt:
+      return "R10G10B10A2UNormInt";
     case PixelFormat::kS8UInt:
       return "S8UInt";
     case PixelFormat::kD24UnormS8Uint:
@@ -656,6 +661,7 @@ constexpr size_t BytesPerPixelForPixelFormat(PixelFormat format) {
     case PixelFormat::kB8G8R8A8UNormIntSRGB:
     case PixelFormat::kB10G10R10XRSRGB:
     case PixelFormat::kB10G10R10XR:
+    case PixelFormat::kR10G10B10A2UNormInt:
     case PixelFormat::kR32Float:
       return 4u;
     case PixelFormat::kD24UnormS8Uint:

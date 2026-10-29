@@ -1202,6 +1202,8 @@ static std::optional<impeller::PixelFormat> FlutterFormatToImpellerPixelFormat(
       return impeller::PixelFormat::kB8G8R8A8UNormInt;
     case GL_RGBA8:
       return impeller::PixelFormat::kR8G8B8A8UNormInt;
+    case GL_RGB10_A2:
+      return impeller::PixelFormat::kR10G10B10A2UNormInt;
     default:
       FML_LOG(ERROR) << "Cannot convert format " << format
                      << " to impeller::PixelFormat.";
