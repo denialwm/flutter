@@ -90,19 +90,17 @@ EntityPassClipStack::ClipStateResult EntityPassClipStack::RecordRestore(
   subpass_state.clip_coverage.resize(restoration_index + 1);
   result.clip_did_change = true;
 
-  if (subpass_state.clip_coverage.back().coverage.has_value()) {
-    FML_DCHECK(next_replay_index_ <=
-               subpass_state.rendered_clip_entities.size());
-    // https://github.com/flutter/flutter/issues/162172
-    // This code is slightly wrong and should be popping more than one clip
-    // entry.
-    if (!subpass_state.rendered_clip_entities.empty()) {
-      subpass_state.rendered_clip_entities.pop_back();
-
-      if (next_replay_index_ > subpass_state.rendered_clip_entities.size()) {
-        next_replay_index_ = subpass_state.rendered_clip_entities.size();
-      }
-    }
+  // Drop exactly the replays of the restored clips. Popping one per restore
+  // dropped an outer clip's replay when the restored clip recorded none, so
+  // a later backdrop split replayed the clips without it.
+  // https://github.com/flutter/flutter/issues/162172
+  const size_t replay_count = subpass_state.clip_coverage.back().replay_count;
+  auto& replays = subpass_state.rendered_clip_entities;
+  if (replays.size() > replay_count) {
+    replays.erase(replays.begin() + replay_count, replays.end());
+  }
+  if (next_replay_index_ > subpass_state.rendered_clip_entities.size()) {
+    next_replay_index_ = subpass_state.rendered_clip_entities.size();
   }
   return result;
 }
@@ -169,6 +167,7 @@ EntityPassClipStack::ClipStateResult EntityPassClipStack::RecordClip(
         .coverage = current_clip_coverage,        //
         .clip_height = previous_clip_height + 1,  //
         .reach = reach,                           //
+        .replay_count = subpass_state.rendered_clip_entities.size(),
     });
 
     return result;
@@ -203,6 +202,7 @@ EntityPassClipStack::ClipStateResult EntityPassClipStack::RecordClip(
       .coverage = coverage_value,               //
       .clip_height = previous_clip_height + 1,  //
       .reach = reach,                           //
+      .replay_count = subpass_state.rendered_clip_entities.size() + 1,
   });
   result.clip_did_change = true;
   result.should_render = should_render;

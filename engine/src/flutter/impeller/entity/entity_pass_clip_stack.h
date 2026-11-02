@@ -19,6 +19,9 @@ struct ClipCoverageLayer {
   /// content move: no dimension of an intersection exceeds that of any of its
   /// clips, of the content of enclosing layers or of their passes.
   Size reach = kUnlimitedReach;
+  /// How many replay entities this layer and the layers under it recorded. A
+  /// clip that leaves the coverage as it was records none.
+  size_t replay_count = 0;
 
   static constexpr Size kUnlimitedReach =
       Size(std::numeric_limits<Scalar>::infinity(),

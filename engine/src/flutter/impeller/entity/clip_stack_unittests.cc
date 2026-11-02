@@ -327,5 +327,48 @@ TEST(EntityPassClipStackTest, ClipAndRestoreWithSubpassesNonAA) {
             Rect::MakeLTRB(50, 50, 55, 55));
 }
 
+TEST(EntityPassClipStackTest, RestoringAnUnchangedClipKeepsTheOuterReplay) {
+  EntityPassClipStack recorder =
+      EntityPassClipStack(Rect::MakeLTRB(0, 0, 100, 100));
+
+  // A path clip, such as a partial repaint's damage region.
+  recorder.RecordClip(ClipContents(Rect::MakeLTRB(10, 10, 60, 60),
+                                   /*is_axis_aligned_rect=*/false),
+                      Matrix(), {0, 0}, 4, 0, /*is_aa=*/false);
+  ASSERT_EQ(recorder.GetReplayEntities().size(), 1u);
+
+  // A clip containing it leaves the coverage as it was and records no replay.
+  EntityPassClipStack::ClipStateResult result =
+      recorder.RecordClip(ClipContents(Rect::MakeLTRB(0, 0, 100, 100),
+                                       /*is_axis_aligned_rect=*/true),
+                          Matrix(), {0, 0}, 3, 0, /*is_aa=*/false);
+  EXPECT_FALSE(result.clip_did_change);
+  ASSERT_EQ(recorder.GetReplayEntities().size(), 1u);
+
+  // Restoring it keeps the path clip for a later backdrop split to replay.
+  recorder.RecordRestore({0, 0}, 1);
+  EXPECT_EQ(recorder.GetReplayEntities().size(), 1u);
+
+  recorder.RecordRestore({0, 0}, 0);
+  EXPECT_TRUE(recorder.GetReplayEntities().empty());
+}
+
+TEST(EntityPassClipStackTest, RestoringSeveralClipsDropsAllTheirReplays) {
+  EntityPassClipStack recorder =
+      EntityPassClipStack(Rect::MakeLTRB(0, 0, 100, 100));
+
+  recorder.RecordClip(ClipContents(Rect::MakeLTRB(10, 10, 60, 60),
+                                   /*is_axis_aligned_rect=*/false),
+                      Matrix(), {0, 0}, 4, 0, /*is_aa=*/false);
+  recorder.RecordClip(ClipContents(Rect::MakeLTRB(20, 20, 50, 50),
+                                   /*is_axis_aligned_rect=*/false),
+                      Matrix(), {0, 0}, 4, 0, /*is_aa=*/false);
+  ASSERT_EQ(recorder.GetReplayEntities().size(), 2u);
+
+  // One restore can end several clips of the same save.
+  recorder.RecordRestore({0, 0}, 0);
+  EXPECT_TRUE(recorder.GetReplayEntities().empty());
+}
+
 }  // namespace testing
 }  // namespace impeller
