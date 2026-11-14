@@ -116,11 +116,13 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
 
   // GPU storage of one slice: its sampled color texture of `size`. The
   // attachments that only matter while rendering (depth/stencil, and MSAA
-  // when the output uses it) are created per render. A slice renders into
+  // when the slice uses it) are created per render. A slice renders into
   // the top-left corner, so storage is reused while the slice fits in at
-  // most twice its area.
+  // most twice its area. `bottom_up` storage renders without the GLES
+  // offscreen flip, as the output's FBO does (DenialRenderSlice).
   struct DenialSliceStorage {
     DlISize size;
+    bool bottom_up = false;
     std::shared_ptr<impeller::Texture> texture;
     sk_sp<DlImage> image;
   };
@@ -133,6 +135,8 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
     DlIRect bounds;
     // The surface transformation the storage was rendered with.
     DlMatrix transformation;
+    // Whether the storage was rendered multisampled.
+    bool msaa = false;
     std::vector<DlIRect> rects;
     DenialSliceStorage storage;
   };

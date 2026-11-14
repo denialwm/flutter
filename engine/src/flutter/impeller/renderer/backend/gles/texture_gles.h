@@ -116,6 +116,14 @@ class TextureGLES final : public Texture,
 
   bool IsWrapped() const;
 
+  /// @brief Store this texture bottom-up, as a borrowed texture-backed FBO is:
+  ///        render passes into it skip the offscreen vertex-stage flip, so
+  ///        they rasterize exactly as passes into such an FBO do, and
+  ///        sampling flips it back. Call before the texture is first rendered.
+  void SetStoredBottomUp();
+
+  bool IsStoredBottomUp() const;
+
   /// @brief Reset the internal texture state so that the reactor will not free
   ///        the associated handle.
   void Leak();
@@ -215,6 +223,7 @@ class TextureGLES final : public Texture,
   std::array<std::bitset<kMaxTrackedMipLevels>, 6> slice_mip_initialized_ = {};
   const bool is_wrapped_;
   const bool is_texture_backed_fbo_;
+  bool stored_bottom_up_ = false;
   const std::optional<GLuint> wrapped_fbo_;
   UniqueHandleGLES cached_fbo_;
   uint32_t cached_fbo_mip_level_ = 0;

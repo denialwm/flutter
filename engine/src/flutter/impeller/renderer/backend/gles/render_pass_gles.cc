@@ -393,7 +393,8 @@ static void EncodeViewport(const ProcTableGLES& gl,
   // is bottom left origin, so we convert the coordinates here.
   // Offscreen FBO passes flip in the vertex shader (the swapchain is
   // left alone); see https://github.com/flutter/flutter/issues/186554.
-  const bool flip_y = !is_wrapped_fbo;
+  // A texture stored bottom-up renders as the borrowed FBOs do.
+  const bool flip_y = !is_wrapped_fbo && !color_gles.IsStoredBottomUp();
   const float y_flip_value = flip_y ? -1.0f : 1.0f;
 
   std::optional<ColorAttachmentDescriptor> current_color_attachment;

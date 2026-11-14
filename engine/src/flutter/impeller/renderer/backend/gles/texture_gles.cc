@@ -215,7 +215,15 @@ Scalar TextureGLES::GetYCoordScale() const {
   // Offscreen GLES passes are stored top-down by the backend's vertex-stage
   // flip. A borrowed FBO is deliberately excluded from that flip, and Denial
   // exposes its borrowed color attachment for in-place backdrop reads.
-  return is_texture_backed_fbo_ ? -1.0f : 1.0f;
+  return is_texture_backed_fbo_ || stored_bottom_up_ ? -1.0f : 1.0f;
+}
+
+void TextureGLES::SetStoredBottomUp() {
+  stored_bottom_up_ = true;
+}
+
+bool TextureGLES::IsStoredBottomUp() const {
+  return stored_bottom_up_;
 }
 
 // |Texture|
