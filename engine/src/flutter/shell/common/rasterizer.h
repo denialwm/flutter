@@ -298,6 +298,13 @@ class Rasterizer final : public SnapshotDelegate,
   void NotifyLowMemoryWarning() const;
 
   //----------------------------------------------------------------------------
+  /// @brief      Releases the offscreen targets Impeller keeps from the last
+  ///             frame for the next one to reuse. For an application that
+  ///             has become hidden: its next frame may be a long time away.
+  ///
+  void ReleaseCachedRenderTargets();
+
+  //----------------------------------------------------------------------------
   /// @brief      Gets a weak pointer to the rasterizer. The rasterizer may only
   ///             be accessed on the raster task runner.
   ///

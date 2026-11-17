@@ -133,6 +133,10 @@ void RenderTargetCache::End() {
   render_target_data_.swap(retain);
 }
 
+void RenderTargetCache::ReleaseCachedTargets() {
+  render_target_data_.clear();
+}
+
 void RenderTargetCache::AllowLargerTargetForNextRequest() {
   allow_larger_next_request_ = true;
 }

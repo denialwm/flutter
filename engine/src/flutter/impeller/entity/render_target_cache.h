@@ -30,6 +30,9 @@ class RenderTargetCache : public RenderTargetAllocator {
   void End() override;
 
   // |RenderTargetAllocator|
+  void ReleaseCachedTargets() override;
+
+  // |RenderTargetAllocator|
   void AllowLargerTargetForNextRequest() override;
 
   // |RenderTargetAllocator|

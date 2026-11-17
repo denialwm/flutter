@@ -218,6 +218,12 @@ class RenderTargetAllocator {
   ///        This may be used to deallocate any unused textures.
   virtual void End();
 
+  /// @brief Release every target kept for a later frame to reuse.
+  ///
+  ///        End() keeps what the frame used until the next frame ends. Call
+  ///        this when no next frame is expected, between frames.
+  virtual void ReleaseCachedTargets();
+
  private:
   std::shared_ptr<Allocator> allocator_;
 };

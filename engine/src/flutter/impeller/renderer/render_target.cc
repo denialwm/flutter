@@ -339,6 +339,8 @@ void RenderTargetAllocator::Start() {}
 
 void RenderTargetAllocator::End() {}
 
+void RenderTargetAllocator::ReleaseCachedTargets() {}
+
 bool PooledTargetPaddingEnabled() {
   static const bool enabled = [] {
     const char* value = std::getenv("DENIA_EXACT_TARGET_SIZES");

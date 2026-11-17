@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <cstring>
 #include <future>
 #include "fml/task_runner.h"
 #include "impeller/core/runtime_types.h"
@@ -1187,10 +1188,19 @@ void Shell::OnPlatformViewSetViewportMetrics(int64_t view_id,
   }
 }
 
+static bool IsHiddenLifecycleMessage(const PlatformMessage& message) {
+  static constexpr std::string_view kHidden = "AppLifecycleState.hidden";
+  const fml::MallocMapping& data = message.data();
+  return message.channel() == "flutter/lifecycle" &&
+         data.GetSize() == kHidden.size() &&
+         memcmp(data.GetMapping(), kHidden.data(), kHidden.size()) == 0;
+}
+
 // |PlatformView::Delegate|
 void Shell::OnPlatformViewDispatchPlatformMessage(
     std::unique_ptr<PlatformMessage> message) {
   FML_DCHECK(is_set_up_);
+  const bool hidden = IsHiddenLifecycleMessage(*message);
 #if FLUTTER_RUNTIME_MODE == FLUTTER_RUNTIME_MODE_DEBUG
   if (!task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread()) {
     std::scoped_lock lock(misbehaving_message_channels_mutex_);
@@ -1220,6 +1230,21 @@ void Shell::OnPlatformViewDispatchPlatformMessage(
               engine->DispatchPlatformMessage(std::move(message));
             }
           }));
+
+  if (hidden) {
+    // A hidden application draws no frames, so the targets its last frame
+    // drew into would stay until it is shown again. Through the UI thread,
+    // so that a frame it has already built is drawn first.
+    task_runners_.GetUITaskRunner()->PostTask(
+        [raster_task_runner = task_runners_.GetRasterTaskRunner(),
+         rasterizer = rasterizer_->GetWeakPtr()]() {
+          raster_task_runner->PostTask([rasterizer]() {
+            if (rasterizer) {
+              rasterizer->ReleaseCachedRenderTargets();
+            }
+          });
+        });
+  }
 }
 
 // |PlatformView::Delegate|

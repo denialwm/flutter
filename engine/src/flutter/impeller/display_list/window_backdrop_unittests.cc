@@ -925,6 +925,46 @@ TEST_F(WindowBackdropTest, CacheLendsSlightlyLargerTargetsOnlyWhenAllowed) {
   cache.End();
 }
 
+TEST_F(WindowBackdropTest, ReleasingCachedTargetsFreesWhatTheLastFrameUsed) {
+  // SetUp gives ContentContext no allocator, so it owns a RenderTargetCache.
+  auto cache = std::static_pointer_cast<RenderTargetCache>(
+      renderer_->GetRenderTargetCache());
+  cache->Start();
+  TextureDescriptor desc;
+  desc.size = {200, 100};
+  desc.format = PixelFormat::kR8G8B8A8UNormInt;
+  desc.usage = TextureUsage::kRenderTarget;
+  desc.storage_mode = StorageMode::kDevicePrivate;
+  ColorAttachment color;
+  color.texture =
+      renderer_->GetContext()->GetResourceAllocator()->CreateTexture(desc);
+  ASSERT_TRUE(color.texture);
+  color.load_action = LoadAction::kClear;
+  RenderTarget target;
+  target.SetColorAttachment(color, 0);
+  Canvas canvas(*renderer_, target, false, false);
+  const Rect layer = Rect::MakeXYWH(10, 10, 60, 40);
+  Paint group;
+  group.color = Color::White().WithAlpha(0.5f);
+  canvas.SaveLayer(group, layer);
+  Paint fill;
+  fill.color = Color::Red();
+  canvas.DrawRect(layer.Expand(-4), fill);
+  canvas.Restore();
+  canvas.EndReplay();
+  cache->End();
+  // The layer's target waits for a next frame.
+  EXPECT_GT(cache->CachedTextureCount(), 0u);
+
+  cache->ReleaseCachedTargets();
+  EXPECT_EQ(cache->CachedTextureCount(), 0u);
+
+  // The next frame allocates again.
+  cache->Start();
+  cache->End();
+  EXPECT_EQ(cache->CachedTextureCount(), 0u);
+}
+
 TEST_F(WindowBackdropTest,
        ClippedLayersReusePooledTargetsWhileTheirSizeChanges) {
   // SetUp gives ContentContext no allocator, so it owns a RenderTargetCache.

@@ -251,6 +251,29 @@ void Rasterizer::NotifyLowMemoryWarning() const {
 #endif  //  !SLIMPELLER
 }
 
+void Rasterizer::ReleaseCachedRenderTargets() {
+#ifdef IMPELLER_SUPPORTS_RENDERING
+  if (!surface_) {
+    return;
+  }
+  const auto aiks_context = surface_->GetAiksContext();
+  if (!aiks_context) {
+    return;
+  }
+  auto context_switch = surface_->MakeRenderContextCurrent();
+  if (!context_switch->GetResult()) {
+    return;
+  }
+  aiks_context->GetContentContext()
+      .GetRenderTargetCache()
+      ->ReleaseCachedTargets();
+  // The backend frees what was released when it next submits work, and
+  // nothing else submits any while the application is hidden.
+  [[maybe_unused]] const bool flushed =
+      aiks_context->GetContext()->FlushCommandBuffers();
+#endif  // IMPELLER_SUPPORTS_RENDERING
+}
+
 void Rasterizer::CollectView(int64_t view_id) {
   if (external_view_embedder_) {
     external_view_embedder_->CollectView(view_id);
