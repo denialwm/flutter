@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <unordered_map>
 
 #include "flutter/display_list/display_list.h"
@@ -39,6 +40,10 @@ class StaticPictureCache final {
     size_t max_observations = 128u;
     size_t max_eligibility_records = 128u;
     uint32_t admission_threshold = 2u;
+    // How often a picture may be drawn at other keys before an entry of it
+    // counts as left behind. A picture two outputs show at different scales
+    // uses both of its entries in turn and keeps them.
+    uint32_t stale_key_draws = 240u;
   };
 
   struct Statistics {
@@ -51,6 +56,8 @@ class StaticPictureCache final {
     uint64_t rejected_by_budget = 0u;
     uint64_t allocation_failures = 0u;
     uint64_t evictions = 0u;
+    uint64_t collected = 0u;
+    uint64_t stale_keys = 0u;
   };
 
   using Snapshotter =
@@ -71,6 +78,20 @@ class StaticPictureCache final {
             const std::optional<flutter::DlMatrix>& canvas_to_render_target,
             flutter::DlScalar opacity,
             flutter::DlCanvas& canvas);
+
+  // Drops the entries that cannot be drawn again. Called once per frame.
+  //
+  // An entry whose picture nothing but this cache holds any more: a
+  // picture's id is never used again. And an entry its picture has left
+  // behind: the picture keeps being drawn, at another scale or pixel
+  // alignment. Without this, each re-recorded picture and each place an
+  // animation rested would leave a texture until the byte budget pushed it
+  // out.
+  void Collect();
+
+  // The render audit's view of the cache: its counters, then every entry
+  // with its picture id, key, size and how many draws ago it was last used.
+  std::string Describe() const;
 
   const Statistics& GetStatistics() const { return statistics_; }
   size_t GetEntryCount() const { return entries_.size(); }
@@ -103,11 +124,24 @@ class StaticPictureCache final {
     size_t estimated_bytes = 0u;
   };
 
+  // One per cached picture, however many entries it has: with this single
+  // reference the cache can tell when it is the picture's last holder.
+  struct Picture {
+    sk_sp<flutter::DisplayList> display_list;
+    uint64_t draws = 0u;
+    size_t entries = 0u;
+  };
+
   struct Entry {
     sk_sp<flutter::DlImage> image;
+    Picture* picture = nullptr;
     size_t bytes = 0u;
     uint64_t last_access = 0u;
+    // The picture's draw count when this entry was last drawn.
+    uint64_t last_draw = 0u;
   };
+
+  using Entries = std::unordered_map<Key, Entry, Key::Hash>;
 
   struct Observation {
     uint32_t count = 0u;
@@ -135,6 +169,7 @@ class StaticPictureCache final {
                  const Plan& plan,
                  flutter::DlScalar opacity,
                  flutter::DlCanvas& canvas) const;
+  Entries::iterator EraseEntry(Entries::iterator entry);
   void MakeRoom(size_t bytes);
   void TrimObservations();
   void TrimEligibilityRecords();
@@ -145,7 +180,8 @@ class StaticPictureCache final {
   Statistics statistics_;
   uint64_t access_ = 0u;
   size_t resident_bytes_ = 0u;
-  std::unordered_map<Key, Entry, Key::Hash> entries_;
+  Entries entries_;
+  std::unordered_map<uint32_t, Picture> pictures_;
   std::unordered_map<Key, Observation, Key::Hash> observations_;
   std::unordered_map<uint32_t, EligibilityRecord> eligibility_;
 

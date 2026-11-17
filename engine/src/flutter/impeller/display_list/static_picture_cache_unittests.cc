@@ -591,6 +591,83 @@ TEST_F(StaticPictureCacheTest, TotalByteBudgetEvictsLeastRecentlyUsedEntry) {
   EXPECT_EQ(cache.GetStatistics().evictions, 2u);
 }
 
+TEST_F(StaticPictureCacheTest, DropsEntriesWhosePictureIsGone) {
+  StaticPictureCache::Limits limits;
+  limits.admission_threshold = 1u;
+  StaticPictureCache cache(
+      *renderer_, limits,
+      [&](const sk_sp<DisplayList>&, ISize size) { return MakeTexture(size); });
+  auto red = MakeRectPicture(DlColor::kRed());
+  const auto green = MakeRectPicture(DlColor::kGreen());
+  const std::optional<DlMatrix> identity = DlMatrix();
+  DisplayListBuilder output;
+
+  EXPECT_TRUE(cache.Draw(red, DlMatrix(), identity, 1.0f, output));
+  EXPECT_TRUE(cache.Draw(green, DlMatrix(), identity, 1.0f, output));
+  cache.Collect();
+  EXPECT_EQ(cache.GetEntryCount(), 2u);
+  EXPECT_EQ(cache.GetStatistics().collected, 0u);
+
+  // The framework re-recorded the picture and let the old one go.
+  red.reset();
+  cache.Collect();
+  EXPECT_EQ(cache.GetEntryCount(), 1u);
+  EXPECT_EQ(cache.GetResidentBytes(), 32u * 32u * 4u);
+  EXPECT_EQ(cache.GetStatistics().collected, 1u);
+  EXPECT_EQ(cache.GetStatistics().evictions, 0u);
+
+  EXPECT_TRUE(cache.Draw(green, DlMatrix(), identity, 1.0f, output));
+  EXPECT_EQ(cache.GetStatistics().hits, 1u);
+}
+
+TEST_F(StaticPictureCacheTest, DropsKeysAPictureLeftBehind) {
+  StaticPictureCache::Limits limits;
+  limits.admission_threshold = 1u;
+  limits.stale_key_draws = 3u;
+  StaticPictureCache cache(
+      *renderer_, limits,
+      [&](const sk_sp<DisplayList>&, ISize size) { return MakeTexture(size); });
+  auto red = MakeRectPicture(DlColor::kRed());
+  const DlMatrix moved = DlMatrix::MakeTranslation({0.5f, 0.0f});
+  const std::optional<DlMatrix> identity = DlMatrix();
+  DisplayListBuilder output;
+
+  EXPECT_TRUE(cache.Draw(red, DlMatrix(), identity, 1.0f, output));
+  EXPECT_TRUE(cache.Draw(red, moved, identity, 1.0f, output));
+  EXPECT_EQ(cache.GetEntryCount(), 2u);
+
+  // Two outputs showing the picture use both entries in turn.
+  for (int frame = 0; frame < 8; frame++) {
+    EXPECT_TRUE(cache.Draw(red, DlMatrix(), identity, 1.0f, output));
+    EXPECT_TRUE(cache.Draw(red, moved, identity, 1.0f, output));
+    cache.Collect();
+  }
+  EXPECT_EQ(cache.GetEntryCount(), 2u);
+
+  // The picture now rests at one of them. The other entry is three draws
+  // behind after two more frames: the last frame both were drawn in drew
+  // it first.
+  for (int frame = 0; frame < 2; frame++) {
+    EXPECT_TRUE(cache.Draw(red, moved, identity, 1.0f, output));
+    cache.Collect();
+  }
+  EXPECT_EQ(cache.GetEntryCount(), 2u);
+  EXPECT_TRUE(cache.Draw(red, moved, identity, 1.0f, output));
+  cache.Collect();
+  EXPECT_EQ(cache.GetEntryCount(), 1u);
+  EXPECT_EQ(cache.GetStatistics().stale_keys, 1u);
+  EXPECT_EQ(cache.GetStatistics().collected, 0u);
+
+  // Every entry of a picture goes with it, however many it had.
+  EXPECT_TRUE(cache.Draw(red, DlMatrix(), identity, 1.0f, output));
+  EXPECT_EQ(cache.GetEntryCount(), 2u);
+  red.reset();
+  cache.Collect();
+  EXPECT_EQ(cache.GetEntryCount(), 0u);
+  EXPECT_EQ(cache.GetResidentBytes(), 0u);
+  EXPECT_EQ(cache.GetStatistics().collected, 2u);
+}
+
 TEST_F(StaticPictureCacheTest, RejectsDynamicAndDestinationDependentContent) {
   const auto texture = MakeTexture({8, 8});
   const auto external_image =

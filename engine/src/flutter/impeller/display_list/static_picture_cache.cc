@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <sstream>
 #include <utility>
 
 #include "flutter/display_list/dl_builder.h"
@@ -313,6 +314,7 @@ bool StaticPictureCache::Draw(
   auto found = entries_.find(plan->key);
   if (found != entries_.end()) {
     found->second.last_access = ++access_;
+    found->second.last_draw = ++found->second.picture->draws;
     statistics_.hits++;
     DrawEntry(found->second, *plan, opacity, canvas);
     return true;
@@ -366,11 +368,19 @@ bool StaticPictureCache::Draw(
     return false;
   }
 
-  Entry entry{std::move(image), bytes, ++access_};
+  Picture& picture = pictures_[plan->key.display_list_id];
+  if (!picture.display_list) {
+    picture.display_list = display_list;
+  }
+  Entry entry{std::move(image), &picture, bytes, ++access_, ++picture.draws};
   auto [inserted, did_insert] = entries_.emplace(plan->key, std::move(entry));
   if (!did_insert) {
+    if (picture.entries == 0u) {
+      pictures_.erase(plan->key.display_list_id);
+    }
     return false;
   }
+  picture.entries++;
   resident_bytes_ += bytes;
   statistics_.generations++;
   DrawEntry(inserted->second, *plan, opacity, canvas);
@@ -418,6 +428,55 @@ void StaticPictureCache::DrawEntry(const Entry& entry,
                        flutter::DlSrcRectConstraint::kStrict);
 }
 
+void StaticPictureCache::Collect() {
+  for (auto entry = entries_.begin(); entry != entries_.end();) {
+    const Picture& picture = *entry->second.picture;
+    if (picture.display_list->unique()) {
+      statistics_.collected++;
+      entry = EraseEntry(entry);
+    } else if (picture.draws - entry->second.last_draw >
+               limits_.stale_key_draws) {
+      statistics_.stale_keys++;
+      entry = EraseEntry(entry);
+    } else {
+      ++entry;
+    }
+  }
+}
+
+StaticPictureCache::Entries::iterator StaticPictureCache::EraseEntry(
+    Entries::iterator entry) {
+  resident_bytes_ -= entry->second.bytes;
+  Picture* picture = entry->second.picture;
+  const uint32_t picture_id = entry->first.display_list_id;
+  const auto next = entries_.erase(entry);
+  if (--picture->entries == 0u) {
+    pictures_.erase(picture_id);
+  }
+  return next;
+}
+
+std::string StaticPictureCache::Describe() const {
+  std::ostringstream out;
+  out << "entries=" << entries_.size() << " bytes=" << resident_bytes_
+      << " hits=" << statistics_.hits
+      << " generations=" << statistics_.generations
+      << " evictions=" << statistics_.evictions
+      << " collected=" << statistics_.collected
+      << " stale_keys=" << statistics_.stale_keys
+      << " rejected_by_budget=" << statistics_.rejected_by_budget
+      << " rejected_transforms=" << statistics_.rejected_transforms;
+  for (const auto& [key, entry] : entries_) {
+    const flutter::DlISize size = entry.image->GetSize();
+    out << " | picture=" << key.display_list_id << " scale=" << key.scale_x
+        << "," << key.scale_y << " alignment=" << key.alignment_x << ","
+        << key.alignment_y << " size=" << size.width << "x" << size.height
+        << " bytes=" << entry.bytes << " idle=" << access_ - entry.last_access
+        << " behind=" << entry.picture->draws - entry.last_draw;
+  }
+  return out.str();
+}
+
 void StaticPictureCache::MakeRoom(size_t bytes) {
   while (!entries_.empty() && (entries_.size() >= limits_.max_entries ||
                                resident_bytes_ > limits_.max_bytes - bytes)) {
@@ -425,8 +484,7 @@ void StaticPictureCache::MakeRoom(size_t bytes) {
         entries_.begin(), entries_.end(), [](const auto& a, const auto& b) {
           return a.second.last_access < b.second.last_access;
         });
-    resident_bytes_ -= oldest->second.bytes;
-    entries_.erase(oldest);
+    EraseEntry(oldest);
     statistics_.evictions++;
   }
 }

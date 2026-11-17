@@ -21,12 +21,14 @@
 #include "third_party/skia/include/gpu/ganesh/GrDirectContext.h"
 
 #ifdef IMPELLER_SUPPORTS_RENDERING
-#include "impeller/core/texture_descriptor.h"         // nogncheck
-#include "impeller/display_list/dl_dispatcher.h"      // nogncheck
-#include "impeller/display_list/dl_image_impeller.h"  // nogncheck
-#include "impeller/renderer/capabilities.h"           // nogncheck
-#include "impeller/renderer/render_target.h"          // nogncheck
+#include "impeller/core/texture_descriptor.h"            // nogncheck
+#include "impeller/display_list/dl_dispatcher.h"         // nogncheck
+#include "impeller/display_list/dl_image_impeller.h"     // nogncheck
+#include "impeller/display_list/static_picture_cache.h"  // nogncheck
+#include "impeller/renderer/capabilities.h"              // nogncheck
+#include "impeller/renderer/render_target.h"             // nogncheck
 #ifdef SHELL_ENABLE_GL
+#include "impeller/renderer/backend/gles/denial_resource_audit_gles.h"  // nogncheck
 #include "impeller/renderer/backend/gles/texture_gles.h"  // nogncheck
 #endif                                                    // SHELL_ENABLE_GL
 #endif  // IMPELLER_SUPPORTS_RENDERING
@@ -203,6 +205,16 @@ EmbedderExternalViewEmbedder::DenialLayeredAuditFrame(int64_t flutter_view_id) {
       << " compose_max_us=" << audit.compose_max.ToMicrosecondsF()
       << " recompose_total_us=" << audit.recompose_time.ToMicrosecondsF()
       << " recompose_max_us=" << audit.recompose_max.ToMicrosecondsF();
+#if defined(IMPELLER_SUPPORTS_RENDERING) && defined(SHELL_ENABLE_GL)
+  // What the engine holds in GPU memory, every five seconds.
+  static fml::TimePoint last_texture_report;
+  if (impeller::DenialLiveTexturesGLES::Enabled() &&
+      now - last_texture_report >= fml::TimeDelta::FromSeconds(5)) {
+    last_texture_report = now;
+    FML_LOG(IMPORTANT) << "Denial live textures "
+                       << impeller::DenialLiveTexturesGLES::Describe();
+  }
+#endif  // IMPELLER_SUPPORTS_RENDERING && SHELL_ENABLE_GL
   audit = DenialLayeredAudit{};
   audit.interval_start = now;
   return &audit;
@@ -789,6 +801,21 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
     GrDirectContext* context,
     const std::shared_ptr<impeller::AiksContext>& aiks_context,
     std::unique_ptr<SurfaceFrame> frame) {
+#ifdef IMPELLER_SUPPORTS_RENDERING
+  if (aiks_context) {
+    // Pictures the last frame was the final holder of are gone by now.
+    aiks_context->GetStaticPictureCache().Collect();
+    if (denial_layered_audit_enabled_) {
+      static fml::TimePoint last_cache_report;
+      const fml::TimePoint now = fml::TimePoint::Now();
+      if (now - last_cache_report >= fml::TimeDelta::FromSeconds(5)) {
+        last_cache_report = now;
+        FML_LOG(IMPORTANT) << "Denial static picture cache "
+                           << aiks_context->GetStaticPictureCache().Describe();
+      }
+    }
+  }
+#endif  // IMPELLER_SUPPORTS_RENDERING
   if (flutter_view_id < kFlutterImplicitViewId &&
       pending_denial_render_target_) {
     if (composition_order_.size() > 1u) {
