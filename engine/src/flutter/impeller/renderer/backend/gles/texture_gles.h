@@ -93,6 +93,8 @@ class TextureGLES final : public Texture,
               TextureDescriptor desc,
               bool threadsafe = false);
 
+  ~TextureGLES() override;
+
   // |Texture|
   bool IsValid() const override;
 

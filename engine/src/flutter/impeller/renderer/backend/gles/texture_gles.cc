@@ -199,6 +199,20 @@ TextureGLES::TextureGLES(std::shared_ptr<ReactorGLES> reactor,
   }
 
   is_valid_ = true;
+  if (!is_wrapped_) {
+    const auto& descriptor = GetTextureDescriptor();
+    DenialLiveTexturesGLES::Created(
+        this, tex_size.width, tex_size.height,
+        static_cast<int>(descriptor.format),
+        BytesPerPixelForPixelFormat(descriptor.format),
+        static_cast<int>(descriptor.sample_count), descriptor.mip_count,
+        type_ == Type::kRenderBuffer ||
+            type_ == Type::kRenderBufferMultisampled);
+  }
+}
+
+TextureGLES::~TextureGLES() {
+  DenialLiveTexturesGLES::Destroyed(this);
 }
 
 void TextureGLES::Leak() {
@@ -228,6 +242,7 @@ bool TextureGLES::IsStoredBottomUp() const {
 
 // |Texture|
 void TextureGLES::SetLabel(std::string_view label) {
+  DenialLiveTexturesGLES::Labeled(this, label);
 #ifdef IMPELLER_DEBUG
   reactor_->SetDebugLabel(handle_.Get(), label);
 #endif  // IMPELLER_DEBUG
@@ -235,6 +250,7 @@ void TextureGLES::SetLabel(std::string_view label) {
 
 // |Texture|
 void TextureGLES::SetLabel(std::string_view label, std::string_view trailing) {
+  DenialLiveTexturesGLES::Labeled(this, label, trailing);
 #ifdef IMPELLER_DEBUG
   if (reactor_->CanSetDebugLabels()) {
     reactor_->SetDebugLabel(handle_.Get(),

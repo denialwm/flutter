@@ -5,11 +5,20 @@
 #ifndef FLUTTER_IMPELLER_RENDERER_BACKEND_GLES_DENIAL_RESOURCE_AUDIT_GLES_H_
 #define FLUTTER_IMPELLER_RENDERER_BACKEND_GLES_DENIAL_RESOURCE_AUDIT_GLES_H_
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <map>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <unordered_map>
+#include <vector>
 
 #include "fml/logging.h"
 #include "fml/time/time_point.h"
@@ -98,6 +107,148 @@ class DenialResourceAuditGLES {
   int64_t width_;
   int64_t height_;
   int64_t start_us_ = 0;
+};
+
+// The render audit's memory report: every live GLES texture that owns its
+// storage, grouped by label, size, format and sample count. Off unless
+// DENIAL_RENDER_AUDIT=1; when on, each call takes one lock.
+class DenialLiveTexturesGLES {
+ public:
+  static bool Enabled() {
+    static const bool enabled = [] {
+      const char* value = std::getenv("DENIAL_RENDER_AUDIT");
+      return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+  }
+
+  static void Created(const void* texture,
+                      int64_t width,
+                      int64_t height,
+                      int format,
+                      size_t bytes_per_pixel,
+                      int samples,
+                      size_t mip_count,
+                      bool renderbuffer) {
+    if (!Enabled()) {
+      return;
+    }
+    State& state = GetState();
+    std::scoped_lock lock(state.mutex);
+    Entry& entry = state.live[texture];
+    entry.width = width;
+    entry.height = height;
+    entry.format = format;
+    entry.bytes_per_pixel = bytes_per_pixel;
+    entry.samples = samples;
+    entry.mip_count = mip_count;
+    entry.renderbuffer = renderbuffer;
+  }
+
+  static void Labeled(const void* texture,
+                      std::string_view label,
+                      std::string_view trailing = {}) {
+    if (!Enabled()) {
+      return;
+    }
+    State& state = GetState();
+    std::scoped_lock lock(state.mutex);
+    auto found = state.live.find(texture);
+    if (found == state.live.end()) {
+      return;
+    }
+    found->second.label = std::string(label);
+    if (!trailing.empty()) {
+      found->second.label += " ";
+      found->second.label += trailing;
+    }
+  }
+
+  static void Destroyed(const void* texture) {
+    if (!Enabled()) {
+      return;
+    }
+    State& state = GetState();
+    std::scoped_lock lock(state.mutex);
+    state.live.erase(texture);
+  }
+
+  // One line: the totals, then the groups by size in bytes, largest first.
+  // Bytes are every mip level's pixels times the sample count; a driver's
+  // hidden multisample storage is not included.
+  static std::string Describe() {
+    using Key =
+        std::tuple<std::string, int64_t, int64_t, int, int, size_t, bool>;
+    std::map<Key, std::pair<uint64_t, uint64_t>> groups;
+    uint64_t count = 0;
+    uint64_t bytes = 0;
+    {
+      State& state = GetState();
+      std::scoped_lock lock(state.mutex);
+      for (const auto& [texture, entry] : state.live) {
+        uint64_t pixels = 0;
+        for (size_t level = 0; level < std::max<size_t>(entry.mip_count, 1u);
+             ++level) {
+          pixels += static_cast<uint64_t>(
+                        std::max<int64_t>(entry.width >> level, 1)) *
+                    static_cast<uint64_t>(
+                        std::max<int64_t>(entry.height >> level, 1));
+        }
+        const uint64_t size =
+            pixels * entry.bytes_per_pixel *
+            static_cast<uint64_t>(entry.samples > 0 ? entry.samples : 1);
+        auto& group =
+            groups[Key(entry.label, entry.width, entry.height, entry.format,
+                       entry.samples, entry.mip_count, entry.renderbuffer)];
+        ++group.first;
+        group.second += size;
+        ++count;
+        bytes += size;
+      }
+    }
+    std::vector<std::pair<Key, std::pair<uint64_t, uint64_t>>> ordered(
+        groups.begin(), groups.end());
+    std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
+      return a.second.second > b.second.second;
+    });
+    std::ostringstream out;
+    out << "count=" << count << " bytes=" << bytes;
+    size_t shown = 0;
+    for (const auto& [key, group] : ordered) {
+      if (++shown > 48) {
+        break;
+      }
+      const auto& [label, width, height, format, samples, mips, renderbuffer] =
+          key;
+      out << " | " << group.first << "x[" << (label.empty() ? "-" : label)
+          << "] " << width << "x" << height << " format=" << format
+          << " samples=" << samples << " mips=" << mips
+          << (renderbuffer ? " renderbuffer" : "") << " bytes=" << group.second;
+    }
+    return out.str();
+  }
+
+ private:
+  struct Entry {
+    int64_t width = 0;
+    int64_t height = 0;
+    int format = 0;
+    size_t bytes_per_pixel = 0;
+    int samples = 1;
+    size_t mip_count = 1;
+    bool renderbuffer = false;
+    std::string label;
+  };
+
+  struct State {
+    std::mutex mutex;
+    std::unordered_map<const void*, Entry> live;
+  };
+
+  static State& GetState() {
+    static State* state = new State();
+    return *state;
+  }
 };
 
 }  // namespace impeller
