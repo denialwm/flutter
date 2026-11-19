@@ -18,6 +18,7 @@ namespace testing {
 
 using ::testing::_;
 using ::testing::NiceMock;
+using ::testing::Return;
 
 class TestWorker : public ReactorGLES::Worker {
  public:
@@ -86,6 +87,52 @@ TEST(ReactorGLES, ReactCollectsHandlesWithoutOperations) {
   auto handle = reactor->CreateHandle(HandleType::kTexture);
   reactor->CollectHandle(handle);
 
+  EXPECT_TRUE(reactor->React());
+  reactor.reset();
+}
+
+TEST(ReactorGLES, CollectingAFenceDeletesIt) {
+  auto mock_gles_impl = std::make_unique<MockGLESImpl>();
+  GLsync const fence = reinterpret_cast<GLsync>(0x1234);
+
+  EXPECT_CALL(*mock_gles_impl, FenceSync(_, _)).WillOnce(Return(fence));
+  EXPECT_CALL(*mock_gles_impl, DeleteSync(fence)).Times(1);
+
+  std::shared_ptr<MockGLES> mock_gles =
+      MockGLES::Init(std::move(mock_gles_impl));
+  ProcTableGLES::Resolver resolver = kMockResolverGLES;
+  auto proc_table = std::make_unique<ProcTableGLES>(resolver);
+  auto worker = std::make_shared<TestWorker>();
+  auto reactor = std::make_shared<ReactorGLES>(std::move(proc_table));
+  reactor->AddWorker(worker);
+  auto handle = reactor->CreateHandle(HandleType::kFence);
+  reactor->CollectHandle(handle);
+
+  EXPECT_TRUE(reactor->React());
+  reactor.reset();
+}
+
+// A fence taken to be waited on and deleted in the waiting context must not
+// be deleted again when its handle is collected, possibly in another context.
+TEST(ReactorGLES, TakenFenceIsNotDeletedOnCollection) {
+  auto mock_gles_impl = std::make_unique<MockGLESImpl>();
+  GLsync const fence = reinterpret_cast<GLsync>(0x1234);
+
+  EXPECT_CALL(*mock_gles_impl, FenceSync(_, _)).WillOnce(Return(fence));
+  EXPECT_CALL(*mock_gles_impl, DeleteSync(_)).Times(0);
+
+  std::shared_ptr<MockGLES> mock_gles =
+      MockGLES::Init(std::move(mock_gles_impl));
+  ProcTableGLES::Resolver resolver = kMockResolverGLES;
+  auto proc_table = std::make_unique<ProcTableGLES>(resolver);
+  auto worker = std::make_shared<TestWorker>();
+  auto reactor = std::make_shared<ReactorGLES>(std::move(proc_table));
+  reactor->AddWorker(worker);
+  auto handle = reactor->CreateHandle(HandleType::kFence);
+
+  EXPECT_EQ(reactor->TakeGLFence(handle), std::optional<GLsync>(fence));
+  EXPECT_EQ(reactor->TakeGLFence(handle), std::nullopt);
+  reactor->CollectHandle(handle);
   EXPECT_TRUE(reactor->React());
   reactor.reset();
 }

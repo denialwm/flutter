@@ -184,6 +184,27 @@ void mockDeleteTextures(GLsizei size, const GLuint* queries) {
   CallMockMethod(&IMockGLESImpl::DeleteTextures, size, queries);
 }
 
+GLsync mockFenceSync(GLenum condition, GLbitfield flags) {
+  return CallMockMethod(&IMockGLESImpl::FenceSync, condition, flags);
+}
+
+static_assert(CheckSameSignature<decltype(mockFenceSync),  //
+                                 decltype(glFenceSync)>::value);
+
+void mockWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) {
+  CallMockMethod(&IMockGLESImpl::WaitSync, sync, flags, timeout);
+}
+
+static_assert(CheckSameSignature<decltype(mockWaitSync),  //
+                                 decltype(glWaitSync)>::value);
+
+void mockDeleteSync(GLsync sync) {
+  CallMockMethod(&IMockGLESImpl::DeleteSync, sync);
+}
+
+static_assert(CheckSameSignature<decltype(mockDeleteSync),  //
+                                 decltype(glDeleteSync)>::value);
+
 static_assert(CheckSameSignature<decltype(mockDeleteQueriesEXT),  //
                                  decltype(glDeleteQueriesEXT)>::value);
 
@@ -510,6 +531,12 @@ const ProcTableGLES::Resolver kMockResolverGLES = [](const char* name) {
     return reinterpret_cast<void*>(&mockDeleteQueriesEXT);
   } else if (strcmp(name, "glDeleteTextures") == 0) {
     return reinterpret_cast<void*>(&mockDeleteTextures);
+  } else if (strcmp(name, "glFenceSync") == 0) {
+    return reinterpret_cast<void*>(&mockFenceSync);
+  } else if (strcmp(name, "glWaitSync") == 0) {
+    return reinterpret_cast<void*>(&mockWaitSync);
+  } else if (strcmp(name, "glDeleteSync") == 0) {
+    return reinterpret_cast<void*>(&mockDeleteSync);
   } else if (strcmp(name, "glGetQueryObjectui64vEXT") == 0) {
     return reinterpret_cast<void*>(mockGetQueryObjectui64vEXT);
   } else if (strcmp(name, "glGetQueryObjectuivEXT") == 0) {

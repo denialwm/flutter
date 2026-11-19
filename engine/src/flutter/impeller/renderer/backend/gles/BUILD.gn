@@ -29,6 +29,23 @@ impeller_component("gles_render_pass_unittests") {
   ]
 }
 
+# Mock GL only: the reactor's handle lifetimes, fences included.
+impeller_component("gles_reactor_unittests") {
+  target_type = "executable"
+  testonly = true
+  sources = [
+    "test/mock_gles.cc",
+    "test/mock_gles.h",
+    "test/reactor_unittests.cc",
+  ]
+  deps = [
+    ":gles",
+    "//flutter/testing:testing_lib",
+    "//flutter/third_party/googletest:gmock",
+    "//flutter/third_party/googletest:gtest_main",
+  ]
+}
+
 impeller_component("gles_unittests") {
   testonly = true
   sources = [

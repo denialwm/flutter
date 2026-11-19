@@ -132,10 +132,24 @@ class IMockGLESImpl {
                                      const void* indices,
                                      GLsizei instancecount) {}
   virtual void VertexAttribDivisor(GLuint index, GLuint divisor) {}
+  virtual GLsync FenceSync(GLenum condition, GLbitfield flags) {
+    return nullptr;
+  }
+  virtual void WaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) {}
+  virtual void DeleteSync(GLsync sync) {}
 };
 
 class MockGLESImpl : public IMockGLESImpl {
  public:
+  MOCK_METHOD(GLsync,
+              FenceSync,
+              (GLenum condition, GLbitfield flags),
+              (override));
+  MOCK_METHOD(void,
+              WaitSync,
+              (GLsync sync, GLbitfield flags, GLuint64 timeout),
+              (override));
+  MOCK_METHOD(void, DeleteSync, (GLsync sync), (override));
   MOCK_METHOD(void,
               DeleteTextures,
               (GLsizei size, const GLuint* queries),

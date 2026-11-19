@@ -165,6 +165,18 @@ class ReactorGLES {
   std::optional<GLsync> GetGLFence(const HandleGLES& handle) const;
 
   //----------------------------------------------------------------------------
+  /// @brief      Takes the fence out of a fence handle, so collecting the
+  ///             handle later deletes nothing. The caller deletes the fence
+  ///             in its own context, after the commands that use it.
+  ///
+  ///             With Mesa's glthread, every context queues its commands
+  ///             for a worker thread. A fence waited on here and deleted when
+  ///             another context reacts can be deleted before this context's
+  ///             queued glWaitSync runs, which then reads a deleted sync.
+  ///
+  std::optional<GLsync> TakeGLFence(const HandleGLES& handle);
+
+  //----------------------------------------------------------------------------
   /// @brief      Create a reactor handle.
   ///
   ///             This can be called on any thread. Even one that doesn't have

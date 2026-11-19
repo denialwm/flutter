@@ -603,9 +603,13 @@ bool TextureGLES::Bind() {
   const auto& gl = reactor_->GetProcTable();
 
   if (fence_.IsValid()) {
-    std::optional<GLsync> fence = reactor_->GetGLFence(fence_.Get());
+    // Wait and delete in this context, in that order. Left to the reactor,
+    // the delete could run in another context before this context's queued
+    // wait (Mesa glthread), and the wait would read a deleted sync.
+    std::optional<GLsync> fence = reactor_->TakeGLFence(fence_.Get());
     if (fence.has_value()) {
       gl.WaitSync(fence.value(), 0, GL_TIMEOUT_IGNORED);
+      gl.DeleteSync(fence.value());
     }
     fence_.Reset();
   }

@@ -69,7 +69,10 @@ bool ReactorGLES::CollectGLHandle(const ProcTableGLES& gl,
       gl.DeleteFramebuffers(1u, &handle.handle);
       return true;
     case HandleType::kFence:
-      gl.DeleteSync(handle.sync);
+      // A fence taken by TakeGLFence was deleted where it was waited on.
+      if (handle.sync != nullptr) {
+        gl.DeleteSync(handle.sync);
+      }
       break;
   }
   return false;
@@ -201,6 +204,22 @@ std::optional<GLsync> ReactorGLES::GetGLFence(const HandleGLES& handle) const {
     return gl_handle->sync;
   }
   return std::nullopt;
+}
+
+std::optional<GLsync> ReactorGLES::TakeGLFence(const HandleGLES& handle) {
+  if (handle.GetType() != HandleType::kFence ||
+      handle.untracked_id_.has_value()) {
+    return std::nullopt;
+  }
+  WriterLock handles_lock(handles_mutex_);
+  auto found = handles_.find(handle);
+  if (found == handles_.end() || found->second.pending_collection ||
+      !found->second.name.has_value() || found->second.name->sync == nullptr) {
+    return std::nullopt;
+  }
+  GLsync fence = found->second.name->sync;
+  found->second.name->sync = nullptr;
+  return fence;
 }
 
 bool ReactorGLES::AddOperation(Operation operation, bool defer) {
