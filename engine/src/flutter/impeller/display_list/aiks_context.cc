@@ -28,6 +28,7 @@ AiksContext::AiksContext(
   }
   static_picture_cache_ =
       std::make_unique<StaticPictureCache>(*content_context_);
+  content_context_->SetStaticPictureCache(static_picture_cache_.get());
 
   is_valid_ = true;
 }

@@ -13,10 +13,16 @@
 #include "flutter/display_list/dl_builder.h"
 #include "flutter/display_list/utils/dl_receiver_utils.h"
 #include "flutter/fml/hash_combine.h"
+#include "impeller/core/sampler_descriptor.h"
+#include "impeller/display_list/canvas.h"
 #include "impeller/display_list/dl_dispatcher.h"
-#include "impeller/display_list/dl_image_impeller.h"
 #include "impeller/entity/contents/content_context.h"
 #include "impeller/renderer/render_target.h"
+
+#ifdef IMPELLER_ENABLE_OPENGLES
+#include "impeller/renderer/backend/gles/capabilities_gles.h"
+#include "impeller/renderer/backend/gles/texture_gles.h"
+#endif  // IMPELLER_ENABLE_OPENGLES
 
 namespace impeller {
 namespace {
@@ -160,17 +166,20 @@ StaticPictureCache::~StaticPictureCache() = default;
 bool StaticPictureCache::Key::operator==(const Key& other) const {
   return display_list_id == other.display_list_id && scale_x == other.scale_x &&
          scale_y == other.scale_y && alignment_x == other.alignment_x &&
-         alignment_y == other.alignment_y;
+         alignment_y == other.alignment_y && pass == other.pass;
 }
 
 size_t StaticPictureCache::Key::Hash::operator()(const Key& key) const {
-  return fml::HashCombine(key.display_list_id, key.scale_x, key.scale_y,
-                          key.alignment_x, key.alignment_y);
+  return fml::HashCombine(
+      key.display_list_id, key.scale_x, key.scale_y, key.alignment_x,
+      key.alignment_y, static_cast<int>(key.pass.sample_count),
+      static_cast<int>(key.pass.format), key.pass.bottom_up);
 }
 
 std::optional<StaticPictureCache::Plan> StaticPictureCache::MakePlan(
     const sk_sp<flutter::DisplayList>& display_list,
-    const flutter::DlMatrix& transform) {
+    const Matrix& transform,
+    const Pass& pass) {
   if (!display_list || !transform.IsTranslationScaleOnly() ||
       !std::isfinite(transform.m[0]) || !std::isfinite(transform.m[5]) ||
       !std::isfinite(transform.m[12]) || !std::isfinite(transform.m[13]) ||
@@ -178,57 +187,56 @@ std::optional<StaticPictureCache::Plan> StaticPictureCache::MakePlan(
     return std::nullopt;
   }
 
-  const flutter::DlRect& local_bounds = display_list->GetBounds();
+  const Rect& local_bounds = display_list->GetBounds();
   if (local_bounds.IsEmpty() || !local_bounds.IsFinite()) {
     return std::nullopt;
   }
 
-  const flutter::DlRect device_bounds = local_bounds.TransformBounds(transform);
+  const Rect device_bounds = local_bounds.TransformBounds(transform);
   if (device_bounds.IsEmpty() || !device_bounds.IsFinite()) {
     return std::nullopt;
   }
-  const flutter::DlIRect rounded = flutter::DlIRect::RoundOut(device_bounds);
+  const IRect rounded = IRect::RoundOut(device_bounds);
   if (rounded.IsEmpty()) {
     return std::nullopt;
   }
 
   const int64_t width = rounded.GetWidth();
   const int64_t height = rounded.GetHeight();
+  const size_t bytes_per_pixel =
+      pass.format == PixelFormat::kUnknown
+          ? 4u
+          : std::max<size_t>(1u, BytesPerPixelForPixelFormat(pass.format));
   if (width <= 0 || height <= 0 ||
-      static_cast<uint64_t>(width) > std::numeric_limits<size_t>::max() / 4u /
+      static_cast<uint64_t>(width) > std::numeric_limits<size_t>::max() /
+                                         bytes_per_pixel /
                                          static_cast<uint64_t>(height)) {
     return std::nullopt;
   }
 
-  // Denial's GLES target reflects Y. DrawImageRect replays the snapshot
-  // through that same transform, so rasterize in the picture's orientation:
-  // a reflected axis starts at the rounded far edge and advances backwards
-  // through device coordinates. Otherwise the output reflection would be
-  // baked into the image and then applied a second time when replaying it.
+  // Rasterize in the pass's own pixel coordinates, moved only by whole
+  // pixels. Impeller rounds some coordinates in pass space: a
+  // non-antialiased rect clip becomes a scissor through Rect::Round, which
+  // takes halves away from zero, so a picture rendered in any other
+  // orientation (as this cache once un-reflected Denial's Y-reflected GLES
+  // output) puts an edge on a half pixel into the other row. The pass's
+  // sample count and row order (CreateSnapshot) do the rest.
   // IsTranslationScaleOnly already excludes zero scales, skew and perspective.
-  flutter::DlMatrix snapshot_transform = transform;
-  snapshot_transform.m[0] = std::abs(transform.m[0]);
-  snapshot_transform.m[5] = std::abs(transform.m[5]);
-  snapshot_transform.m[12] = transform.m[0] < 0
-                                 ? rounded.GetRight() - transform.m[12]
-                                 : transform.m[12] - rounded.GetLeft();
-  snapshot_transform.m[13] = transform.m[5] < 0
-                                 ? rounded.GetBottom() - transform.m[13]
-                                 : transform.m[13] - rounded.GetTop();
-  const flutter::DlRect destination =
-      flutter::DlRect::Make(rounded).TransformBounds(transform.Invert());
+  const Matrix origin =
+      Matrix::MakeTranslation({static_cast<Scalar>(rounded.GetLeft()),
+                               static_cast<Scalar>(rounded.GetTop()), 0.0f});
 
   return Plan{
       .key = {.display_list_id = display_list->unique_id(),
               .scale_x = transform.m[0],
               .scale_y = transform.m[5],
               .alignment_x = FractionalPart(device_bounds.GetLeft()),
-              .alignment_y = FractionalPart(device_bounds.GetTop())},
+              .alignment_y = FractionalPart(device_bounds.GetTop()),
+              .pass = pass},
       .device_bounds = rounded,
-      .destination = destination,
-      .snapshot_transform = snapshot_transform,
-      .estimated_bytes =
-          static_cast<size_t>(width) * static_cast<size_t>(height) * 4u,
+      .snapshot_transform = origin.Invert() * transform,
+      .estimated_bytes = static_cast<size_t>(width) *
+                         static_cast<size_t>(height) * bytes_per_pixel,
   };
 }
 
@@ -292,45 +300,134 @@ bool StaticPictureCache::Observe(const Plan& plan) {
   return true;
 }
 
-bool StaticPictureCache::Draw(
-    const sk_sp<flutter::DisplayList>& display_list,
-    const flutter::DlMatrix& canvas_transform,
-    const std::optional<flutter::DlMatrix>& canvas_to_render_target,
-    flutter::DlScalar opacity,
-    flutter::DlCanvas& canvas) {
-  if (!canvas_to_render_target.has_value()) {
-    statistics_.rejected_transforms++;
+void StaticPictureCache::Request(
+    const sk_sp<flutter::DisplayList>& display_list) {
+  if (!display_list) {
+    return;
+  }
+  requests_.insert_or_assign(display_list->unique_id(), ++access_);
+  TrimRequests();
+}
+
+std::optional<StaticPictureCache::Pass> StaticPictureCache::DescribePass(
+    const RenderTarget& target) const {
+  if (!target.HasColorAttachment(0u)) {
+    return std::nullopt;
+  }
+  const std::shared_ptr<Texture>& color = target.GetColorAttachment(0u).texture;
+  if (!color) {
+    return std::nullopt;
+  }
+  const TextureDescriptor& descriptor = color->GetTextureDescriptor();
+  // Impeller renders every multisampled pass at four samples.
+  if (descriptor.sample_count != SampleCount::kCount1 &&
+      descriptor.sample_count != SampleCount::kCount4) {
+    return std::nullopt;
+  }
+  Pass pass{.sample_count = descriptor.sample_count,
+            .format = descriptor.format};
+#ifdef IMPELLER_ENABLE_OPENGLES
+  if (renderer_.GetContext()->GetBackendType() ==
+      Context::BackendType::kOpenGLES) {
+    // RenderPassGLES flips every other pass at the vertex stage.
+    const TextureGLES& gles = TextureGLES::Cast(*color);
+    pass.bottom_up = gles.IsWrapped() || gles.IsStoredBottomUp();
+    // The snapshot carries the picture's coverage in its alpha, which the
+    // live draw blends with at full precision. A 10-bit output keeps two
+    // bits of alpha: a soft shadow stored in it falls to four levels. Store
+    // such a picture at half float, which holds the 10-bit colour and the
+    // alpha alike.
+    if (pass.format == PixelFormat::kR10G10B10A2UNormInt) {
+      pass.format =
+          CapabilitiesGLES::Cast(*renderer_.GetContext()->GetCapabilities())
+                  .SupportsHalfFloatColorAttachments()
+              ? PixelFormat::kR16G16B16A16Float
+              : PixelFormat::kR8G8B8A8UNormInt;
+    }
+  }
+#endif  // IMPELLER_ENABLE_OPENGLES
+  return pass;
+}
+
+bool StaticPictureCache::Draw(const sk_sp<flutter::DisplayList>& display_list,
+                              Canvas& canvas) {
+  // A snapshot's own replay of the picture is live.
+  if (generating_ || !display_list) {
     return false;
   }
-  const flutter::DlMatrix render_target_transform =
-      canvas_to_render_target.value() * canvas_transform;
-  const std::optional<Plan> plan =
-      MakePlan(display_list, render_target_transform);
+  const auto requested = requests_.find(display_list->unique_id());
+  if (requested == requests_.end()) {
+    return false;
+  }
+  requested->second = ++access_;
+  // Nothing of it shows; the live replay skips it as well.
+  if (!canvas.GetLocalCoverageLimit().has_value()) {
+    return false;
+  }
+  const RenderTarget* target = canvas.GetCurrentPassRenderTarget();
+  const std::optional<Pass> pass =
+      target ? DescribePass(*target) : std::nullopt;
+  if (!pass.has_value()) {
+    statistics_.rejected_passes++;
+    return false;
+  }
+  const Matrix pass_transform = canvas.GetCurrentPassTransform();
+  const std::optional<Image> image =
+      Lookup(display_list, pass_transform, pass.value());
+  if (!image.has_value()) {
+    return false;
+  }
+
+  // Draw the image's pixels one to one onto the pass pixels they were
+  // rendered for: under the current transform and then this one, the image
+  // lands on the pass by a translation to its origin.
+  const Matrix image_transform =
+      pass_transform.Invert() *
+      Matrix::MakeTranslation({static_cast<Scalar>(image->origin.x),
+                               static_cast<Scalar>(image->origin.y), 0.0f});
+  const Matrix saved = canvas.GetCurrentTransform();
+  canvas.Concat(image_transform);
+  const Rect bounds = Rect::MakeSize(image->texture->GetSize());
+  SamplerDescriptor nearest;
+  nearest.min_filter = MinMagFilter::kNearest;
+  nearest.mag_filter = MinMagFilter::kNearest;
+  canvas.DrawImageRect(image->texture, bounds, bounds, Paint{}, nearest,
+                       SourceRectConstraint::kStrict);
+  canvas.ResetTransform();
+  canvas.Concat(saved);
+  return true;
+}
+
+std::optional<StaticPictureCache::Image> StaticPictureCache::Lookup(
+    const sk_sp<flutter::DisplayList>& display_list,
+    const Matrix& pass_transform,
+    const Pass& pass) {
+  const std::optional<Plan> plan = MakePlan(display_list, pass_transform, pass);
   if (!plan.has_value()) {
     statistics_.rejected_transforms++;
-    return false;
+    return std::nullopt;
   }
+  const IPoint origin = plan->device_bounds.GetOrigin();
 
   auto found = entries_.find(plan->key);
   if (found != entries_.end()) {
     found->second.last_access = ++access_;
     found->second.last_draw = ++found->second.picture->draws;
     statistics_.hits++;
-    DrawEntry(found->second, *plan, opacity, canvas);
-    return true;
+    return Image{found->second.texture, origin};
   }
 
   if (!IsEligible(display_list)) {
-    return false;
+    return std::nullopt;
   }
   if (limits_.max_entries == 0u || limits_.max_bytes == 0u ||
       plan->estimated_bytes > limits_.max_entry_bytes ||
       plan->estimated_bytes > limits_.max_bytes) {
     statistics_.rejected_by_budget++;
-    return false;
+    return std::nullopt;
   }
   if (!Observe(*plan)) {
-    return false;
+    return std::nullopt;
   }
 
   flutter::DisplayListBuilder snapshot_builder(flutter::DlRect::MakeWH(
@@ -339,73 +436,119 @@ bool StaticPictureCache::Draw(
   snapshot_builder.DrawDisplayList(display_list);
   sk_sp<flutter::DisplayList> snapshot_display_list = snapshot_builder.Build();
   const ISize snapshot_size(plan->device_bounds.GetSize());
-  std::shared_ptr<Texture> texture =
-      snapshotter_ ? snapshotter_(snapshot_display_list, snapshot_size)
-                   : CreateSnapshot(snapshot_display_list, snapshot_size);
+  std::shared_ptr<Texture> texture;
+  {
+    // The snapshot renders while the frame's canvas is mid-replay: it must
+    // neither come back here nor see the frame's repaint clip.
+    generating_ = true;
+    const std::optional<Rect> repaint_bounds =
+        renderer_.GetFrameRepaintBounds();
+    renderer_.SetFrameRepaintBounds(std::nullopt);
+    texture = snapshotter_
+                  ? snapshotter_(snapshot_display_list, snapshot_size)
+                  : CreateSnapshot(snapshot_display_list, snapshot_size, pass);
+    renderer_.SetFrameRepaintBounds(repaint_bounds);
+    generating_ = false;
+  }
   if (!texture) {
     statistics_.allocation_failures++;
     observations_.insert_or_assign(
         plan->key, Observation{0u, kAllocationFailureRetryCooldown, ++access_});
     TrimObservations();
-    return false;
+    return std::nullopt;
   }
 
   const size_t bytes =
       texture->GetTextureDescriptor().GetByteSizeOfBaseMipLevel();
   if (bytes > limits_.max_entry_bytes || bytes > limits_.max_bytes) {
     statistics_.rejected_by_budget++;
-    return false;
+    return std::nullopt;
   }
   MakeRoom(bytes);
-
-  sk_sp<flutter::DlImage> image = DlImageImpeller::Make(
-      std::move(texture), flutter::DlImage::OwningContext::kRaster);
-  if (!image) {
-    statistics_.allocation_failures++;
-    observations_.insert_or_assign(
-        plan->key, Observation{0u, kAllocationFailureRetryCooldown, ++access_});
-    TrimObservations();
-    return false;
-  }
 
   Picture& picture = pictures_[plan->key.display_list_id];
   if (!picture.display_list) {
     picture.display_list = display_list;
   }
-  Entry entry{std::move(image), &picture, bytes, ++access_, ++picture.draws};
+  Entry entry{texture, &picture, bytes, ++access_, ++picture.draws};
   auto [inserted, did_insert] = entries_.emplace(plan->key, std::move(entry));
   if (!did_insert) {
     if (picture.entries == 0u) {
       pictures_.erase(plan->key.display_list_id);
     }
-    return false;
+    return std::nullopt;
   }
   picture.entries++;
   resident_bytes_ += bytes;
   statistics_.generations++;
-  DrawEntry(inserted->second, *plan, opacity, canvas);
-  return true;
+  return Image{std::move(texture), origin};
 }
 
 std::shared_ptr<Texture> StaticPictureCache::CreateSnapshot(
     const sk_sp<flutter::DisplayList>& snapshot_display_list,
-    ISize size) {
+    ISize size,
+    const Pass& pass) {
   // Static pictures exclude text, images, saveLayers, and backdrops. Render
-  // them directly into a persistent, single-sampled, transparent target. This
-  // intentionally avoids DisplayListToTexture's text-shadow frame markers,
-  // glyph reset, transient-buffer reset, and thread-local cleanup: a static
-  // picture snapshot has no work that requires those global frame hooks, and
-  // invoking them here could evict unrelated caches while the root frame is
-  // still being recorded. A single-sampled target matches Impeller's external
-  // root targets and avoids changing clip-edge coverage through an MSAA
-  // resolve.
-  RenderTargetAllocator allocator(
-      renderer_.GetContext()->GetResourceAllocator());
-  RenderTarget target = allocator.CreateOffscreen(*renderer_.GetContext(), size,
-                                                  1u, "Static Picture Cache");
+  // them directly into a persistent, transparent target shaped like the pass
+  // the picture lands in. This intentionally avoids DisplayListToTexture's
+  // text-shadow frame markers, glyph reset, transient-buffer reset, and
+  // thread-local cleanup: a static picture snapshot has no work that
+  // requires those global frame hooks, and invoking them here could evict
+  // unrelated caches while the frame is being replayed.
+  const std::shared_ptr<Context>& context = renderer_.GetContext();
+  const PixelFormat format =
+      pass.format == PixelFormat::kUnknown
+          ? context->GetCapabilities()->GetDefaultColorFormat()
+          : pass.format;
+  TextureDescriptor descriptor;
+  descriptor.storage_mode = StorageMode::kDevicePrivate;
+  descriptor.format = format;
+  descriptor.size = size;
+  descriptor.mip_count = 1u;
+  descriptor.usage = TextureUsage::kRenderTarget | TextureUsage::kShaderRead;
+  std::shared_ptr<Texture> texture =
+      context->GetResourceAllocator()->CreateTexture(descriptor);
+  if (!texture) {
+    return nullptr;
+  }
+  texture->SetLabel("Static Picture Cache");
+
+  RenderTargetAllocator allocator(context->GetResourceAllocator());
+  RenderTarget target;
+  if (pass.sample_count == SampleCount::kCount1) {
+    target = allocator.CreateOffscreen(
+        *context, size, 1u, "Static Picture Cache",
+        RenderTarget::kDefaultColorAttachmentConfig,
+        RenderTarget::kDefaultStencilAttachmentConfig, texture,
+        /*existing_depth_stencil_texture=*/nullptr, format);
+  } else {
+    // A multisampled pass resolves the picture's edges; resolve them alike.
+    target = allocator.CreateOffscreenMSAA(
+        *context, size, 1u, "Static Picture Cache",
+        RenderTarget::AttachmentConfigMSAA{
+            .storage_mode = StorageMode::kDeviceTransient,
+            .resolve_storage_mode = StorageMode::kDevicePrivate,
+            .load_action = LoadAction::kClear,
+            .store_action = StoreAction::kMultisampleResolve,
+            .clear_color = Color::BlackTransparent()},
+        RenderTarget::kDefaultStencilAttachmentConfig,
+        /*existing_color_msaa_texture=*/nullptr, texture,
+        /*existing_depth_stencil_texture=*/nullptr, format);
+  }
   if (!target.IsValid()) {
     return nullptr;
   }
+#ifdef IMPELLER_ENABLE_OPENGLES
+  // Rendered without the offscreen vertex flip, as the pass is; the texture
+  // the pass draws to decides it, the resolved one samples with the
+  // matching Y scale.
+  if (pass.bottom_up &&
+      context->GetBackendType() == Context::BackendType::kOpenGLES) {
+    TextureGLES::Cast(*target.GetColorAttachment(0u).texture)
+        .SetStoredBottomUp();
+    TextureGLES::Cast(*texture).SetStoredBottomUp();
+  }
+#endif  // IMPELLER_ENABLE_OPENGLES
 
   CanvasDlDispatcher dispatcher(renderer_, target, false,
                                 /*has_root_backdrop_filter=*/false,
@@ -414,18 +557,7 @@ std::shared_ptr<Texture> StaticPictureCache::CreateSnapshot(
   snapshot_display_list->Dispatch(
       dispatcher, flutter::DlIRect::MakeWH(size.width, size.height));
   dispatcher.FinishRecording();
-  return target.GetRenderTargetTexture();
-}
-
-void StaticPictureCache::DrawEntry(const Entry& entry,
-                                   const Plan& plan,
-                                   flutter::DlScalar opacity,
-                                   flutter::DlCanvas& canvas) const {
-  flutter::DlPaint paint;
-  paint.setOpacity(opacity);
-  canvas.DrawImageRect(entry.image, entry.image->GetBounds(), plan.destination,
-                       flutter::DlImageSampling::kNearestNeighbor, &paint,
-                       flutter::DlSrcRectConstraint::kStrict);
+  return texture;
 }
 
 void StaticPictureCache::Collect() {
@@ -465,13 +597,18 @@ std::string StaticPictureCache::Describe() const {
       << " collected=" << statistics_.collected
       << " stale_keys=" << statistics_.stale_keys
       << " rejected_by_budget=" << statistics_.rejected_by_budget
-      << " rejected_transforms=" << statistics_.rejected_transforms;
+      << " rejected_transforms=" << statistics_.rejected_transforms
+      << " rejected_passes=" << statistics_.rejected_passes;
   for (const auto& [key, entry] : entries_) {
-    const flutter::DlISize size = entry.image->GetSize();
+    const ISize size = entry.texture->GetSize();
     out << " | picture=" << key.display_list_id << " scale=" << key.scale_x
         << "," << key.scale_y << " alignment=" << key.alignment_x << ","
-        << key.alignment_y << " size=" << size.width << "x" << size.height
-        << " bytes=" << entry.bytes << " idle=" << access_ - entry.last_access
+        << key.alignment_y
+        << " samples=" << static_cast<int>(key.pass.sample_count)
+        << " format=" << PixelFormatToString(key.pass.format)
+        << " bottom_up=" << key.pass.bottom_up << " size=" << size.width << "x"
+        << size.height << " bytes=" << entry.bytes
+        << " idle=" << access_ - entry.last_access
         << " behind=" << entry.picture->draws - entry.last_draw;
   }
   return out.str();
@@ -508,6 +645,15 @@ void StaticPictureCache::TrimEligibilityRecords() {
                            return a.second.last_access < b.second.last_access;
                          });
     eligibility_.erase(oldest);
+  }
+}
+
+void StaticPictureCache::TrimRequests() {
+  while (requests_.size() > limits_.max_eligibility_records) {
+    auto oldest = std::min_element(
+        requests_.begin(), requests_.end(),
+        [](const auto& a, const auto& b) { return a.second < b.second; });
+    requests_.erase(oldest);
   }
 }
 

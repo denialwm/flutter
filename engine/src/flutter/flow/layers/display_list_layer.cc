@@ -140,14 +140,11 @@ void DisplayListLayer::Paint(PaintContext& context) const {
 
   DlScalar opacity = context.state_stack.outstanding_opacity();
 #ifdef IMPELLER_SUPPORTS_RENDERING
+  // Impeller draws the picture from its static picture cache where it
+  // replays it: only there is the pass it lands in known.
   if (is_complex_ && !will_change_ && context.impeller_enabled &&
-      context.aiks_context &&
-      context.aiks_context->GetStaticPictureCache().Draw(
-          display_list_, context.state_stack.matrix(),
-          context.impeller_canvas_to_render_target_transform, opacity,
-          *context.canvas)) {
-    TRACE_EVENT_INSTANT0("flutter", "static picture cache draw");
-    return;
+      context.aiks_context) {
+    context.aiks_context->GetStaticPictureCache().Request(display_list_);
   }
 #endif
   context.canvas->DrawDisplayList(display_list_, opacity);

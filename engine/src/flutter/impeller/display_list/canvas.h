@@ -205,6 +205,14 @@ class Canvas {
 
   const Matrix& GetCurrentTransform() const;
 
+  /// The transform the current pass's entities are drawn with: the current
+  /// transform, relative to the pass's origin.
+  Matrix GetCurrentPassTransform() const;
+
+  /// The target draws land in now: the root target, or the offscreen of the
+  /// innermost save layer that has one.
+  const RenderTarget* GetCurrentPassRenderTarget() const;
+
   void ResetTransform();
 
   void Transform(const Matrix& transform);

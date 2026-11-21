@@ -125,6 +125,7 @@ class Tessellator;
 class RenderTargetCache;
 class GlassMaterialSheet;
 class BlurWorkspace;
+class StaticPictureCache;
 
 class ContentContext {
  public:
@@ -371,6 +372,15 @@ class ContentContext {
     return frame_repaint_bounds_;
   }
 
+  // The cache that draws static pictures as images where a nested
+  // DisplayList is replayed (AiksContext owns it). None draws them live.
+  void SetStaticPictureCache(StaticPictureCache* cache) {
+    static_picture_cache_ = cache;
+  }
+  StaticPictureCache* GetStaticPictureCache() const {
+    return static_picture_cache_;
+  }
+
  protected:
   // Visible for testing.
   void SetTransientsIndexesBuffer(std::shared_ptr<HostBuffer> host_buffer) {
@@ -450,6 +460,7 @@ class ContentContext {
   size_t backdrop_snapshot_cache_bytes_ = 0u;
   uint64_t backdrop_snapshot_cache_access_ = 0u;
   std::optional<Rect> frame_repaint_bounds_;
+  StaticPictureCache* static_picture_cache_ = nullptr;
 
   struct BackdropSnapshotObservation {
     int64_t key;

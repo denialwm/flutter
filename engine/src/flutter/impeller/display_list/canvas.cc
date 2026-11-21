@@ -787,6 +787,19 @@ const Matrix& Canvas::GetCurrentTransform() const {
   return transform_stack_.back().transform;
 }
 
+Matrix Canvas::GetCurrentPassTransform() const {
+  return Matrix::MakeTranslation(Vector3(-GetGlobalPassPosition())) *
+         GetCurrentTransform();
+}
+
+const RenderTarget* Canvas::GetCurrentPassRenderTarget() const {
+  if (render_passes_.empty()) {
+    return nullptr;
+  }
+  EntityPassTarget* target = render_passes_.back().GetEntityPassTarget();
+  return target ? &target->GetRenderTarget() : nullptr;
+}
+
 void Canvas::Translate(const Vector3& offset) {
   Concat(Matrix::MakeTranslation(offset));
 }

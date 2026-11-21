@@ -2,7 +2,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//flutter/common/config.gni")
 import("//flutter/impeller/tools/impeller.gni")
+import("//flutter/shell/config.gni")
 
 # Mock GL only: no display, window, pixel readback, or playground.
 impeller_component("window_backdrop_unittests") {
@@ -20,6 +22,21 @@ impeller_component("window_backdrop_unittests") {
     "//flutter/third_party/googletest:gmock",
     "//flutter/third_party/googletest:gtest_main",
   ]
+}
+
+# Real GLES (ANGLE on SwiftShader): static picture cache pixels against live.
+if (enable_unittests && shell_enable_gl) {
+  impeller_component("static_picture_cache_pixel_unittests") {
+    target_type = "executable"
+    testonly = true
+    sources = [ "static_picture_cache_pixel_unittests.cc" ]
+    deps = [
+      ":display_list",
+      "../renderer/backend/gles",
+      "//flutter/testing:opengl",
+      "//flutter/third_party/googletest:gtest_main",
+    ]
+  }
 }
 
 impeller_component("skia_conversions") {
@@ -81,6 +98,11 @@ impeller_component("display_list") {
 
   if (impeller_supports_rendering) {
     public_deps += [ "//flutter/impeller/runtime_stage" ]
+  }
+
+  # The static picture cache stores snapshots bottom-up under a GLES output.
+  if (impeller_enable_opengles) {
+    deps = [ "../renderer/backend/gles" ]
   }
 
   if (!defined(defines)) {

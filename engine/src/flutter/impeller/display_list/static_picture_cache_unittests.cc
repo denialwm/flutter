@@ -25,6 +25,7 @@
 #include "impeller/renderer/backend/gles/proc_table_gles.h"
 #include "impeller/renderer/backend/gles/reactor_gles.h"
 #include "impeller/renderer/backend/gles/test/mock_gles.h"
+#include "impeller/renderer/backend/gles/texture_gles.h"
 #include "impeller/renderer/render_target.h"
 
 namespace impeller {
@@ -214,6 +215,28 @@ class StaticPictureCacheTest : public ::testing::Test {
     return count;
   }
 
+  void TearDown() override {
+    if (renderer_) {
+      renderer_->SetStaticPictureCache(nullptr);
+    }
+  }
+
+  // A frame that replays `picture` as a nested DisplayList, as the layer
+  // tree records it.
+  static sk_sp<DisplayList> MakeFrame(const sk_sp<DisplayList>& picture,
+                                      DlScalar opacity = 1.0f) {
+    DisplayListBuilder frame(DlRect::MakeWH(200, 120));
+    frame.DrawDisplayList(picture, opacity);
+    return frame.Build();
+  }
+
+  static bool Cached(StaticPictureCache& cache,
+                     const sk_sp<DisplayList>& picture,
+                     const DlMatrix& transform,
+                     const StaticPictureCache::Pass& pass = {}) {
+    return cache.Lookup(picture, transform, pass).has_value();
+  }
+
   std::shared_ptr<MockGLES> mock_;
   std::shared_ptr<ContextGLES> context_;
   std::shared_ptr<Worker> worker_;
@@ -223,19 +246,9 @@ class StaticPictureCacheTest : public ::testing::Test {
 TEST_F(StaticPictureCacheTest,
        GeneratesWholeCutoutThenHitsWithOneImageCommand) {
   StaticPictureCache cache(*renderer_);
+  renderer_->SetStaticPictureCache(&cache);
   const auto shadow = MakeShadowPicture();
-  const std::optional<DlMatrix> identity = DlMatrix();
-
-  DisplayListBuilder first_frame;
-  EXPECT_FALSE(cache.Draw(shadow, DlMatrix(), identity, 1.0f, first_frame));
-
-  DisplayListBuilder generated_frame;
-  EXPECT_TRUE(cache.Draw(shadow, DlMatrix(), identity, 1.0f, generated_frame));
-  EXPECT_EQ(cache.GetStatistics().generations, 1u);
-
-  DisplayListBuilder hit_frame;
-  EXPECT_TRUE(cache.Draw(shadow, DlMatrix(), identity, 0.75f, hit_frame));
-  EXPECT_EQ(cache.GetStatistics().hits, 1u);
+  const auto frame = MakeFrame(shadow);
 
   DrawCounter shadow_ops;
   shadow->Dispatch(shadow_ops);
@@ -243,25 +256,27 @@ TEST_F(StaticPictureCacheTest,
   EXPECT_EQ(shadow_ops.round_rects, 1u);
   EXPECT_EQ(shadow_ops.last_path_fill, DlPathFillType::kOdd);
 
-  const auto hit = hit_frame.Build();
-  DrawCounter hit_ops;
-  hit->Dispatch(hit_ops);
-  EXPECT_EQ(hit_ops.image_rects, 1u);
-  EXPECT_EQ(hit_ops.clip_paths, 0u);
-  EXPECT_EQ(hit_ops.round_rects, 0u);
-  EXPECT_EQ(hit_ops.nested_display_lists, 0u);
-  ASSERT_TRUE(hit_ops.last_opacity.has_value());
-  EXPECT_NEAR(hit_ops.last_opacity.value(), DlColor::toAlpha(0.75f) / 255.0f,
-              0.00001f);
+  // Not requested by its layer: always replayed.
+  const size_t live_commands = RenderCommandCount(frame);
+  EXPECT_EQ(RenderCommandCount(frame), live_commands);
+  EXPECT_EQ(cache.GetStatistics().admission_misses, 0u);
+  EXPECT_EQ(live_commands, 3u);
+
+  cache.Request(shadow);
+  EXPECT_EQ(RenderCommandCount(frame), live_commands);
+  EXPECT_EQ(cache.GetStatistics().admission_misses, 1u);
+  EXPECT_EQ(RenderCommandCount(frame), 1u);
+  EXPECT_EQ(cache.GetStatistics().generations, 1u);
+  EXPECT_EQ(RenderCommandCount(frame), 1u);
+  EXPECT_EQ(cache.GetStatistics().hits, 1u);
+
+  // With group opacity the image goes through the same opacity handling
+  // the live replay gets.
+  EXPECT_EQ(RenderCommandCount(MakeFrame(shadow, 0.75f)), 1u);
+  EXPECT_EQ(cache.GetStatistics().hits, 2u);
 
   EXPECT_EQ(RenderTarget::kDefaultColorAttachmentConfig.clear_color,
             Color::BlackTransparent());
-
-  const size_t direct_commands = RenderCommandCount(shadow);
-  const size_t hit_commands = RenderCommandCount(hit);
-  EXPECT_GT(direct_commands, hit_commands);
-  EXPECT_EQ(direct_commands, 3u);
-  EXPECT_EQ(hit_commands, 1u);
 }
 
 TEST_F(StaticPictureCacheTest,
@@ -280,28 +295,22 @@ TEST_F(StaticPictureCacheTest,
         return MakeTexture(size);
       });
   const auto shadow = MakeShadowPicture();
-  const std::optional<DlMatrix> identity = DlMatrix();
 
-  DisplayListBuilder output;
   const DlMatrix at_fraction = DlMatrix::MakeTranslation({10.25f, 4.5f});
-  EXPECT_FALSE(cache.Draw(shadow, at_fraction, identity, 1.0f, output));
-  EXPECT_TRUE(cache.Draw(shadow, at_fraction, identity, 1.0f, output));
-  EXPECT_TRUE(cache.Draw(shadow, DlMatrix::MakeTranslation({11.25f, 5.5f}),
-                         identity, 1.0f, output));
+  EXPECT_FALSE(Cached(cache, shadow, at_fraction));
+  EXPECT_TRUE(Cached(cache, shadow, at_fraction));
+  EXPECT_TRUE(Cached(cache, shadow, DlMatrix::MakeTranslation({11.25f, 5.5f})));
   EXPECT_EQ(generated_sizes.size(), 1u);
   EXPECT_EQ(cache.GetStatistics().hits, 1u);
 
-  EXPECT_FALSE(cache.Draw(shadow, DlMatrix::MakeTranslation({11.5f, 5.5f}),
-                          identity, 1.0f, output));
-  EXPECT_FALSE(cache.Draw(shadow, DlMatrix::MakeScale(Vector2(1.25f, 1.25f)),
-                          identity, 1.0f, output));
-  EXPECT_FALSE(cache.Draw(MakeRectPicture(DlColor::kRed()), DlMatrix(),
-                          identity, 1.0f, output));
+  EXPECT_FALSE(Cached(cache, shadow, DlMatrix::MakeTranslation({11.5f, 5.5f})));
+  EXPECT_FALSE(
+      Cached(cache, shadow, DlMatrix::MakeScale(Vector2(1.25f, 1.25f))));
+  EXPECT_FALSE(Cached(cache, MakeRectPicture(DlColor::kRed()), DlMatrix()));
   EXPECT_EQ(generated_sizes.size(), 1u);
 }
 
-TEST_F(StaticPictureCacheTest,
-       DeferredOutputTransformParticipatesInScaleAndAlignment) {
+TEST_F(StaticPictureCacheTest, PassTransformParticipatesInScaleAndAlignment) {
   std::vector<ISize> generated_sizes;
   StaticPictureCache cache(*renderer_, StaticPictureCache::Limits(),
                            [&](const sk_sp<DisplayList>&, ISize size) {
@@ -309,33 +318,31 @@ TEST_F(StaticPictureCacheTest,
                              return MakeTexture(size);
                            });
   const auto shadow = MakeShadowPicture();
-  DisplayListBuilder output;
   const DlMatrix canvas_transform = DlMatrix::MakeTranslation({10.0f, 5.0f});
-  const std::optional<DlMatrix> deferred =
-      DlMatrix::MakeTranslation({0.25f, 0.5f}) *
-      DlMatrix::MakeScale(Vector2(2.0f, 2.0f));
+  const DlMatrix output = DlMatrix::MakeTranslation({0.25f, 0.5f}) *
+                          DlMatrix::MakeScale(Vector2(2.0f, 2.0f));
 
-  EXPECT_FALSE(cache.Draw(shadow, canvas_transform, deferred, 1.0f, output));
-  EXPECT_TRUE(cache.Draw(shadow, canvas_transform, deferred, 1.0f, output));
+  EXPECT_FALSE(Cached(cache, shadow, output * canvas_transform));
+  EXPECT_TRUE(Cached(cache, shadow, output * canvas_transform));
   ASSERT_EQ(generated_sizes.size(), 1u);
   EXPECT_EQ(generated_sizes[0], ISize(401, 241));
 
-  EXPECT_TRUE(cache.Draw(shadow, DlMatrix::MakeTranslation({11.0f, 6.0f}),
-                         deferred, 1.0f, output));
+  EXPECT_TRUE(
+      Cached(cache, shadow, output * DlMatrix::MakeTranslation({11.0f, 6.0f})));
   EXPECT_EQ(generated_sizes.size(), 1u);
 
-  const std::optional<DlMatrix> shifted_deferred =
-      DlMatrix::MakeTranslation({0.5f, 0.5f}) *
-      DlMatrix::MakeScale(Vector2(2.0f, 2.0f));
-  EXPECT_FALSE(
-      cache.Draw(shadow, canvas_transform, shifted_deferred, 1.0f, output));
-  EXPECT_FALSE(
-      cache.Draw(shadow, canvas_transform, std::nullopt, 1.0f, output));
+  const DlMatrix shifted_output = DlMatrix::MakeTranslation({0.5f, 0.5f}) *
+                                  DlMatrix::MakeScale(Vector2(2.0f, 2.0f));
+  EXPECT_FALSE(Cached(cache, shadow, shifted_output * canvas_transform));
   EXPECT_EQ(generated_sizes.size(), 1u);
 }
 
+// The snapshot is rendered in the pass's own pixel coordinates, moved by
+// whole pixels only, so pass-space rounding (a non-antialiased rect clip's
+// scissor) picks the same pixels as the live replay; the image then lands on
+// those pixels one to one.
 TEST_F(StaticPictureCacheTest,
-       NegativeBoundsMapToIdenticalPixelsWithNonUniformDeferredTransform) {
+       NegativeBoundsMapToIdenticalPixelsWithNonUniformTransform) {
   const DlRect outer = DlRect::MakeLTRB(-64, -48, 136, 72);
   const DlRect inner = DlRect::MakeLTRB(-28, -24, 100, 48);
   const auto shadow = MakeShadowPicture(outer, inner);
@@ -350,56 +357,40 @@ TEST_F(StaticPictureCacheTest,
                              return MakeTexture(size);
                            });
 
-  const DlMatrix canvas_transform = DlMatrix::MakeTranslation({-7.25f, 13.5f}) *
-                                    DlMatrix::MakeScale(Vector2(1.5f, 2.25f));
-  const std::optional<DlMatrix> deferred =
-      DlMatrix::MakeTranslation({0.375f, 0.625f});
-  const DlMatrix effective = deferred.value() * canvas_transform;
-  const DlRect device_bounds = outer.TransformBounds(effective);
-  const DlIRect rounded = DlIRect::RoundOut(device_bounds);
+  const DlMatrix effective = DlMatrix::MakeTranslation({0.375f, 0.625f}) *
+                             DlMatrix::MakeTranslation({-7.25f, 13.5f}) *
+                             DlMatrix::MakeScale(Vector2(1.5f, 2.25f));
+  const DlIRect rounded = DlIRect::RoundOut(outer.TransformBounds(effective));
   const DlMatrix expected_snapshot_transform =
       DlMatrix::MakeTranslation({-static_cast<float>(rounded.GetLeft()),
                                  -static_cast<float>(rounded.GetTop())}) *
       effective;
 
-  DisplayListBuilder output;
-  EXPECT_FALSE(cache.Draw(shadow, canvas_transform, deferred, 0.37f, output));
-  EXPECT_TRUE(cache.Draw(shadow, canvas_transform, deferred, 0.37f, output));
+  EXPECT_FALSE(cache.Lookup(shadow, effective, {}).has_value());
+  const auto image = cache.Lookup(shadow, effective, {});
+  ASSERT_TRUE(image.has_value());
   ASSERT_TRUE(snapshot_transform.has_value());
   EXPECT_EQ(snapshot_size, ISize(rounded.GetSize()));
   for (size_t i = 0u; i < 16u; i++) {
     EXPECT_NEAR(snapshot_transform->m[i], expected_snapshot_transform.m[i],
                 0.00001f);
   }
-
-  DrawCounter cached_ops;
-  output.Build()->Dispatch(cached_ops);
-  ASSERT_TRUE(cached_ops.last_image_destination.has_value());
-  const DlRect mapped_destination =
-      cached_ops.last_image_destination->TransformBounds(effective);
-  EXPECT_NEAR(mapped_destination.GetLeft(), rounded.GetLeft(), 0.0001f);
-  EXPECT_NEAR(mapped_destination.GetTop(), rounded.GetTop(), 0.0001f);
-  EXPECT_NEAR(mapped_destination.GetRight(), rounded.GetRight(), 0.0001f);
-  EXPECT_NEAR(mapped_destination.GetBottom(), rounded.GetBottom(), 0.0001f);
-  ASSERT_TRUE(cached_ops.last_opacity.has_value());
-  EXPECT_NEAR(cached_ops.last_opacity.value(), DlColor::toAlpha(0.37f) / 255.0f,
-              0.00001f);
+  EXPECT_EQ(image->origin, IPoint(rounded.GetLeft(), rounded.GetTop()));
+  EXPECT_EQ(image->texture->GetSize(), ISize(rounded.GetSize()));
 }
 
-TEST_F(StaticPictureCacheTest,
-       DeferredGlesYFlipBuildsOnceAndReusesIntegerMovement) {
+TEST_F(StaticPictureCacheTest, GlesYFlipBuildsOnceAndReusesIntegerMovement) {
   StaticPictureCache cache(*renderer_);
   const auto shadow = MakeShadowPicture();
-  const std::optional<DlMatrix> deferred =
-      DlMatrix::MakeTranslation({0, 1080}) *
-      DlMatrix::MakeScale(Vector2(1, -1));
+  const DlMatrix flip = DlMatrix::MakeTranslation({0, 1080}) *
+                        DlMatrix::MakeScale(Vector2(1, -1));
+  const StaticPictureCache::Pass output{.bottom_up = true};
   const DlMatrix placement = DlMatrix::MakeTranslation({619, 575});
-  DisplayListBuilder output;
-  EXPECT_FALSE(cache.Draw(shadow, placement, deferred, 1, output));
-  ASSERT_TRUE(cache.Draw(shadow, placement, deferred, 1, output));
-  EXPECT_TRUE(cache.Draw(shadow, placement, deferred, 1, output));
-  EXPECT_TRUE(cache.Draw(shadow, DlMatrix::MakeTranslation({620, 576}),
-                         deferred, 1, output));
+  EXPECT_FALSE(Cached(cache, shadow, flip * placement, output));
+  ASSERT_TRUE(Cached(cache, shadow, flip * placement, output));
+  EXPECT_TRUE(Cached(cache, shadow, flip * placement, output));
+  EXPECT_TRUE(Cached(cache, shadow,
+                     flip * DlMatrix::MakeTranslation({620, 576}), output));
   EXPECT_EQ(cache.GetStatistics().generations, 1u);
   EXPECT_EQ(cache.GetStatistics().hits, 2u);
   EXPECT_EQ(cache.GetStatistics().rejected_transforms, 0u);
@@ -408,7 +399,7 @@ TEST_F(StaticPictureCacheTest,
 }
 
 TEST_F(StaticPictureCacheTest,
-       ReflectionsPreserveSnapshotOrientationAndPixelPlacement) {
+       ReflectionsKeepPassOrientationAndPixelPlacement) {
   const auto shadow = MakeShadowPicture(DlRect::MakeLTRB(-64, -48, 136, 72),
                                         DlRect::MakeLTRB(-28, -24, 100, 48));
   for (float sign_x : {1.0f, -1.0f}) {
@@ -427,44 +418,39 @@ TEST_F(StaticPictureCacheTest,
             EXPECT_EQ(ops.round_rects, 1u);
             return MakeTexture(size);
           });
-      const DlMatrix placement = DlMatrix::MakeTranslation({-7.25f, 13.5f});
-      const std::optional<DlMatrix> deferred =
+      const DlMatrix effective =
           DlMatrix::MakeTranslation({0.375f, 1080.625f}) *
-          DlMatrix::MakeScale(Vector2(1.5f * sign_x, 2.25f * sign_y));
-      const DlMatrix effective = deferred.value() * placement;
+          DlMatrix::MakeScale(Vector2(1.5f * sign_x, 2.25f * sign_y)) *
+          DlMatrix::MakeTranslation({-7.25f, 13.5f});
       const DlIRect rounded =
           DlIRect::RoundOut(shadow->GetBounds().TransformBounds(effective));
-      DisplayListBuilder output;
-      EXPECT_FALSE(cache.Draw(shadow, placement, deferred, 0.37f, output));
-      ASSERT_TRUE(cache.Draw(shadow, placement, deferred, 0.37f, output));
+      const DlMatrix origin =
+          DlMatrix::MakeTranslation({static_cast<float>(rounded.GetLeft()),
+                                     static_cast<float>(rounded.GetTop())});
+      EXPECT_FALSE(cache.Lookup(shadow, effective, {}).has_value());
+      const auto image = cache.Lookup(shadow, effective, {});
+      ASSERT_TRUE(image.has_value());
       ASSERT_TRUE(snapshot_transform.has_value());
       EXPECT_EQ(snapshot_size, ISize(rounded.GetSize()));
-      EXPECT_GT(snapshot_transform->m[0], 0);
-      EXPECT_GT(snapshot_transform->m[5], 0);
-
-      DrawCounter cached_ops;
-      output.Build()->Dispatch(cached_ops);
-      ASSERT_TRUE(cached_ops.last_image_destination.has_value());
-      const auto destination = cached_ops.last_image_destination.value();
-      // Follow asymmetric picture points through the snapshot, the image's
-      // source-to-destination mapping, and the deferred output transform.
-      // Comparing only bounding rectangles would miss a double reflection.
+      const DlMatrix expected_snapshot = origin.Invert() * effective;
+      for (size_t i = 0u; i < 16u; i++) {
+        EXPECT_NEAR(snapshot_transform->m[i], expected_snapshot.m[i], 0.0001f);
+      }
+      EXPECT_EQ(image->origin, IPoint(rounded.GetLeft(), rounded.GetTop()));
+      // Follow asymmetric picture points through the snapshot and the
+      // image's placement. Comparing only bounding rectangles would miss a
+      // double reflection.
+      const DlMatrix placed =
+          DlMatrix::MakeTranslation({static_cast<float>(image->origin.x),
+                                     static_cast<float>(image->origin.y)});
       for (const DlPoint point :
            {DlPoint(-64, -48), DlPoint(136, -48), DlPoint(136, 72),
             DlPoint(-64, 72), DlPoint(11, 27)}) {
-        const DlPoint texel = snapshot_transform.value() * point;
-        const DlPoint replayed =
-            destination.GetOrigin() +
-            DlPoint(texel.x * destination.GetWidth() / snapshot_size.width,
-                    texel.y * destination.GetHeight() / snapshot_size.height);
-        const DlPoint actual = effective * replayed;
+        const DlPoint actual = placed * (snapshot_transform.value() * point);
         const DlPoint expected = effective * point;
         EXPECT_NEAR(actual.x, expected.x, 0.0002f);
         EXPECT_NEAR(actual.y, expected.y, 0.0002f);
       }
-      ASSERT_TRUE(cached_ops.last_opacity.has_value());
-      EXPECT_NEAR(cached_ops.last_opacity.value(),
-                  DlColor::toAlpha(0.37f) / 255.0f, 0.00001f);
     }
   }
 }
@@ -477,28 +463,82 @@ TEST_F(StaticPictureCacheTest,
       *renderer_, limits,
       [&](const sk_sp<DisplayList>&, ISize size) { return MakeTexture(size); });
   const auto shadow = MakeShadowPicture();
-  const std::optional<DlMatrix> flip = DlMatrix::MakeTranslation({0, 1080}) *
-                                       DlMatrix::MakeScale(Vector2(1, -1));
-  const std::optional<DlMatrix> identity = DlMatrix();
+  const DlMatrix flip = DlMatrix::MakeTranslation({0, 1080}) *
+                        DlMatrix::MakeScale(Vector2(1, -1));
   const DlMatrix placement = DlMatrix::MakeTranslation({10.25f, 4.5f});
-  DisplayListBuilder output;
-  EXPECT_TRUE(cache.Draw(shadow, placement, flip, 1, output));
-  EXPECT_TRUE(cache.Draw(shadow, DlMatrix::MakeTranslation({11.25f, 5.5f}),
-                         flip, 1, output));
+  EXPECT_TRUE(Cached(cache, shadow, flip * placement));
+  EXPECT_TRUE(
+      Cached(cache, shadow, flip * DlMatrix::MakeTranslation({11.25f, 5.5f})));
   EXPECT_EQ(cache.GetStatistics().generations, 1u);
   EXPECT_EQ(cache.GetStatistics().hits, 1u);
-  EXPECT_TRUE(cache.Draw(shadow, DlMatrix::MakeTranslation({11.25f, 5.75f}),
-                         flip, 1, output));
-  EXPECT_TRUE(cache.Draw(shadow, placement, identity, 1, output));
-  EXPECT_TRUE(cache.Draw(shadow, placement * DlMatrix::MakeScale(Vector2(2, 2)),
-                         flip, 1, output));
+  EXPECT_TRUE(
+      Cached(cache, shadow, flip * DlMatrix::MakeTranslation({11.25f, 5.75f})));
+  EXPECT_TRUE(Cached(cache, shadow, placement));
+  EXPECT_TRUE(Cached(cache, shadow,
+                     flip * placement * DlMatrix::MakeScale(Vector2(2, 2))));
   EXPECT_EQ(cache.GetStatistics().generations, 4u);
-  EXPECT_FALSE(cache.Draw(shadow, DlMatrix::MakeScale(Vector2(0, -1)), identity,
-                          1, output));
-  EXPECT_FALSE(cache.Draw(shadow, DlMatrix::MakeScale(Vector2(-1, 0)), identity,
-                          1, output));
-  EXPECT_FALSE(cache.Draw(shadow, placement, std::nullopt, 1, output));
-  EXPECT_EQ(cache.GetStatistics().rejected_transforms, 3u);
+  EXPECT_FALSE(Cached(cache, shadow, DlMatrix::MakeScale(Vector2(0, -1))));
+  EXPECT_FALSE(Cached(cache, shadow, DlMatrix::MakeScale(Vector2(-1, 0))));
+  EXPECT_EQ(cache.GetStatistics().rejected_transforms, 2u);
+}
+
+// A snapshot is rendered like the pass it lands in, so passes that differ
+// in sample count, color format or row order each get their own.
+TEST_F(StaticPictureCacheTest, PassPropertiesKeySnapshots) {
+  StaticPictureCache::Limits limits;
+  limits.admission_threshold = 1u;
+  StaticPictureCache cache(
+      *renderer_, limits,
+      [&](const sk_sp<DisplayList>&, ISize size) { return MakeTexture(size); });
+  const auto shadow = MakeShadowPicture();
+  using Pass = StaticPictureCache::Pass;
+  const Pass passes[] = {
+      Pass{},
+      Pass{.sample_count = SampleCount::kCount4},
+      Pass{.bottom_up = true},
+      Pass{.format = PixelFormat::kR16G16B16A16Float},
+  };
+  for (const Pass& pass : passes) {
+    EXPECT_TRUE(Cached(cache, shadow, DlMatrix(), pass));
+  }
+  EXPECT_EQ(cache.GetStatistics().generations, 4u);
+  for (const Pass& pass : passes) {
+    EXPECT_TRUE(Cached(cache, shadow, DlMatrix(), pass));
+  }
+  EXPECT_EQ(cache.GetStatistics().hits, 4u);
+  EXPECT_EQ(cache.GetEntryCount(), 4u);
+}
+
+TEST_F(StaticPictureCacheTest, DescribesThePassFromItsColorAttachment) {
+  StaticPictureCache cache(*renderer_);
+  RenderTargetAllocator allocator(
+      renderer_->GetContext()->GetResourceAllocator());
+  const RenderTarget single =
+      allocator.CreateOffscreen(*context_, {16, 16}, 1u, "Single");
+  const auto single_pass = cache.DescribePass(single);
+  ASSERT_TRUE(single_pass.has_value());
+  EXPECT_EQ(single_pass->sample_count, SampleCount::kCount1);
+  EXPECT_EQ(
+      single_pass->format,
+      single.GetColorAttachment(0u).texture->GetTextureDescriptor().format);
+  EXPECT_FALSE(single_pass->bottom_up);
+
+  TextureDescriptor descriptor;
+  descriptor.storage_mode = StorageMode::kDevicePrivate;
+  descriptor.format = PixelFormat::kR8G8B8A8UNormInt;
+  descriptor.size = {16, 16};
+  descriptor.usage = TextureUsage::kRenderTarget | TextureUsage::kShaderRead;
+  auto texture = renderer_->GetContext()->GetResourceAllocator()->CreateTexture(
+      descriptor);
+  ASSERT_TRUE(texture);
+  TextureGLES::Cast(*texture).SetStoredBottomUp();
+  const RenderTarget bottom_up = allocator.CreateOffscreen(
+      *context_, {16, 16}, 1u, "Bottom up",
+      RenderTarget::kDefaultColorAttachmentConfig,
+      RenderTarget::kDefaultStencilAttachmentConfig, texture);
+  const auto bottom_up_pass = cache.DescribePass(bottom_up);
+  ASSERT_TRUE(bottom_up_pass.has_value());
+  EXPECT_TRUE(bottom_up_pass->bottom_up);
 }
 
 TEST_F(StaticPictureCacheTest, EnforcesEntryAndByteBudgetsAndBacksOffFailure) {
@@ -511,12 +551,10 @@ TEST_F(StaticPictureCacheTest, EnforcesEntryAndByteBudgetsAndBacksOffFailure) {
                                       snapshots++;
                                       return MakeTexture(size);
                                     });
-  DisplayListBuilder output;
-  const std::optional<DlMatrix> identity = DlMatrix();
-  EXPECT_TRUE(eviction_cache.Draw(MakeRectPicture(DlColor::kRed()), DlMatrix(),
-                                  identity, 1.0f, output));
-  EXPECT_TRUE(eviction_cache.Draw(MakeRectPicture(DlColor::kBlue()), DlMatrix(),
-                                  identity, 1.0f, output));
+  EXPECT_TRUE(
+      Cached(eviction_cache, MakeRectPicture(DlColor::kRed()), DlMatrix()));
+  EXPECT_TRUE(
+      Cached(eviction_cache, MakeRectPicture(DlColor::kBlue()), DlMatrix()));
   EXPECT_EQ(eviction_cache.GetEntryCount(), 1u);
   EXPECT_EQ(eviction_cache.GetStatistics().evictions, 1u);
   EXPECT_EQ(snapshots, 2u);
@@ -530,8 +568,8 @@ TEST_F(StaticPictureCacheTest, EnforcesEntryAndByteBudgetsAndBacksOffFailure) {
                                     budget_snapshots++;
                                     return MakeTexture(size);
                                   });
-  EXPECT_FALSE(budget_cache.Draw(MakeRectPicture(DlColor::kGreen()), DlMatrix(),
-                                 identity, 1.0f, output));
+  EXPECT_FALSE(
+      Cached(budget_cache, MakeRectPicture(DlColor::kGreen()), DlMatrix()));
   EXPECT_EQ(budget_snapshots, 0u);
   EXPECT_EQ(budget_cache.GetEntryCount(), 0u);
 
@@ -545,16 +583,13 @@ TEST_F(StaticPictureCacheTest, EnforcesEntryAndByteBudgetsAndBacksOffFailure) {
         return nullptr;
       });
   const auto failed_picture = MakeRectPicture(DlColor::kYellow());
-  EXPECT_FALSE(
-      failure_cache.Draw(failed_picture, DlMatrix(), identity, 1.0f, output));
+  EXPECT_FALSE(Cached(failure_cache, failed_picture, DlMatrix()));
   EXPECT_EQ(attempts, 1u);
   for (size_t i = 0u; i < 60u; i++) {
-    EXPECT_FALSE(
-        failure_cache.Draw(failed_picture, DlMatrix(), identity, 1.0f, output));
+    EXPECT_FALSE(Cached(failure_cache, failed_picture, DlMatrix()));
   }
   EXPECT_EQ(attempts, 1u);
-  EXPECT_FALSE(
-      failure_cache.Draw(failed_picture, DlMatrix(), identity, 1.0f, output));
+  EXPECT_FALSE(Cached(failure_cache, failed_picture, DlMatrix()));
   EXPECT_EQ(attempts, 2u);
 }
 
@@ -573,19 +608,17 @@ TEST_F(StaticPictureCacheTest, TotalByteBudgetEvictsLeastRecentlyUsedEntry) {
   const auto red = MakeRectPicture(DlColor::kRed());
   const auto green = MakeRectPicture(DlColor::kGreen());
   const auto blue = MakeRectPicture(DlColor::kBlue());
-  const std::optional<DlMatrix> identity = DlMatrix();
-  DisplayListBuilder output;
 
-  EXPECT_TRUE(cache.Draw(red, DlMatrix(), identity, 1.0f, output));
-  EXPECT_TRUE(cache.Draw(green, DlMatrix(), identity, 1.0f, output));
-  EXPECT_TRUE(cache.Draw(red, DlMatrix(), identity, 1.0f, output));
-  EXPECT_TRUE(cache.Draw(blue, DlMatrix(), identity, 1.0f, output));
+  EXPECT_TRUE(Cached(cache, red, DlMatrix()));
+  EXPECT_TRUE(Cached(cache, green, DlMatrix()));
+  EXPECT_TRUE(Cached(cache, red, DlMatrix()));
+  EXPECT_TRUE(Cached(cache, blue, DlMatrix()));
   EXPECT_EQ(cache.GetEntryCount(), 2u);
   EXPECT_EQ(cache.GetResidentBytes(), limits.max_bytes);
   EXPECT_EQ(cache.GetStatistics().evictions, 1u);
 
-  EXPECT_TRUE(cache.Draw(red, DlMatrix(), identity, 1.0f, output));
-  EXPECT_TRUE(cache.Draw(green, DlMatrix(), identity, 1.0f, output));
+  EXPECT_TRUE(Cached(cache, red, DlMatrix()));
+  EXPECT_TRUE(Cached(cache, green, DlMatrix()));
   EXPECT_EQ(snapshots, 4u);
   EXPECT_EQ(cache.GetStatistics().hits, 2u);
   EXPECT_EQ(cache.GetStatistics().evictions, 2u);
@@ -599,11 +632,9 @@ TEST_F(StaticPictureCacheTest, DropsEntriesWhosePictureIsGone) {
       [&](const sk_sp<DisplayList>&, ISize size) { return MakeTexture(size); });
   auto red = MakeRectPicture(DlColor::kRed());
   const auto green = MakeRectPicture(DlColor::kGreen());
-  const std::optional<DlMatrix> identity = DlMatrix();
-  DisplayListBuilder output;
 
-  EXPECT_TRUE(cache.Draw(red, DlMatrix(), identity, 1.0f, output));
-  EXPECT_TRUE(cache.Draw(green, DlMatrix(), identity, 1.0f, output));
+  EXPECT_TRUE(Cached(cache, red, DlMatrix()));
+  EXPECT_TRUE(Cached(cache, green, DlMatrix()));
   cache.Collect();
   EXPECT_EQ(cache.GetEntryCount(), 2u);
   EXPECT_EQ(cache.GetStatistics().collected, 0u);
@@ -616,7 +647,7 @@ TEST_F(StaticPictureCacheTest, DropsEntriesWhosePictureIsGone) {
   EXPECT_EQ(cache.GetStatistics().collected, 1u);
   EXPECT_EQ(cache.GetStatistics().evictions, 0u);
 
-  EXPECT_TRUE(cache.Draw(green, DlMatrix(), identity, 1.0f, output));
+  EXPECT_TRUE(Cached(cache, green, DlMatrix()));
   EXPECT_EQ(cache.GetStatistics().hits, 1u);
 }
 
@@ -629,17 +660,15 @@ TEST_F(StaticPictureCacheTest, DropsKeysAPictureLeftBehind) {
       [&](const sk_sp<DisplayList>&, ISize size) { return MakeTexture(size); });
   auto red = MakeRectPicture(DlColor::kRed());
   const DlMatrix moved = DlMatrix::MakeTranslation({0.5f, 0.0f});
-  const std::optional<DlMatrix> identity = DlMatrix();
-  DisplayListBuilder output;
 
-  EXPECT_TRUE(cache.Draw(red, DlMatrix(), identity, 1.0f, output));
-  EXPECT_TRUE(cache.Draw(red, moved, identity, 1.0f, output));
+  EXPECT_TRUE(Cached(cache, red, DlMatrix()));
+  EXPECT_TRUE(Cached(cache, red, moved));
   EXPECT_EQ(cache.GetEntryCount(), 2u);
 
   // Two outputs showing the picture use both entries in turn.
   for (int frame = 0; frame < 8; frame++) {
-    EXPECT_TRUE(cache.Draw(red, DlMatrix(), identity, 1.0f, output));
-    EXPECT_TRUE(cache.Draw(red, moved, identity, 1.0f, output));
+    EXPECT_TRUE(Cached(cache, red, DlMatrix()));
+    EXPECT_TRUE(Cached(cache, red, moved));
     cache.Collect();
   }
   EXPECT_EQ(cache.GetEntryCount(), 2u);
@@ -648,18 +677,18 @@ TEST_F(StaticPictureCacheTest, DropsKeysAPictureLeftBehind) {
   // behind after two more frames: the last frame both were drawn in drew
   // it first.
   for (int frame = 0; frame < 2; frame++) {
-    EXPECT_TRUE(cache.Draw(red, moved, identity, 1.0f, output));
+    EXPECT_TRUE(Cached(cache, red, moved));
     cache.Collect();
   }
   EXPECT_EQ(cache.GetEntryCount(), 2u);
-  EXPECT_TRUE(cache.Draw(red, moved, identity, 1.0f, output));
+  EXPECT_TRUE(Cached(cache, red, moved));
   cache.Collect();
   EXPECT_EQ(cache.GetEntryCount(), 1u);
   EXPECT_EQ(cache.GetStatistics().stale_keys, 1u);
   EXPECT_EQ(cache.GetStatistics().collected, 0u);
 
   // Every entry of a picture goes with it, however many it had.
-  EXPECT_TRUE(cache.Draw(red, DlMatrix(), identity, 1.0f, output));
+  EXPECT_TRUE(Cached(cache, red, DlMatrix()));
   EXPECT_EQ(cache.GetEntryCount(), 2u);
   red.reset();
   cache.Collect();
@@ -707,10 +736,8 @@ TEST_F(StaticPictureCacheTest, RejectsDynamicAndDestinationDependentContent) {
       StaticPictureCache::IsPictureEligibleForTesting(clear_builder.Build()));
 
   StaticPictureCache cache(*renderer_);
-  DisplayListBuilder output;
-  const std::optional<DlMatrix> identity = DlMatrix();
-  EXPECT_FALSE(cache.Draw(image, DlMatrix(), identity, 1.0f, output));
-  EXPECT_FALSE(cache.Draw(image, DlMatrix(), identity, 1.0f, output));
+  EXPECT_FALSE(Cached(cache, image, DlMatrix()));
+  EXPECT_FALSE(Cached(cache, image, DlMatrix()));
   EXPECT_EQ(cache.GetStatistics().eligibility_checks, 1u);
   EXPECT_EQ(cache.GetStatistics().rejected_pictures, 1u);
 }

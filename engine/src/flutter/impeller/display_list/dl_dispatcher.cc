@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "impeller/display_list/dl_dispatcher.h"
+#include "impeller/display_list/static_picture_cache.h"
 
 #include <algorithm>
 #include <cstring>
@@ -831,9 +832,16 @@ void DlDispatcherBase::drawDisplayList(
     GetCanvas().Save(display_list->total_depth());
   }
 
-  // TODO(131445): Remove this restriction if we can correctly cull with
-  // perspective transforms.
-  if (display_list->has_rtree() && !initial_matrix_.HasPerspective()) {
+  // A static picture may be drawn as the cache's image of it, rendered for
+  // the pass it lands in now (after the opacity layer above, if any).
+  StaticPictureCache* static_pictures =
+      GetContentContext().GetStaticPictureCache();
+  if (static_pictures != nullptr &&
+      static_pictures->Draw(display_list, GetCanvas())) {
+    // Drawn from the cache.
+  } else if (display_list->has_rtree() && !initial_matrix_.HasPerspective()) {
+    // TODO(131445): Remove this restriction if we can correctly cull with
+    // perspective transforms.
     // The canvas remembers the screen-space culling bounds clipped by
     // the surface and the history of clip calls. DisplayList can cull
     // the ops based on a rectangle expressed in its "destination bounds"
