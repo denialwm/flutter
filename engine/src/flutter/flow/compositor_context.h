@@ -107,6 +107,11 @@ class FrameDamage {
     dirty_texture_ids_ = dirty_texture_ids;
   }
 
+  // What changed in the dirty textures, where the embedder said.
+  void SetTextureDamage(const TextureDamageMap* texture_damage) {
+    texture_damage_ = texture_damage;
+  }
+
   // Sets damage accumulated for the selected framebuffer by its embedder.
   // nullopt means that the buffer contents are unknown and must be repainted
   // completely. An empty region means that the buffer already represents the
@@ -151,6 +156,7 @@ class FrameDamage {
   std::optional<Damage> damage_;
   const LayerTree* prev_layer_tree_ = nullptr;
   const std::unordered_set<int64_t>* dirty_texture_ids_ = nullptr;
+  const TextureDamageMap* texture_damage_ = nullptr;
   int vertical_clip_alignment_ = 1;
   int horizontal_clip_alignment_ = 1;
 };

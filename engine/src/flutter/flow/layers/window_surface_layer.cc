@@ -58,14 +58,24 @@ void WindowSurfaceLayer::Diff(DiffContext* context, const Layer* old_layer) {
   }
   if (texture_id_ >= 0) {
     context->MarkSubtreeHasTextureLayer();
-    if (!context->IsSubtreeDirty() && context->IsTextureDirty(texture_id_)) {
+    // The texture's unit rect as Paint draws it: into texture_bounds_, after
+    // texture_transform_.
+    const DlMatrix unit_to_local =
+        texture_transform_ *
+        DlMatrix::MakeTranslateScale(
+            {texture_bounds_.GetWidth(), texture_bounds_.GetHeight(), 1},
+            {texture_bounds_.GetLeft(), texture_bounds_.GetTop(), 0});
+    // Only what the client changed, where it said; else the whole window.
+    if (!context->IsSubtreeDirty() && context->IsTextureDirty(texture_id_) &&
+        !context->AddTextureDamage(texture_id_, unit_to_local,
+                                   context->GetOldLayerPaintRegion(prev))) {
       context->MarkSubtreeDirty(context->GetOldLayerPaintRegion(prev));
     }
     DiffContext::AutoSubtreeRestore client(context);
     context->PushCullRect(style_.content_bounds);
     context->AddTextureLayerBounds(style_.content_bounds);
-    context->CacheTexturePaintRegion(texture_id_,
-                                     context->CurrentSubtreeRegion());
+    context->CacheTexturePaintRegion(
+        texture_id_, context->CurrentSubtreeRegion(), unit_to_local);
   } else {
     context->PushCullRect(style_.content_bounds);
     DiffChildren(context, prev);

@@ -173,6 +173,10 @@ class RenderPass : public ResourceBinder {
   /// Record the currently pending command.
   virtual fml::Status Draw();
 
+  /// A draw was lost for want of a GPU resource: what the pass encodes is
+  /// incomplete. Backends that cannot lose a draw this way return false.
+  virtual bool DrawFailed() const { return false; }
+
   // |ResourceBinder|
   virtual bool BindResource(ShaderStage stage,
                             DescriptorType type,

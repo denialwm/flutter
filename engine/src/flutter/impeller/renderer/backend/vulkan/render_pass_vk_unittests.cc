@@ -9,6 +9,7 @@
 #include "impeller/renderer/backend/vulkan/render_pass_builder_vk.h"
 #include "impeller/renderer/backend/vulkan/render_pass_vk.h"
 #include "impeller/renderer/backend/vulkan/test/mock_vulkan.h"
+#include "impeller/renderer/backend/vulkan/texture_vk.h"
 #include "impeller/renderer/render_target.h"
 #include "vulkan/vulkan_enums.hpp"
 
@@ -48,6 +49,121 @@ TEST(RenderPassVK, DoesNotRedundantlySetStencil) {
   EXPECT_EQ(std::count(called_functions->begin(), called_functions->end(),
                        "vkCmdSetStencilReference"),
             2);
+}
+
+TEST(RenderPassVK, CachedPassHonorsColorLoadAndClearTransitions) {
+  auto context = MockVulkanContextBuilder().Build();
+  RenderTargetAllocator allocator(context->GetResourceAllocator());
+  auto target = allocator.CreateOffscreen(*context, {100, 100}, 1);
+  auto& texture = TextureVK::Cast(*target.GetRenderTargetTexture());
+  auto first_buffer = context->CreateCommandBuffer();
+  auto first = first_buffer->CreateRenderPass(target);
+  ASSERT_TRUE(first->EncodeCommands());
+  const auto clear = texture.GetCachedFrameData(SampleCount::kCount1);
+
+  auto color = target.GetColorAttachment(0);
+  color.load_action = LoadAction::kLoad;
+  target.SetColorAttachment(color, 0);
+  auto second_buffer = context->CreateCommandBuffer();
+  auto second = second_buffer->CreateRenderPass(target);
+  ASSERT_TRUE(second->EncodeCommands());
+  const auto load = texture.GetCachedFrameData(SampleCount::kCount1);
+  EXPECT_NE(clear.render_pass, load.render_pass);
+
+  auto third_buffer = context->CreateCommandBuffer();
+  auto third = third_buffer->CreateRenderPass(target);
+  ASSERT_TRUE(third->EncodeCommands());
+  const auto repeated_load = texture.GetCachedFrameData(SampleCount::kCount1);
+  EXPECT_EQ(load.render_pass, repeated_load.render_pass);
+  EXPECT_EQ(load.framebuffer, repeated_load.framebuffer);
+
+  color.load_action = LoadAction::kClear;
+  target.SetColorAttachment(color, 0);
+  auto fourth_buffer = context->CreateCommandBuffer();
+  auto fourth = fourth_buffer->CreateRenderPass(target);
+  ASSERT_TRUE(fourth->EncodeCommands());
+  EXPECT_NE(load.render_pass,
+            texture.GetCachedFrameData(SampleCount::kCount1).render_pass);
+}
+
+TEST(RenderPassVK, CachedPassHonorsPreservedDepthStencil) {
+  auto context = MockVulkanContextBuilder().Build();
+  RenderTargetAllocator allocator(context->GetResourceAllocator());
+  auto target = allocator.CreateOffscreen(
+      *context, {100, 100}, 1, "Preserved depth/stencil",
+      RenderTarget::kDefaultColorAttachmentConfig,
+      RenderTarget::AttachmentConfig{
+          .storage_mode = StorageMode::kDevicePrivate,
+          .load_action = LoadAction::kClear,
+          .store_action = StoreAction::kStore,
+          .clear_color = Color::BlackTransparent()});
+  auto depth = target.GetDepthAttachment().value();
+  auto stencil = target.GetStencilAttachment().value();
+  depth.store_action = StoreAction::kStore;
+  stencil.store_action = StoreAction::kStore;
+  target.SetDepthAttachment(depth);
+  target.SetStencilAttachment(stencil);
+  auto& texture = TextureVK::Cast(*target.GetRenderTargetTexture());
+  auto first_buffer = context->CreateCommandBuffer();
+  auto first = first_buffer->CreateRenderPass(target);
+  ASSERT_TRUE(first->EncodeCommands());
+  const auto initial = texture.GetCachedFrameData(SampleCount::kCount1);
+
+  depth.load_action = LoadAction::kLoad;
+  stencil.load_action = LoadAction::kLoad;
+  target.SetDepthAttachment(depth);
+  target.SetStencilAttachment(stencil);
+  auto second_buffer = context->CreateCommandBuffer();
+  auto second = second_buffer->CreateRenderPass(target);
+  ASSERT_TRUE(second->EncodeCommands());
+  EXPECT_NE(initial.render_pass,
+            texture.GetCachedFrameData(SampleCount::kCount1).render_pass);
+}
+
+TEST(RenderPassVK, CachedFramebufferHonorsReplacedMsaaAttachments) {
+  auto context = MockVulkanContextBuilder().Build();
+  RenderTargetAllocator allocator(context->GetResourceAllocator());
+  auto first_target = allocator.CreateOffscreenMSAA(*context, {100, 100}, 1);
+  auto second_target = allocator.CreateOffscreenMSAA(*context, {100, 100}, 1);
+  auto resolve = first_target.GetColorAttachment(0).resolve_texture;
+  auto& texture = TextureVK::Cast(*resolve);
+  auto first_buffer = context->CreateCommandBuffer();
+  auto first = first_buffer->CreateRenderPass(first_target);
+  ASSERT_TRUE(first->EncodeCommands());
+  const auto initial = texture.GetCachedFrameData(SampleCount::kCount4);
+
+  // Backdrop ping-pong reuses a resolve image with another target's MSAA
+  // color and depth/stencil attachments.
+  auto color = second_target.GetColorAttachment(0);
+  color.resolve_texture = resolve;
+  second_target.SetColorAttachment(color, 0);
+  auto second_buffer = context->CreateCommandBuffer();
+  auto second = second_buffer->CreateRenderPass(second_target);
+  ASSERT_TRUE(second->EncodeCommands());
+  const auto replaced = texture.GetCachedFrameData(SampleCount::kCount4);
+  EXPECT_NE(initial.framebuffer, replaced.framebuffer);
+  EXPECT_EQ(initial.render_pass, replaced.render_pass);
+}
+
+TEST(RenderPassVK, CachedFramebufferHonorsReplacedDepthStencil) {
+  auto context = MockVulkanContextBuilder().Build();
+  RenderTargetAllocator allocator(context->GetResourceAllocator());
+  auto target = allocator.CreateOffscreen(*context, {100, 100}, 1);
+  auto other = allocator.CreateOffscreen(*context, {100, 100}, 1);
+  auto& texture = TextureVK::Cast(*target.GetRenderTargetTexture());
+  auto first_buffer = context->CreateCommandBuffer();
+  auto first = first_buffer->CreateRenderPass(target);
+  ASSERT_TRUE(first->EncodeCommands());
+  const auto initial = texture.GetCachedFrameData(SampleCount::kCount1);
+
+  target.SetDepthAttachment(other.GetDepthAttachment());
+  target.SetStencilAttachment(other.GetStencilAttachment());
+  auto second_buffer = context->CreateCommandBuffer();
+  auto second = second_buffer->CreateRenderPass(target);
+  ASSERT_TRUE(second->EncodeCommands());
+  const auto replaced = texture.GetCachedFrameData(SampleCount::kCount1);
+  EXPECT_NE(initial.framebuffer, replaced.framebuffer);
+  EXPECT_EQ(initial.render_pass, replaced.render_pass);
 }
 
 // Regression guard for the bug where `RenderPassVK::SetViewport` silently

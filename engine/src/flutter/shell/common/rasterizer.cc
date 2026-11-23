@@ -351,6 +351,8 @@ void Rasterizer::DrawDenialRenderOutputs(
 
   auto dirty_texture_ids = std::move(pending_texture_ids_);
   pending_texture_ids_.clear();
+  auto texture_damage = std::move(pending_texture_damage_);
+  pending_texture_damage_.clear();
   std::vector<std::unique_ptr<LayerTreeTask>> tasks;
   tasks.reserve(render_view_ids.size());
   for (int64_t view_id : render_view_ids) {
@@ -386,12 +388,13 @@ void Rasterizer::DrawDenialRenderOutputs(
     if (!task->dirty_texture_ids) {
       task->dirty_texture_ids.emplace();
     }
-    task->dirty_texture_ids->insert(dirty_texture_ids.begin(),
-                                    dirty_texture_ids.end());
+    MergeDirtyTextures(*task->dirty_texture_ids, task->texture_damage,
+                       dirty_texture_ids, texture_damage);
     tasks.push_back(std::move(task));
   }
   if (tasks.empty()) {
     pending_texture_ids_ = std::move(dirty_texture_ids);
+    pending_texture_damage_ = std::move(texture_damage);
     return;
   }
 
@@ -455,6 +458,7 @@ std::unique_ptr<LayerTreeTask> Rasterizer::ReprojectDenialRenderOutputTask(
   task->render_output_configuration_generation =
       output.configuration_generation;
   task->dirty_texture_ids = previous_task.dirty_texture_ids;
+  task->texture_damage = previous_task.texture_damage;
   return task;
 }
 
@@ -543,15 +547,17 @@ Rasterizer::ExpandDenialRenderOutputTasks(
       output_task->render_output_configuration_generation =
           output.configuration_generation;
       output_task->dirty_texture_ids = task->dirty_texture_ids;
+      output_task->texture_damage = task->texture_damage;
       auto pending = denial_pending_output_tasks_.find(output.render_view_id);
       if (pending != denial_pending_output_tasks_.end() &&
           pending->second->dirty_texture_ids) {
         if (!output_task->dirty_texture_ids) {
           output_task->dirty_texture_ids.emplace();
         }
-        output_task->dirty_texture_ids->insert(
-            pending->second->dirty_texture_ids->begin(),
-            pending->second->dirty_texture_ids->end());
+        MergeDirtyTextures(*output_task->dirty_texture_ids,
+                           output_task->texture_damage,
+                           *pending->second->dirty_texture_ids,
+                           pending->second->texture_damage);
       }
       // Only Denial's output request selects a target. A scene Dart renders
       // outside one, such as runApp's warm-up frame, waits for the next
@@ -589,7 +595,26 @@ void Rasterizer::MarkTextureFrameAvailable(int64_t texture_id) {
     return;
   }
   texture->MarkNewFrameAvailable();
-  pending_texture_ids_.insert(texture_id);
+  // The damage the embedder set for this frame, or the whole texture.
+  auto damage = pending_frame_damage_.find(texture_id);
+  if (damage == pending_frame_damage_.end()) {
+    AddDirtyTexture(pending_texture_ids_, pending_texture_damage_, texture_id,
+                    nullptr);
+    return;
+  }
+  AddDirtyTexture(pending_texture_ids_, pending_texture_damage_, texture_id,
+                  &damage->second);
+  pending_frame_damage_.erase(damage);
+}
+
+void Rasterizer::SetTextureFrameDamage(int64_t texture_id,
+                                       std::vector<DlRect> rects) {
+  // Damage set twice before one mark covers both frames.
+  std::unordered_set<int64_t> ids;
+  if (pending_frame_damage_.contains(texture_id)) {
+    ids.insert(texture_id);
+  }
+  AddDirtyTexture(ids, pending_frame_damage_, texture_id, &rects);
 }
 
 GrDirectContext* Rasterizer::GetGrContext() {
@@ -616,15 +641,19 @@ void Rasterizer::DrawLastLayerTrees(
   std::vector<std::unique_ptr<LayerTreeTask>> tasks;
   auto dirty_texture_ids = std::move(pending_texture_ids_);
   pending_texture_ids_.clear();
+  auto texture_damage = std::move(pending_texture_damage_);
+  pending_texture_damage_.clear();
   for (auto& [view_id, view_record] : view_records_) {
     if (view_record.last_successful_task) {
       view_record.last_successful_task->is_reused_layer_tree = true;
       view_record.last_successful_task->dirty_texture_ids = dirty_texture_ids;
+      view_record.last_successful_task->texture_damage = texture_damage;
       tasks.push_back(std::move(view_record.last_successful_task));
     }
   }
   if (tasks.empty()) {
     pending_texture_ids_ = std::move(dirty_texture_ids);
+    pending_texture_damage_ = std::move(texture_damage);
     return;
   }
 
@@ -669,11 +698,14 @@ DrawStatus Rasterizer::Draw(const std::shared_ptr<FramePipeline>& pipeline) {
     }
     auto dirty_texture_ids = std::move(pending_texture_ids_);
     pending_texture_ids_.clear();
+    auto texture_damage = std::move(pending_texture_damage_);
+    pending_texture_damage_.clear();
     for (auto& task : item->layer_tree_tasks) {
       // An engaged empty set is meaningful: this framework frame changed no
       // external texture. A null set retains Flutter's conservative fallback
       // for callers outside Denial's explicit frame transaction.
       task->dirty_texture_ids = dirty_texture_ids;
+      task->texture_damage = texture_damage;
     }
     draw_result = DoDraw(std::move(item->frame_timings_recorder),
                          std::move(item->layer_tree_tasks));
@@ -1123,6 +1155,7 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
     int64_t view_id = task->view_id;
     bool is_reused_layer_tree = task->is_reused_layer_tree;
     auto dirty_texture_ids = std::move(task->dirty_texture_ids);
+    auto texture_damage = std::move(task->texture_damage);
     std::unique_ptr<LayerTree> layer_tree = std::move(task->layer_tree);
     float device_pixel_ratio = task->device_pixel_ratio;
     const LayerTree* previous_layer_tree =
@@ -1131,7 +1164,8 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
     DrawSurfaceStatus status =
         DrawToSurfaceUnsafe(view_id, *layer_tree, previous_layer_tree,
                             dirty_texture_ids ? &*dirty_texture_ids : nullptr,
-                            device_pixel_ratio, presentation_time);
+                            &texture_damage, device_pixel_ratio,
+                            presentation_time);
     FML_DCHECK(status != DrawSurfaceStatus::kDiscarded);
 
     auto& view_record = EnsureViewRecord(task->view_id);
@@ -1149,6 +1183,7 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
           view_id, std::move(layer_tree), device_pixel_ratio);
       pending_task->is_reused_layer_tree = is_reused_layer_tree;
       pending_task->dirty_texture_ids = std::move(dirty_texture_ids);
+      pending_task->texture_damage = std::move(texture_damage);
       pending_task->render_output_configuration_generation =
           task->render_output_configuration_generation;
       denial_pending_output_tasks_[view_id] = std::move(pending_task);
@@ -1157,6 +1192,7 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
           view_id, std::move(layer_tree), device_pixel_ratio);
       retry_task->is_reused_layer_tree = is_reused_layer_tree;
       retry_task->dirty_texture_ids = std::move(dirty_texture_ids);
+      retry_task->texture_damage = std::move(texture_damage);
       retry_task->render_output_configuration_generation =
           task->render_output_configuration_generation;
       resubmitted_tasks.push_back(std::move(retry_task));
@@ -1202,6 +1238,7 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     flutter::LayerTree& layer_tree,
     const flutter::LayerTree* previous_layer_tree,
     const std::unordered_set<int64_t>* dirty_texture_ids,
+    const TextureDamageMap* texture_damage,
     float device_pixel_ratio,
     std::optional<fml::TimePoint> presentation_time) {
   FML_DCHECK(surface_);
@@ -1292,6 +1329,7 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
       damage = std::make_unique<FrameDamage>();
       damage->SetPreviousLayerTree(previous_layer_tree);
       damage->SetDirtyTextureIds(dirty_texture_ids);
+      damage->SetTextureDamage(texture_damage);
       damage->SetExistingDamage(
           denial_output_task ? denial_existing_damage
                              : frame->framebuffer_info().existing_damage);
@@ -1367,10 +1405,14 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
 
     if (frame_status == RasterStatus::kResubmit) {
       return DrawSurfaceStatus::kRetry;
-    } else {
-      FML_CHECK(frame_status == RasterStatus::kSuccess);
-      return DrawSurfaceStatus::kSuccess;
     }
+    FML_CHECK(frame_status == RasterStatus::kSuccess);
+    if (external_view_embedder_ &&
+        external_view_embedder_->DenialTakeSubmitFailure(view_id)) {
+      // Not presented: a Denial output keeps this tree for its next tick.
+      return DrawSurfaceStatus::kFailed;
+    }
+    return DrawSurfaceStatus::kSuccess;
   }
 
   return DrawSurfaceStatus::kFailed;

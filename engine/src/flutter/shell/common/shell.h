@@ -241,6 +241,12 @@ class Shell final : public PlatformView::Delegate,
   void ScheduleFrameForExternalTextures(
       std::vector<int64_t> texture_identifiers);
 
+  /// @brief      Denial: what changes in each texture's next frame mark, as
+  ///             unit rects of the rect it is painted into. Ordered on the
+  ///             raster runner before every later frame request.
+  void SetTextureFrameDamage(
+      std::vector<std::pair<int64_t, std::vector<DlRect>>> damage);
+
   /// @brief      Authorizes one raster transaction for selected physical
   ///             outputs. A rebuilt scene comes from the next Dart frame;
   ///             otherwise the rasterizer consumes its latest retained scene.

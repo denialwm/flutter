@@ -111,6 +111,25 @@ bool EmbedderSurfaceVulkanImpeller::PresentImage(VkImage image,
   return vulkan_dispatch_table_.present_image(image, format);
 }
 
+// |GPUSurfaceVulkanDelegate|
+bool EmbedderSurfaceVulkanImpeller::DenialCarriesFrames() const {
+  return external_view_embedder_ &&
+         vulkan_dispatch_table_.denial_begin_frame &&
+         vulkan_dispatch_table_.denial_present;
+}
+
+// |GPUSurfaceVulkanDelegate|
+bool EmbedderSurfaceVulkanImpeller::DenialBeginFrame() {
+  return vulkan_dispatch_table_.denial_begin_frame();
+}
+
+// |GPUSurfaceVulkanDelegate|
+bool EmbedderSurfaceVulkanImpeller::DenialPresent(
+    const std::optional<DlRegion>& frame_damage,
+    const std::optional<DlRegion>& buffer_damage) {
+  return vulkan_dispatch_table_.denial_present(frame_damage, buffer_damage);
+}
+
 // |EmbedderSurface|
 bool EmbedderSurfaceVulkanImpeller::IsValid() const {
   return valid_;

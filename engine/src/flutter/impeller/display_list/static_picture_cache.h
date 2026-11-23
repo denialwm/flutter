@@ -136,6 +136,9 @@ class StaticPictureCache final {
   // out.
   void Collect();
 
+  // A replay failed: entries it made may never have been rendered.
+  void Clear();
+
   // The render audit's view of the cache: its counters, then every entry
   // with its picture id, key, size and how many draws ago it was last used.
   std::string Describe() const;

@@ -17,6 +17,8 @@ namespace impeller {
 
 class CommandBufferVK;
 class SamplerVK;
+struct FramebufferAndRenderPass;
+struct FramebufferAttachmentVK;
 
 class RenderPassVK final : public RenderPass {
  public:
@@ -49,6 +51,14 @@ class RenderPassVK final : public RenderPass {
   size_t element_count_ = 0u;
   bool has_index_buffer_ = false;
   bool has_label_ = false;
+  // A draw was lost for want of a resource (descriptor sets, a pipeline
+  // variant): the pass does not encode as complete.
+  bool draw_failed_ = false;
+
+  void ResetDrawState();
+
+  // |RenderPass|
+  bool DrawFailed() const override;
   PipelineRef pipeline_ = PipelineRef(nullptr);
   bool pipeline_uses_input_attachments_ = false;
   std::shared_ptr<SamplerVK> immutable_sampler_;
@@ -134,13 +144,15 @@ class RenderPassVK final : public RenderPass {
 
   SharedHandleVK<vk::RenderPass> CreateVKRenderPass(
       const ContextVK& context,
-      const SharedHandleVK<vk::RenderPass>& recycled_renderpass,
-      const std::shared_ptr<CommandBufferVK>& command_buffer,
+      FramebufferAndRenderPass& cached_frame_data,
       bool is_swapchain) const;
+
+  std::vector<FramebufferAttachmentVK> GetFramebufferAttachments() const;
 
   SharedHandleVK<vk::Framebuffer> CreateVKFramebuffer(
       const ContextVK& context,
-      const vk::RenderPass& pass) const;
+      const vk::RenderPass& pass,
+      const std::vector<FramebufferAttachmentVK>& attachments) const;
 
   RenderPassVK(const RenderPassVK&) = delete;
 

@@ -5,7 +5,10 @@
 #ifndef FLUTTER_SHELL_GPU_GPU_SURFACE_VULKAN_DELEGATE_H_
 #define FLUTTER_SHELL_GPU_GPU_SURFACE_VULKAN_DELEGATE_H_
 
+#include <optional>
+
 #include "flutter/display_list/geometry/dl_geometry_types.h"
+#include "flutter/display_list/geometry/dl_region.h"
 #include "flutter/fml/memory/ref_ptr.h"
 #include "flutter/shell/platform/embedder/embedder.h"
 #include "flutter/vulkan/procs/vulkan_proc_table.h"
@@ -43,6 +46,25 @@ class GPUSurfaceVulkanDelegate {
   ///         and it's ready to be bound for further reading/writing.
   ///
   virtual bool PresentImage(VkImage image, VkFormat format) = 0;
+
+  /// @brief  Denial: whether the root surface only carries raster passes to
+  ///         the embedder, whose compositor backing stores receive every
+  ///         output frame. Such a surface never acquires or draws an image.
+  ///
+  virtual bool DenialCarriesFrames() const { return false; }
+
+  /// @brief  Denial, carrier surfaces: before a raster pass acquires any
+  ///         backing store. False skips the pass.
+  ///
+  virtual bool DenialBeginFrame() { return true; }
+
+  /// @brief  Denial, carrier surfaces: the pass's frame and buffer damage
+  ///         after its output views were presented. Nullopt is unknown.
+  ///
+  virtual bool DenialPresent(const std::optional<DlRegion>& frame_damage,
+                             const std::optional<DlRegion>& buffer_damage) {
+    return true;
+  }
 };
 
 }  // namespace flutter

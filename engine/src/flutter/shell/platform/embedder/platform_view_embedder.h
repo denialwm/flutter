@@ -25,7 +25,9 @@
 #endif
 
 #ifdef SHELL_ENABLE_VULKAN
+#if !SLIMPELLER
 #include "flutter/shell/platform/embedder/embedder_surface_vulkan.h"
+#endif  // !SLIMPELLER
 #ifdef IMPELLER_SUPPORTS_RENDERING
 #include "flutter/shell/platform/embedder/embedder_surface_vulkan_impeller.h"
 #endif  // IMPELLER_SUPPORTS_RENDERING
@@ -92,6 +94,7 @@ class PlatformViewEmbedder final : public PlatformView {
 #endif
 
 #ifdef SHELL_ENABLE_VULKAN
+#if !SLIMPELLER
   // Creates a platform view that sets up an Vulkan rasterizer.
   PlatformViewEmbedder(
       PlatformView::Delegate& delegate,
@@ -99,6 +102,7 @@ class PlatformViewEmbedder final : public PlatformView {
       std::unique_ptr<EmbedderSurfaceVulkan> embedder_surface,
       PlatformDispatchTable platform_dispatch_table,
       std::shared_ptr<EmbedderExternalViewEmbedder> external_view_embedder);
+#endif  // !SLIMPELLER
 #endif
 
   ~PlatformViewEmbedder() override;

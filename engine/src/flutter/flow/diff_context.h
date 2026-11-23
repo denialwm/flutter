@@ -16,6 +16,7 @@
 #include "display_list/utils/dl_matrix_clip_tracker.h"
 #include "flutter/common/backdrop_filter_cache_key.h"
 #include "flutter/flow/paint_region.h"
+#include "flutter/flow/texture_damage.h"
 #include "flutter/fml/macros.h"
 
 namespace flutter {
@@ -49,6 +50,9 @@ using PaintRegionMap = std::unordered_map<uint64_t, PaintRegion>;
 struct TexturePaintRegion {
   int64_t texture_id;
   PaintRegion paint_region;
+  // Maps the texture's unit rect to device coordinates, when known: where its
+  // partial damage lands.
+  std::optional<DlMatrix> unit_to_device;
 };
 
 using TexturePaintRegionList = std::vector<TexturePaintRegion>;
@@ -124,7 +128,8 @@ class DiffContext {
       const PaintRegionMap& last_frame_paint_region_map,
       bool has_raster_cache,
       bool impeller_enabled,
-      const std::unordered_set<int64_t>* dirty_texture_ids = nullptr);
+      const std::unordered_set<int64_t>* dirty_texture_ids = nullptr,
+      const TextureDamageMap* texture_damage = nullptr);
 
   // Starts a new subtree.
   void BeginSubtree();
@@ -287,9 +292,27 @@ class DiffContext {
       RetainedSubtreeDiffMetadataMap* retained_subtrees,
       const RetainedSubtreeDiffMetadataMap* previous_retained_subtrees);
 
-  // Records the paint region for a TextureLayer in the active metadata cache.
-  void CacheTexturePaintRegion(int64_t texture_id,
-                               const PaintRegion& paint_region);
+  // Records the paint region for a TextureLayer in the active metadata cache,
+  // and how its unit rect maps to the layer when the layer knows.
+  void CacheTexturePaintRegion(
+      int64_t texture_id,
+      const PaintRegion& paint_region,
+      std::optional<DlMatrix> unit_to_local = std::nullopt);
+
+  // Denial: the unit rects in which dirty `texture_id` changed, or null when
+  // it changed whole.
+  const std::vector<DlRect>* TextureDamage(int64_t texture_id) const;
+
+  // Adds what changed in dirty `texture_id`, painted through `unit_to_local`
+  // in the current layer, within the layer's `old_region`. False when only
+  // the whole texture can be damaged: the caller marks its subtree dirty.
+  bool AddTextureDamage(int64_t texture_id,
+                        const DlMatrix& unit_to_local,
+                        const PaintRegion& old_region);
+
+  // Adds what changed in a dirty texture from its cached geometry: its whole
+  // paint region when only that is known.
+  void AddTexturePaintRegionDamage(const TexturePaintRegion& texture);
 
   // Reuses all per-layer and external-texture metadata for an unchanged,
   // readback-free retained subtree if none of its textures are dirty.
@@ -402,6 +425,14 @@ class DiffContext {
   bool has_raster_cache_;
   bool impeller_enabled_;
   const std::unordered_set<int64_t>* dirty_texture_ids_;
+  const TextureDamageMap* texture_damage_;
+
+  // `unit_to_local` in device coordinates, unless ancestor image filters move
+  // the layer's pixels.
+  std::optional<DlMatrix> UnitToDevice(const DlMatrix& unit_to_local) const;
+  void AddUnitDamage(const DlMatrix& unit_to_device,
+                     const std::vector<DlRect>& rects,
+                     const DlRect& within);
 
   // Constant for a Denial physical-output traversal. This lives outside the
   // ordinary subtree state because synthesized source crops set and restore it

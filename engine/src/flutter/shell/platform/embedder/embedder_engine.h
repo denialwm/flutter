@@ -6,6 +6,7 @@
 #define FLUTTER_SHELL_PLATFORM_EMBEDDER_EMBEDDER_ENGINE_H_
 
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -14,6 +15,7 @@
 #include "flutter/shell/common/thread_host.h"
 #include "flutter/shell/platform/embedder/embedder.h"
 #include "flutter/shell/platform/embedder/embedder_external_texture_resolver.h"
+#include "flutter/shell/platform/embedder/embedder_external_view_embedder.h"
 #include "flutter/shell/platform/embedder/embedder_thread_host.h"
 namespace flutter {
 
@@ -94,6 +96,9 @@ class EmbedderEngine {
   bool ScheduleFrameForExternalTextures(
       std::vector<int64_t> texture_identifiers);
 
+  bool SetTextureFrameDamage(
+      std::vector<std::pair<int64_t, std::vector<DlRect>>> damage);
+
   bool RenderOutputs(std::vector<int64_t> render_view_ids,
                      std::vector<int64_t> texture_identifiers,
                      bool rebuild_scene,
@@ -103,6 +108,11 @@ class EmbedderEngine {
                      fml::closure on_complete = {});
 
   bool SetRenderOutputs(std::vector<DenialRenderOutput> outputs);
+
+  // The view embedder the rasterizer owns, for Denial's scene composer.
+  void SetDenialViewEmbedder(EmbedderExternalViewEmbedder* view_embedder);
+  // Once per engine: slice keys belong to the composer that issued them.
+  bool SetDenialSceneComposer(DenialFlutterSceneComposer composer);
 
 #ifdef SHELL_ENABLE_GL
   bool SetExternalTextureGlStateCallback(
@@ -125,6 +135,8 @@ class EmbedderEngine {
   // a structural output replacement. The rasterizer owns the authoritative
   // snapshot used for drawing.
   std::vector<DenialRenderOutput> denial_render_outputs_;
+  EmbedderExternalViewEmbedder* denial_view_embedder_ = nullptr;
+  bool denial_scene_composer_installed_ = false;
 
   FML_DISALLOW_COPY_AND_ASSIGN(EmbedderEngine);
 };

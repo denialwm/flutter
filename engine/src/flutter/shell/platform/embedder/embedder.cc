@@ -6,6 +6,7 @@
 #define RAPIDJSON_HAS_STDSTRING 1
 
 #include <cmath>
+#include <algorithm>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -104,8 +105,10 @@ extern const intptr_t kPlatformStrongDillSize;
 #endif  // SHELL_ENABLE_METAL
 
 #ifdef SHELL_ENABLE_VULKAN
+#if !SLIMPELLER
 #include "third_party/skia/include/gpu/ganesh/vk/GrVkBackendSurface.h"
 #include "third_party/skia/include/gpu/ganesh/vk/GrVkTypes.h"
+#endif  // !SLIMPELLER
 #endif  // SHELL_ENABLE_VULKAN
 
 const int32_t kFlutterSemanticsNodeIdBatchEnd = -1;
@@ -313,6 +316,42 @@ static std::optional<flutter::DlIRect> FlutterRectToDlIRect(
   return flutter::DlIRect::MakeLTRB(
       static_cast<int32_t>(left), static_cast<int32_t>(top),
       static_cast<int32_t>(right), static_cast<int32_t>(bottom));
+}
+
+// Asks the embedder for a backing store's existing damage. Nullopt means the
+// contents are unknown; an empty region means they are complete.
+[[maybe_unused]] static std::optional<flutter::DlRegion> DenialExistingDamage(
+    FlutterFrameBufferWithDamageCallback populate,
+    void* user_data,
+    intptr_t identity) {
+  FlutterDamage existing_damage = {
+      .struct_size = sizeof(FlutterDamage),
+      .num_rects = 0,
+      .damage = nullptr,
+  };
+  populate(user_data, identity, &existing_damage);
+  constexpr size_t kMaxDamageRectCount = 4096;
+  if (existing_damage.struct_size < sizeof(FlutterDamage) ||
+      existing_damage.num_rects > kMaxDamageRectCount ||
+      (existing_damage.num_rects > 0 && existing_damage.damage == nullptr)) {
+    FML_LOG(ERROR) << "Invalid existing damage. Forcing full repaint.";
+    return std::nullopt;
+  }
+  std::vector<flutter::DlIRect> rects;
+  rects.reserve(existing_damage.num_rects);
+  for (size_t i = 0; i < existing_damage.num_rects; i++) {
+    std::optional<flutter::DlIRect> rect =
+        FlutterRectToDlIRect(existing_damage.damage[i]);
+    if (!rect) {
+      FML_LOG(ERROR) << "Invalid existing damage rectangle. Forcing full "
+                        "repaint.";
+      return std::nullopt;
+    }
+    if (!rect->IsEmpty()) {
+      rects.push_back(*rect);
+    }
+  }
+  return flutter::DlRegion(rects);
 }
 
 // We need GL_BGRA8_EXT for creating SkSurfaces from FlutterOpenGLSurfaces
@@ -726,6 +765,53 @@ InferVulkanPlatformViewCreationCallback(
   std::shared_ptr<flutter::EmbedderExternalViewEmbedder> view_embedder =
       std::move(external_view_embedder);
 
+  // Denial: the root surface carries each raster pass to the embedder
+  // without drawing, as the OpenGL root surface does with FBO 0.
+  const FlutterVulkanRendererConfig* vulkan_config = &config->vulkan;
+  std::function<bool()> denial_begin_frame;
+  if (auto begin = SAFE_ACCESS(vulkan_config, denial_begin_frame_callback,
+                               nullptr)) {
+    denial_begin_frame = [begin, user_data]() { return begin(user_data); };
+  }
+  std::function<bool(const std::optional<flutter::DlRegion>&,
+                     const std::optional<flutter::DlRegion>&)>
+      denial_present;
+  if (auto present =
+          SAFE_ACCESS(vulkan_config, denial_present_callback, nullptr)) {
+    denial_present = [present, user_data](
+                         const std::optional<flutter::DlRegion>& frame,
+                         const std::optional<flutter::DlRegion>& buffer) {
+      std::vector<FlutterRect> frame_rects = DlRegionToFlutterRects(frame);
+      std::vector<FlutterRect> buffer_rects = DlRegionToFlutterRects(buffer);
+      FlutterPresentInfo info = {
+          .struct_size = sizeof(FlutterPresentInfo),
+          .fbo_id = 0,
+          .frame_damage =
+              {
+                  .struct_size = sizeof(FlutterDamage),
+                  .num_rects = frame_rects.size(),
+                  .damage = frame_rects.empty() ? nullptr : frame_rects.data(),
+              },
+          .buffer_damage =
+              {
+                  .struct_size = sizeof(FlutterDamage),
+                  .num_rects = buffer_rects.size(),
+                  .damage =
+                      buffer_rects.empty() ? nullptr : buffer_rects.data(),
+              },
+      };
+      return present(user_data, &info);
+    };
+  }
+  if (auto populate = SAFE_ACCESS(vulkan_config,
+                                  denial_populate_existing_damage, nullptr);
+      populate && view_embedder) {
+    view_embedder->SetExistingDamageCallback(
+        [populate, user_data](intptr_t identity) {
+          return DenialExistingDamage(populate, user_data, identity);
+        });
+  }
+
 #if IMPELLER_SUPPORTS_RENDERING
   if (enable_impeller) {
     flutter::EmbedderSurfaceVulkanImpeller::VulkanDispatchTable
@@ -734,6 +820,8 @@ InferVulkanPlatformViewCreationCallback(
                 reinterpret_cast<PFN_vkGetInstanceProcAddr>(proc_addr),
             .get_next_image = vulkan_get_next_image,
             .present_image = vulkan_present_image_callback,
+            .denial_begin_frame = denial_begin_frame,
+            .denial_present = denial_present,
         };
 
     std::unique_ptr<flutter::EmbedderSurfaceVulkanImpeller> embedder_surface =
@@ -762,7 +850,9 @@ InferVulkanPlatformViewCreationCallback(
               std::move(external_view_embedder)  // external view embedder
           );
         });
-  } else {
+  }
+#if !SLIMPELLER
+  else {
     flutter::EmbedderSurfaceVulkan::VulkanDispatchTable vulkan_dispatch_table =
         {
             .get_instance_proc_address =
@@ -798,6 +888,10 @@ InferVulkanPlatformViewCreationCallback(
           );
         });
   }
+#else
+  FML_LOG(ERROR) << "The slim Impeller engine requires Impeller for Vulkan.";
+  return nullptr;
+#endif  // !SLIMPELLER
 #else
   flutter::EmbedderSurfaceVulkan::VulkanDispatchTable vulkan_dispatch_table = {
       .get_instance_proc_address =
@@ -1500,6 +1594,45 @@ MakeRenderTargetFromSkSurface(FlutterBackingStore backing_store,
                                        std::move(on_release), nullptr, nullptr);
 }
 
+#if defined(SHELL_ENABLE_VULKAN) && defined(IMPELLER_SUPPORTS_RENDERING)
+namespace {
+
+// A Denial output backing store with the Vulkan renderer. The scene composer
+// draws every output frame into its own import of the target, so the engine
+// never draws into it: the target only names the backing store in the
+// frame's presentation. Its user data is the embedder's identity of the
+// target, which existing damage is asked for by.
+class DenialDescribedRenderTarget final : public flutter::EmbedderRenderTarget {
+ public:
+  DenialDescribedRenderTarget(
+      FlutterBackingStore backing_store,
+      fml::closure on_release,
+      flutter::DlISize size,
+      std::shared_ptr<impeller::AiksContext> aiks_context)
+      : EmbedderRenderTarget(backing_store, std::move(on_release)),
+        size_(size),
+        aiks_context_(std::move(aiks_context)) {}
+
+  sk_sp<SkSurface> GetSkiaSurface() const override { return nullptr; }
+
+  impeller::RenderTarget* GetImpellerRenderTarget() const override {
+    return nullptr;
+  }
+
+  std::shared_ptr<impeller::AiksContext> GetAiksContext() const override {
+    return aiks_context_;
+  }
+
+  flutter::DlISize GetRenderTargetSize() const override { return size_; }
+
+ private:
+  flutter::DlISize size_;
+  std::shared_ptr<impeller::AiksContext> aiks_context_;
+};
+
+}  // namespace
+#endif  // SHELL_ENABLE_VULKAN && IMPELLER_SUPPORTS_RENDERING
+
 static std::unique_ptr<flutter::EmbedderRenderTarget>
 CreateEmbedderRenderTarget(
     const FlutterCompositor* compositor,
@@ -1657,6 +1790,26 @@ CreateEmbedderRenderTarget(
     }
     case kFlutterBackingStoreTypeVulkan: {
       if (enable_impeller) {
+#if defined(SHELL_ENABLE_VULKAN) && defined(IMPELLER_SUPPORTS_RENDERING)
+        // Denial output views only: the scene composer draws them into its
+        // own import of the target, so the image handle is not used.
+        if (config.view_id < kFlutterImplicitViewId &&
+            backing_store.vulkan.image != nullptr) {
+          fml::closure release = collect_callback.Release();
+          if (auto destruction = backing_store.vulkan.destruction_callback) {
+            release = [release, destruction,
+                       user_data = backing_store.vulkan.user_data]() {
+              destruction(user_data);
+              release();
+            };
+          }
+          render_target = std::make_unique<DenialDescribedRenderTarget>(
+              backing_store, std::move(release),
+              flutter::DlISize(config.size.width, config.size.height),
+              aiks_context);
+          break;
+        }
+#endif  // SHELL_ENABLE_VULKAN && IMPELLER_SUPPORTS_RENDERING
         FML_LOG(ERROR) << "Unimplemented";
         break;
       }
@@ -2442,6 +2595,10 @@ FlutterEngineResult FlutterEngineInitialize(size_t version,
     return LOG_EMBEDDER_ERROR(kInvalidArguments,
                               "Compositor arguments were invalid.");
   }
+  // The rasterizer owns the view embedder for the engine's life; Denial's
+  // scene composer is installed on it through raster tasks.
+  flutter::EmbedderExternalViewEmbedder* denial_view_embedder =
+      external_view_embedder_result.value().get();
 
   flutter::PlatformViewEmbedder::PlatformDispatchTable platform_dispatch_table =
       {
@@ -2526,6 +2683,12 @@ FlutterEngineResult FlutterEngineInitialize(size_t version,
     }
   }
 #endif
+  const FlutterVulkanRendererConfig* denial_vulkan_config = &config->vulkan;
+  if (config->type == kVulkan &&
+      SAFE_ACCESS(denial_vulkan_config, denial_present_callback, nullptr) !=
+          nullptr) {
+    external_texture_resolver->EnableDenialComposerTextures();
+  }
   auto custom_task_runners = SAFE_ACCESS(args, custom_task_runners, nullptr);
   auto thread_config_callback = [&custom_task_runners](
                                     const fml::Thread::ThreadConfig& config) {
@@ -2631,6 +2794,8 @@ FlutterEngineResult FlutterEngineInitialize(size_t version,
       on_create_rasterizer,                 //
       std::move(external_texture_resolver)  //
   );
+
+  embedder_engine->SetDenialViewEmbedder(denial_view_embedder);
 
   // Release the ownership of the embedder engine to the caller.
   *engine_out = reinterpret_cast<FLUTTER_API_SYMBOL(FlutterEngine)>(
@@ -3891,6 +4056,49 @@ FlutterEngineResult DenialFlutterEngineScheduleFrameForExternalTextures(
                    "Could not schedule Denial external-texture frame.");
 }
 
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineSetTextureDamage(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const DenialFlutterTextureDamage* damage,
+    size_t count) {
+  if (engine == nullptr || (damage == nullptr && count != 0)) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Invalid Denial texture damage.");
+  }
+  std::vector<std::pair<int64_t, std::vector<flutter::DlRect>>> textures;
+  textures.reserve(count);
+  for (size_t index = 0; index < count; index++) {
+    const auto& item = damage[index];
+    if (item.struct_size != sizeof(DenialFlutterTextureDamage) ||
+        item.texture_id == 0 || (item.rects == nullptr && item.rect_count)) {
+      return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                                "Invalid Denial texture damage.");
+    }
+    std::vector<flutter::DlRect> rects;
+    rects.reserve(item.rect_count);
+    for (size_t rect = 0; rect < item.rect_count; rect++) {
+      const double* xywh = item.rects + rect * 4;
+      if (!std::isfinite(xywh[0]) || !std::isfinite(xywh[1]) ||
+          !std::isfinite(xywh[2]) || !std::isfinite(xywh[3]) ||
+          xywh[2] < 0 || xywh[3] < 0) {
+        return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                                  "Invalid Denial texture damage rect.");
+      }
+      rects.push_back(flutter::DlRect::MakeXYWH(xywh[0], xywh[1], xywh[2],
+                                                xywh[3]));
+    }
+    textures.emplace_back(item.texture_id, std::move(rects));
+  }
+  if (textures.empty()) {
+    return kSuccess;
+  }
+  return reinterpret_cast<flutter::EmbedderEngine*>(engine)
+                 ->SetTextureFrameDamage(std::move(textures))
+             ? kSuccess
+             : LOG_EMBEDDER_ERROR(kInternalInconsistency,
+                                  "Could not set Denial texture damage.");
+}
+
 namespace {
 
 constexpr size_t kMaximumDenialRenderOutputCount = 128;
@@ -4104,6 +4312,34 @@ FlutterEngineResult DenialFlutterEngineSetExternalTexturePresentationCallback(
              : LOG_EMBEDDER_ERROR(
                    kInternalInconsistency,
                    "Could not install texture presentation callback.");
+}
+
+FlutterEngineResult DenialFlutterEngineSetSceneComposer(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const DenialFlutterSceneComposer* composer) {
+  if (engine == nullptr) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments, "Engine handle was invalid.");
+  }
+  if (composer == nullptr || SAFE_ACCESS(composer, begin, nullptr) == nullptr ||
+      SAFE_ACCESS(composer, acquire_writer, nullptr) == nullptr ||
+      SAFE_ACCESS(composer, stage, nullptr) == nullptr ||
+      SAFE_ACCESS(composer, drop_engine_ref, nullptr) == nullptr ||
+      SAFE_ACCESS(composer, cancel, nullptr) == nullptr ||
+      SAFE_ACCESS(composer, prepare_gles_read, nullptr) == nullptr ||
+      SAFE_ACCESS(composer, pin_backdrop, nullptr) == nullptr) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Denial scene composer callbacks absent.");
+  }
+  // Callbacks past the embedder's struct size are absent.
+  DenialFlutterSceneComposer installed = {};
+  std::memcpy(&installed, composer,
+              std::min(composer->struct_size, sizeof(installed)));
+  installed.struct_size = sizeof(installed);
+  return reinterpret_cast<flutter::EmbedderEngine*>(engine)
+                 ->SetDenialSceneComposer(installed)
+             ? kSuccess
+             : LOG_EMBEDDER_ERROR(kInternalInconsistency,
+                                  "Could not install the scene composer.");
 }
 
 FlutterEngineResult DenialFlutterEngineSetExternalTextureGlStateCallback(

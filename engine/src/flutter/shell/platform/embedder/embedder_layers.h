@@ -32,7 +32,8 @@ class EmbedderLayers {
   using PresentCallback =
       std::function<bool(FlutterViewId view_id,
                          const std::vector<const FlutterLayer*>& layers)>;
-  void InvokePresentCallback(FlutterViewId view_id,
+  // The callback's result: false when the embedder did not present.
+  bool InvokePresentCallback(FlutterViewId view_id,
                              const PresentCallback& callback) const;
 
  private:

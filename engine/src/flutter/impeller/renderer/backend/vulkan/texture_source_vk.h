@@ -19,10 +19,22 @@
 
 namespace impeller {
 
+class RenderPassBuilderVK;
+class Texture;
+
+struct FramebufferAttachmentVK {
+  // Weak ownership avoids a cycle from a texture's cache back to itself.
+  // It also prevents reuse if an old image view handle has been recycled.
+  std::weak_ptr<Texture> texture;
+  vk::ImageView view;
+};
+
 // These methods should only be used by render_pass_vk.h
 struct FramebufferAndRenderPass {
   SharedHandleVK<vk::Framebuffer> framebuffer = nullptr;
   SharedHandleVK<vk::RenderPass> render_pass = nullptr;
+  std::shared_ptr<const RenderPassBuilderVK> render_pass_descriptor;
+  std::vector<FramebufferAttachmentVK> attachments;
 };
 
 //------------------------------------------------------------------------------
@@ -142,9 +154,10 @@ class TextureSourceVK {
   /// `(sample_count, mip_level, slice)` subresource of this texture.
   ///
   /// This is only called when this texture is being used as the resolve (or
-  /// non-MSAA color) target of a render pass. By construction, the cached
-  /// objects are compatible with any future render pass that targets the
-  /// same subresource.
+  /// non-MSAA color) target of a render pass. The caller must additionally
+  /// validate the render-pass descriptor and every framebuffer attachment:
+  /// backdrop ping-pong can pair this subresource with different MSAA and
+  /// depth/stencil images, and resumed passes can change load/store actions.
   void SetCachedFrameData(const FramebufferAndRenderPass& data,
                           SampleCount sample_count,
                           uint32_t mip_level = 0u,

@@ -10,6 +10,7 @@
 #include "flutter/common/graphics/texture.h"
 #include "flutter/fml/macros.h"
 #include "flutter/shell/platform/embedder/embedder.h"
+#include "flutter/shell/platform/embedder/embedder_external_texture_presentation.h"
 #include "third_party/skia/include/core/SkSize.h"
 
 namespace flutter {
@@ -60,10 +61,7 @@ class EmbedderExternalTextureGL : public flutter::Texture {
   const ExternalTextureGlStateCallback& external_texture_gl_state_callback_;
   sk_sp<DlImage> last_image_;
   ExternalTexturePresentationCallback presentation_callback_;
-  DenialFlutterExternalTexturePresentation presentation_ = {};
-  DlRect background_sample_;
-  // A presentation that only crops the image is still one image draw.
-  bool crop_only_presentation_ = false;
+  DenialTexturePresentation presentation_;
   void PrepareImage(PaintContext& context, const DlRect& bounds);
 
   sk_sp<DlImage> ResolveTexture(int64_t texture_id,

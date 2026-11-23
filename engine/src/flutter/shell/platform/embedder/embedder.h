@@ -1022,6 +1022,21 @@ typedef struct {
   /// Not used if a FlutterCompositor is supplied in FlutterProjectArgs.
   FlutterVulkanPresentCallback present_image_callback;
 
+  /// Denial. With a FlutterCompositor and `denial_present_callback`, the root
+  /// surface never draws: it carries each raster pass to the embedder as the
+  /// OpenGL renderer's root surface does with FBO 0. Raster thread, before
+  /// the pass acquires any backing store, where the OpenGL renderer makes its
+  /// context current. False skips the pass. Optional.
+  BoolCallback denial_begin_frame_callback;
+  /// Denial. Raster thread, after the pass presented its output views: the
+  /// pass's frame and buffer damage, as OpenGL's `present_with_info` with
+  /// `fbo_id` 0. Optional; see `denial_begin_frame_callback`.
+  BoolPresentInfoCallback denial_present_callback;
+  /// Denial. Raster thread: the existing damage of the Vulkan backing store
+  /// whose `user_data` is the given identity, as OpenGL's
+  /// `populate_existing_damage`. Optional; without it every output frame
+  /// repaints in full.
+  FlutterFrameBufferWithDamageCallback denial_populate_existing_damage;
 } FlutterVulkanRendererConfig;
 
 typedef struct {
@@ -2240,6 +2255,326 @@ typedef bool (*FlutterBackingStoreCollectCallback)(
 typedef bool (*FlutterLayersPresentCallback)(const FlutterLayer** layers,
                                              size_t layers_count,
                                              void* user_data);
+
+//------------------------------------------------------------------------------
+// Denial scene composer.
+//
+// Installed by DenialFlutterEngineSetSceneComposer, output views (negative
+// view IDs) are composed by the embedder instead of the engine. The engine
+// still renders the shell's slices, into storage the embedder allocates and
+// binds on the raster context, and hands each frame's ordered entry list to
+// `stage`. The root SurfaceFrame is still presented exactly once through
+// `present_view_callback`; the embedder composes the staged scene into that
+// backing store. Content the list cannot describe (clip paths, backdrop
+// filters, materials) makes `stage` unavailable for the frame: the engine then
+// composes it as without a scene composer.
+
+/// One immutable version of a slice's storage. A rewrite always receives a
+/// fresh key from `acquire_writer`; a published key is never written again.
+typedef struct {
+  uint64_t allocation;
+  uint64_t generation;
+} DenialFlutterSliceKey;
+
+/// Writable slice storage, bound by the embedder on the raster context.
+typedef struct {
+  size_t struct_size;
+  DenialFlutterSliceKey key;
+  /// A GL_TEXTURE_2D name, color-renderable and sampleable, borrowed: the
+  /// engine never deletes it and reports the end of its use through
+  /// `drop_engine_ref`.
+  uint32_t gl_name;
+  uint32_t width;
+  uint32_t height;
+} DenialFlutterSliceWriter;
+
+/// Writable slice storage on the Vulkan renderer's device: a private,
+/// optimally tiled, single-mip 2D color image with color attachment, input
+/// attachment, sampled, transfer source and transfer destination usage.
+/// Borrowed like DenialFlutterSliceWriter: the engine never destroys the
+/// image or view and reports the end of its use, after its last submission
+/// completed, through `drop_engine_ref`. Every version is cleared whole by
+/// the engine, so the embedder may hand it out in any layout whose previous
+/// readers and writers completed; `layout` names that layout. The engine
+/// leaves a written version in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+/// submitted on the shared queue before `stage` runs.
+typedef struct {
+  /// The size of this struct. Must be sizeof(DenialFlutterSliceWriterVK).
+  size_t struct_size;
+  DenialFlutterSliceKey key;
+  /// VkImage.
+  uint64_t image;
+  /// VkImageView of the whole image.
+  uint64_t image_view;
+  /// VkFormat; VK_FORMAT_R8G8B8A8_UNORM.
+  uint32_t format;
+  /// VkImageLayout the image is in now.
+  uint32_t layout;
+  uint32_t width;
+  uint32_t height;
+} DenialFlutterSliceWriterVK;
+
+// Virtual external-texture canvas. Rectangles are x, y, width, height in
+// pixel coordinates: source addresses the original imported buffer;
+// destination and background address the virtual canvas. No texture storage
+// is allocated. The canvas is clipped to the ordinary TextureLayer bounds.
+// The background extends the texel at offset (5, 5) inside the visible source,
+// clamped for small sources, using its RGBA and the content's inherited paint.
+// This samples the same imported image as the content without CPU readback.
+typedef struct {
+  size_t struct_size;
+  double width;
+  double height;
+  double source[4];
+  double destination[4];
+  double background[4];
+  // Fallback only when the source has no intersection with the imported image.
+  uint32_t background_argb;
+} DenialFlutterExternalTexturePresentation;
+
+/// A client texture's image on the Vulkan renderer's device, lent to the
+/// engine while it composes an output frame the scene composer declined.
+typedef struct {
+  /// The size of this struct. Must be sizeof(DenialFlutterTextureImageVK).
+  size_t struct_size;
+  /// VkImage.
+  uint64_t image;
+  /// VkImageView of the whole image, swizzled as the client's format reads.
+  uint64_t image_view;
+  /// VkFormat of the view: VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8A8_UNORM
+  /// or VK_FORMAT_R16G16B16A16_SFLOAT.
+  uint32_t format;
+  uint32_t width;
+  uint32_t height;
+  /// Whether `presentation` holds the texture's presentation.
+  bool has_presentation;
+  DenialFlutterExternalTexturePresentation presentation;
+} DenialFlutterTextureImageVK;
+
+/// Copies `source` (storage pixels, top-left origin as rendered) to
+/// `destination` (target pixels). Both have the same size.
+typedef struct {
+  FlutterRect source;
+  FlutterRect destination;
+} DenialFlutterSliceBlit;
+
+typedef enum {
+  kDenialFlutterSceneEntrySlice = 1,
+  /// An external texture without window treatment.
+  kDenialFlutterSceneEntryTexture = 2,
+  /// A client window without backdrop: rounded coverage, frame, texture.
+  kDenialFlutterSceneEntryWindow = 3,
+  /// Opens a backdrop material (`material`, under `mutations`): the filtered
+  /// scene below it, then the entries up to the matching end, composited as
+  /// one layer.
+  kDenialFlutterSceneEntryMaterialBegin = 4,
+  /// Closes the innermost open material.
+  kDenialFlutterSceneEntryMaterialEnd = 5,
+  /// A client window over a backdrop material (`material`): as
+  /// kDenialFlutterSceneEntryWindow, and where the client's alpha exceeds the
+  /// material's `alpha_threshold`, the material shows through it.
+  kDenialFlutterSceneEntryWindowMaterial = 6,
+} DenialFlutterSceneEntryKind;
+
+typedef enum {
+  /// Gaussian blur of the backdrop, clamped at its edges.
+  kDenialFlutterMaterialBlur = 1,
+  /// Denial glass: frost (the blur) refracted and lit through `shape`.
+  kDenialFlutterMaterialGlass = 2,
+} DenialFlutterMaterialFilter;
+
+/// A backdrop material. Geometry is in the material's local coordinates
+/// (its entry's mutations map them to scene coordinates).
+typedef struct {
+  size_t struct_size;
+  DenialFlutterMaterialFilter filter;
+  /// DlBlendMode of the layer.
+  uint32_t blend_mode;
+  /// The layer's bounds.
+  FlutterRect bounds;
+  /// Clips the material's content (its children), not the backdrop.
+  bool has_content_clip;
+  FlutterRect content_clip;
+  /// Changes whenever the scene below the material changes.
+  bool has_backdrop_token;
+  int64_t backdrop_token;
+  double sigma_x;
+  double sigma_y;
+  /// Glass only.
+  FlutterRoundedRect shape;
+  double thickness;
+  double refraction;
+  double dispersion;
+  double saturation;
+  /// Non-premultiplied 0xAARRGGBB.
+  uint32_t tint;
+  double tint_strength;
+  double brightness;
+  double light_angle;
+  double light_intensity;
+  double edge_strength;
+  double bevel_width_scale;
+  double refraction_depth_scale;
+  double rim_width;
+  double rim_falloff;
+  double opposite_light_strength;
+  /// Window materials only: the client alpha the material needs, 0..1.
+  double alpha_threshold;
+} DenialFlutterMaterial;
+
+/// A path clip's fill rule.
+typedef enum {
+  kDenialFlutterClipPathFillNonZero = 0,
+  kDenialFlutterClipPathFillEvenOdd = 1,
+} DenialFlutterClipPathFill;
+
+/// A path or round-superellipse clip, flattened as Impeller fills it: each
+/// contour a polygon, implicitly closed, in the clip's space (the space the
+/// mutations before it leave). No contours: the clip holds nothing.
+typedef struct {
+  DenialFlutterClipPathFill fill;
+  size_t point_count;
+  const FlutterPoint* points;
+  /// One past each contour's last point in `points`, ascending.
+  size_t contour_count;
+  const uint32_t* contour_ends;
+} DenialFlutterClipPath;
+
+/// In a scene entry's `mutations`: a path clip. Its `clip_rect` holds the
+/// path's bounds in the clip's space; the entry's next `clip_paths` element
+/// holds its contours.
+#define kDenialFlutterPlatformViewMutationTypeClipPath \
+  ((FlutterPlatformViewMutationType)0x44500001)
+
+typedef enum {
+  kDenialFlutterSceneSamplingNearest = 0,
+  kDenialFlutterSceneSamplingLinear = 1,
+  kDenialFlutterSceneSamplingMipmapLinear = 2,
+  kDenialFlutterSceneSamplingCubic = 3,
+} DenialFlutterSceneSampling;
+
+typedef struct {
+  size_t struct_size;
+  DenialFlutterSceneEntryKind kind;
+  /// Slice: storage version and blits. Slices hold target pixels and take no
+  /// mutations. `slice_bottom_up` storage holds rendered row y at storage row
+  /// `storage_height - 1 - y`.
+  DenialFlutterSliceKey slice;
+  bool slice_bottom_up;
+  uint32_t slice_storage_width;
+  uint32_t slice_storage_height;
+  size_t blit_count;
+  const DenialFlutterSliceBlit* blits;
+  /// Texture, window and material begin, in scene coordinates under
+  /// `mutations`, which the scene's `output_from_scene` maps to target
+  /// pixels.
+  int64_t texture_id;
+  FlutterRect texture_bounds;
+  FlutterTransformation texture_transform;
+  DenialFlutterSceneSampling sampling;
+  double surface_opacity;
+  bool freeze;
+  /// Window style.
+  FlutterRect window_bounds;
+  FlutterRect content_bounds;
+  bool has_material_bounds;
+  FlutterRect material_bounds;
+  double radius;
+  /// Non-premultiplied 0xAARRGGBB.
+  uint32_t frame_color;
+  bool direct_texture;
+  /// Outermost first: the four FlutterPlatformViewMutation kinds and
+  /// kDenialFlutterPlatformViewMutationTypeClipPath.
+  size_t mutation_count;
+  const FlutterPlatformViewMutation* mutations;
+  /// Material begin only.
+  const DenialFlutterMaterial* material;
+  /// One per path clip in `mutations`, in their order.
+  size_t clip_path_count;
+  const DenialFlutterClipPath* clip_paths;
+} DenialFlutterSceneEntry;
+
+typedef struct {
+  size_t struct_size;
+  FlutterViewId view_id;
+  uint64_t ticket;
+  /// Changes whenever the entry list differs from the previous staged scene.
+  uint64_t scene_revision;
+  uint32_t width;
+  uint32_t height;
+  FlutterTransformation output_from_scene;
+  /// Paint order, back to front.
+  size_t entry_count;
+  const DenialFlutterSceneEntry* entries;
+  /// Slice keys written by this frame. The engine has issued their rendering
+  /// on the raster context when `stage` runs; the embedder fences them when
+  /// the frame is presented.
+  size_t rewritten_count;
+  const DenialFlutterSliceKey* rewritten;
+} DenialFlutterScene;
+
+typedef struct {
+  /// The size of this struct. Must be sizeof(DenialFlutterSceneComposer).
+  size_t struct_size;
+  void* user_data;
+  /// Raster thread, before an output view's frame. Returns a ticket for the
+  /// frame, or zero to compose it in the engine.
+  uint64_t (*begin)(void* user_data, FlutterViewId view_id);
+  /// Raster thread, raster context current. RGBA8 storage of at least the
+  /// given extent for a slice of the frame `ticket`.
+  bool (*acquire_writer)(void* user_data,
+                         uint64_t ticket,
+                         uint32_t width,
+                         uint32_t height,
+                         DenialFlutterSliceWriter* writer);
+  /// Raster thread. Arrays are valid only during the call. Returns false to
+  /// have the engine compose this frame itself.
+  bool (*stage)(void* user_data, const DenialFlutterScene* scene);
+  /// Any thread, possibly with a GL reactor lock held: the engine no longer
+  /// references this storage version. Only record the key; never call back
+  /// into the engine or GL. It says nothing about GPU completion.
+  void (*drop_engine_ref)(void* user_data, DenialFlutterSliceKey key);
+  /// Raster thread, no context requirement. A begun frame that will not be
+  /// staged. Bookkeeping only.
+  void (*cancel)(void* user_data, uint64_t ticket);
+  /// Raster thread, raster context current, immediately before the engine
+  /// composes an output frame itself from slice storage acquire_writer
+  /// returned. GPU work of the embedder that still uses that storage must be
+  /// waited for on this context. False skips the frame.
+  bool (*prepare_gles_read)(void* user_data, FlutterViewId view_id);
+  /// Raster thread, between `begin` and the `stage` or `cancel` of `ticket`,
+  /// while the engine plans the frame's damage: whether the composer holds a
+  /// backdrop it made from `token` for this view. True drops the engine's
+  /// damage expansion for that backdrop's readback, as a pinned Impeller
+  /// snapshot does; a backdrop the composer makes again anyway it redraws
+  /// whole and reports as damage itself.
+  bool (*pin_backdrop)(void* user_data, uint64_t ticket, int64_t token);
+  /// Raster thread, with the Vulkan renderer: as `acquire_writer`, storage on
+  /// the renderer's device. The engine sets `writer->struct_size`; the
+  /// embedder writes no more than that. Required with the Vulkan renderer.
+  bool (*acquire_writer_vk)(void* user_data,
+                            uint64_t ticket,
+                            uint32_t width,
+                            uint32_t height,
+                            DenialFlutterSliceWriterVK* writer);
+  /// Raster thread, Vulkan renderer, while the engine composes an output
+  /// frame of `ticket` itself because the composer could not stage it: the
+  /// image showing client texture `texture_id` as the composer would draw
+  /// it, sampled in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL once
+  /// `lend_textures_vk` returned. False: the texture draws nothing this frame.
+  /// The image stays valid until `return_textures_vk` of `ticket`.
+  bool (*resolve_texture_vk)(void* user_data,
+                             uint64_t ticket,
+                             int64_t texture_id,
+                             DenialFlutterTextureImageVK* image);
+  /// Raster thread, before the engine submits that composition: makes every
+  /// image resolved for `ticket` readable by later submissions on the shared
+  /// queue. False skips the frame.
+  bool (*lend_textures_vk)(void* user_data, uint64_t ticket);
+  /// Raster thread, after the engine submitted that composition or gave it
+  /// up: the composer takes the images back.
+  void (*return_textures_vk)(void* user_data, uint64_t ticket);
+} DenialFlutterSceneComposer;
 
 /// The callback invoked when the embedder should present to a view.
 ///
@@ -3642,6 +3977,30 @@ FlutterEngineResult DenialFlutterEngineScheduleFrameForExternalTextures(
     const int64_t* texture_identifiers,
     size_t texture_count);
 
+/// What changed in one external texture's next frame: `rect_count` rects of
+/// four doubles (x, y, width, height) in unit coordinates of the rect the
+/// texture is painted into, where (0, 0) is its top left and (1, 1) its bottom
+/// right. Zero rects: nothing changed.
+typedef struct {
+  /// The size of this struct. Must be sizeof(DenialFlutterTextureDamage).
+  size_t struct_size;
+  int64_t texture_id;
+  size_t rect_count;
+  const double* rects;
+} DenialFlutterTextureDamage;
+
+//------------------------------------------------------------------------------
+/// @brief      Sets what changed in each texture's next frame, for the frame
+///             transaction that follows. A texture marked without it is
+///             damaged whole. Arrays are copied synchronously; call it on the
+///             platform thread before the render or schedule call.
+///
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineSetTextureDamage(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const DenialFlutterTextureDamage* damage,
+    size_t count);
+
 //------------------------------------------------------------------------------
 /// @brief      Authorizes one raster transaction for selected Denial physical
 ///             outputs. Arrays are copied synchronously. A texture array may
@@ -3680,6 +4039,21 @@ FlutterEngineResult DenialFlutterEngineRenderOutputsWithCompletion(
     uint64_t transaction_id,
     DenialFlutterRenderCompletionCallback on_complete,
     void* user_data);
+
+//------------------------------------------------------------------------------
+/// @brief      Hands Denial output views to the embedder's scene composer.
+///
+///             The callbacks are copied and installed on the raster thread
+///             ahead of any raster task posted after this call, so install
+///             before authorizing the first output frame. Installs once per
+///             engine: a second call fails. `user_data`, and storage handed
+///             out through it, stay valid until FlutterEngineShutdown
+///             returns.
+///
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineSetSceneComposer(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const DenialFlutterSceneComposer* composer);
 
 /// One physical raster target projected from the implicit Flutter view.
 /// Source coordinates are in the implicit view's physical-pixel coordinate
@@ -3749,23 +4123,6 @@ FlutterEngineResult DenialFlutterEngineSetExternalTextureGlStateCallback(
     DenialFlutterExternalTextureGlStateCallback callback,
     void* user_data);
 
-// Virtual external-texture canvas. Rectangles are x, y, width, height in
-// pixel coordinates: source addresses the original imported buffer;
-// destination and background address the virtual canvas. No texture storage
-// is allocated. The canvas is clipped to the ordinary TextureLayer bounds.
-// The background extends the texel at offset (5, 5) inside the visible source,
-// clamped for small sources, using its RGBA and the content's inherited paint.
-// This samples the same imported image as the content without CPU readback.
-typedef struct {
-  size_t struct_size;
-  double width;
-  double height;
-  double source[4];
-  double destination[4];
-  double background[4];
-  // Fallback only when the source has no intersection with the imported image.
-  uint32_t background_argb;
-} DenialFlutterExternalTexturePresentation;
 
 // Called once alongside each resolved external image, never for retained
 // paints. Return false for the unmodified image path. The callback must not

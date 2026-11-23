@@ -60,6 +60,8 @@ template("embedder_source_set") {
       "embedder.cc",
       "embedder_engine.cc",
       "embedder_engine.h",
+      "embedder_external_texture_presentation.cc",
+      "embedder_external_texture_presentation.h",
       "embedder_external_texture_resolver.cc",
       "embedder_external_texture_resolver.h",
       "embedder_external_view.cc",
@@ -171,10 +173,12 @@ template("embedder_source_set") {
     }
 
     if (embedder_enable_vulkan) {
-      sources += [
-        "embedder_surface_vulkan.cc",
-        "embedder_surface_vulkan.h",
-      ]
+      if (!slimpeller) {
+        sources += [
+          "embedder_surface_vulkan.cc",
+          "embedder_surface_vulkan.h",
+        ]
+      }
 
       if (impeller_supports_rendering) {
         sources += [

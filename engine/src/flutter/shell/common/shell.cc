@@ -1395,6 +1395,22 @@ void Shell::ScheduleFrameForExternalTextures(
   RequestFrameForExternalTextures();
 }
 
+void Shell::SetTextureFrameDamage(
+    std::vector<std::pair<int64_t, std::vector<DlRect>>> damage) {
+  FML_DCHECK(is_set_up_);
+  FML_DCHECK(task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread());
+  task_runners_.GetRasterTaskRunner()->PostTask(
+      [rasterizer = rasterizer_->GetWeakPtr(),
+       damage = std::move(damage)]() mutable {
+        if (!rasterizer) {
+          return;
+        }
+        for (auto& [texture_id, rects] : damage) {
+          rasterizer->SetTextureFrameDamage(texture_id, std::move(rects));
+        }
+      });
+}
+
 void Shell::RenderOutputs(std::vector<int64_t> render_view_ids,
                           std::vector<int64_t> texture_identifiers,
                           bool rebuild_scene,

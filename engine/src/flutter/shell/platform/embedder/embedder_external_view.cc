@@ -157,13 +157,19 @@ bool EmbedderExternalView::Render(const EmbedderRenderTarget& render_target,
     auto cull_rect =
         impeller::Rect::MakeSize(impeller_target->GetRenderTargetSize());
 
-    return impeller::RenderToTarget(aiks_context->GetContentContext(),  //
-                                    *impeller_target,                   //
-                                    display_list,                       //
-                                    cull_rect,                          //
-                                    /*reset_host_buffer=*/true,         //
-                                    /*is_onscreen=*/false               //
-    );
+    // A pass that failed to encode or submit left its draws out: the
+    // frame is not whole, though replay may have finished.
+    auto& content_context = aiks_context->GetContentContext();
+    const uint64_t failures = content_context.GetPassFailures();
+    const bool rendered =
+        impeller::RenderToTarget(content_context,            //
+                                 *impeller_target,           //
+                                 display_list,               //
+                                 cull_rect,                  //
+                                 /*reset_host_buffer=*/true, //
+                                 /*is_onscreen=*/false       //
+        );
+    return rendered && content_context.GetPassFailures() == failures;
   }
 #endif  // IMPELLER_SUPPORTS_RENDERING
 

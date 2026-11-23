@@ -283,7 +283,10 @@ static void EncodeViewport(const ProcTableGLES& gl,
 #endif  // IMPELLER_DEBUG
 
   TextureGLES& color_gles = TextureGLES::Cast(*pass_data.color_attachment);
-  const bool is_wrapped_fbo = color_gles.IsWrapped();
+  // Only a wrapped framebuffer is its own render target. A wrapped texture
+  // (externally owned storage, such as Denial's composer slices) attaches to
+  // an offscreen FBO like any other texture.
+  const bool is_wrapped_fbo = color_gles.GetFBO().has_value();
 
   std::optional<GLuint> fbo = 0;
   if (is_wrapped_fbo) {

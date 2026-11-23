@@ -550,14 +550,26 @@ std::shared_ptr<Texture> StaticPictureCache::CreateSnapshot(
   }
 #endif  // IMPELLER_ENABLE_OPENGLES
 
+  // A snapshot with a failed pass misses draws: it is never cached, so a
+  // retry of the frame renders it again.
+  const uint64_t failures = renderer_.GetPassFailures();
   CanvasDlDispatcher dispatcher(renderer_, target, false,
                                 /*has_root_backdrop_filter=*/false,
                                 flutter::DlBlendMode::kSrcOver,
                                 IRect32::MakeSize(size));
   snapshot_display_list->Dispatch(
       dispatcher, flutter::DlIRect::MakeWH(size.width, size.height));
-  dispatcher.FinishRecording();
+  if (!dispatcher.FinishRecording() ||
+      renderer_.GetPassFailures() != failures) {
+    return nullptr;
+  }
   return texture;
+}
+
+void StaticPictureCache::Clear() {
+  for (auto entry = entries_.begin(); entry != entries_.end();) {
+    entry = EraseEntry(entry);
+  }
 }
 
 void StaticPictureCache::Collect() {

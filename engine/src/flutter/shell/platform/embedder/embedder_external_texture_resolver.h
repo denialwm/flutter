@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "flutter/common/graphics/texture.h"
+#include "flutter/shell/platform/embedder/embedder.h"
 
 #ifdef SHELL_ENABLE_GL
 #include "flutter/shell/platform/embedder/embedder_external_texture_gl.h"
@@ -18,6 +19,20 @@
 #endif
 
 namespace flutter {
+
+// Raster thread, Vulkan renderer: set while the engine composes an output
+// frame the scene composer could not stage. Client textures resolve their
+// images through it; outside a fallback they draw nothing.
+struct DenialTextureLending {
+  DenialFlutterSceneComposer composer;
+  uint64_t ticket = 0;
+  // Some texture resolved an image the composer must lend.
+  bool resolved = false;
+};
+
+// Starts (non-null) or ends (null) the lending of the current fallback.
+void DenialSetTextureLending(DenialTextureLending* lending);
+
 class EmbedderExternalTextureResolver {
  public:
   EmbedderExternalTextureResolver() = default;
@@ -41,9 +56,18 @@ class EmbedderExternalTextureResolver {
 
   std::unique_ptr<Texture> ResolveExternalTexture(int64_t texture_id);
 
+  // Denial, Vulkan renderer: the scene composer draws every client texture
+  // itself from the IDs the engine registers. Textures resolve to entries
+  // that keep their registration, frame-available marks and damage, and
+  // paint only the images the composer lends while the engine composes a
+  // frame it could not (DenialSetTextureLending).
+  void EnableDenialComposerTextures() { denial_composer_textures_ = true; }
+
   bool SupportsExternalTextures();
 
  private:
+  bool denial_composer_textures_ = false;
+
 #ifdef SHELL_ENABLE_GL
   EmbedderExternalTextureGL::ExternalTextureCallback gl_callback_;
   EmbedderExternalTextureGL::ExternalTextureGlStateCallback gl_state_callback_;

@@ -98,6 +98,30 @@ TEST(RenderPassBuilder, CreatesRenderPassWithCombinedDepthStencil) {
   EXPECT_EQ(depth_stencil.stencilStoreOp, vk::AttachmentStoreOp::eDontCare);
 }
 
+TEST(RenderPassBuilder, LoadsPreservedDepthStencilFromDefinedLayout) {
+  RenderPassBuilderVK builder;
+  builder.SetDepthStencilAttachment(PixelFormat::kD24UnormS8Uint,
+                                    SampleCount::kCount1, LoadAction::kLoad,
+                                    StoreAction::kStore);
+  const auto& attachment = builder.GetDepthStencil();
+  ASSERT_TRUE(attachment.has_value());
+  EXPECT_EQ(attachment->initialLayout,
+            vk::ImageLayout::eDepthStencilAttachmentOptimal);
+  EXPECT_EQ(attachment->loadOp, vk::AttachmentLoadOp::eLoad);
+  EXPECT_EQ(attachment->stencilLoadOp, vk::AttachmentLoadOp::eLoad);
+}
+
+TEST(RenderPassBuilder, LoadsPreservedStencilFromDefinedLayout) {
+  RenderPassBuilderVK builder;
+  builder.SetStencilAttachment(PixelFormat::kS8UInt, SampleCount::kCount1,
+                               LoadAction::kLoad, StoreAction::kStore);
+  const auto& attachment = builder.GetDepthStencil();
+  ASSERT_TRUE(attachment.has_value());
+  EXPECT_EQ(attachment->initialLayout,
+            vk::ImageLayout::eDepthStencilAttachmentOptimal);
+  EXPECT_EQ(attachment->stencilLoadOp, vk::AttachmentLoadOp::eLoad);
+}
+
 TEST(RenderPassBuilder, CreatesRenderPassWithOnlyStencil) {
   RenderPassBuilderVK builder = RenderPassBuilderVK();
   auto const context = MockVulkanContextBuilder().Build();

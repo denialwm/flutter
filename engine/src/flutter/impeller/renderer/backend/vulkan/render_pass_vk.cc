@@ -4,6 +4,7 @@
 
 #include "impeller/renderer/backend/vulkan/render_pass_vk.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
@@ -94,13 +95,8 @@ static size_t GetVKClearValues(
 
 SharedHandleVK<vk::RenderPass> RenderPassVK::CreateVKRenderPass(
     const ContextVK& context,
-    const SharedHandleVK<vk::RenderPass>& recycled_renderpass,
-    const std::shared_ptr<CommandBufferVK>& command_buffer,
+    FramebufferAndRenderPass& cached_frame_data,
     bool is_swapchain) const {
-  if (recycled_renderpass != nullptr) {
-    return recycled_renderpass;
-  }
-
   RenderPassBuilderVK builder;
   render_target_.IterateAllColorAttachments([&](size_t bind_point,
                                                 const ColorAttachment&
@@ -133,6 +129,15 @@ SharedHandleVK<vk::RenderPass> RenderPassVK::CreateVKRenderPass(
     );
   }
 
+  // The same image may start with a clear and later resume with a load.
+  // Reusing the initial render pass would silently repeat its original
+  // load/store operations and image layouts.
+  if (cached_frame_data.render_pass &&
+      cached_frame_data.render_pass_descriptor &&
+      *cached_frame_data.render_pass_descriptor == builder) {
+    return cached_frame_data.render_pass;
+  }
+
   auto pass = builder.Build(context.GetDevice());
 
   if (!pass) {
@@ -142,6 +147,10 @@ SharedHandleVK<vk::RenderPass> RenderPassVK::CreateVKRenderPass(
 
   context.SetDebugName(pass.get(), debug_label_.c_str());
 
+  cached_frame_data.render_pass_descriptor =
+      std::make_shared<RenderPassBuilderVK>(std::move(builder));
+  // A changed descriptor may also change framebuffer compatibility.
+  cached_frame_data.framebuffer = nullptr;
   return MakeSharedVK(std::move(pass));
 }
 
@@ -165,10 +174,8 @@ RenderPassVK::RenderPassVK(const std::shared_ptr<const Context>& context,
   bool is_swapchain = false;
   SampleCount sample_count =
       color_image_vk_->GetTextureDescriptor().sample_count;
-  // The framebuffer references attachment views bound to a specific
-  // subresource, so the cache is keyed on color0's (mip_level, slice) as
-  // well as sample count. Caller-side invariants on the rest of the
-  // attachment set are the same as before.
+  // Use the color/resolve subresource as the cache bucket, then validate the
+  // complete descriptor and attachments below before reusing its objects.
   const uint32_t cache_mip_level = color0.mip_level;
   const uint32_t cache_slice = color0.slice;
   TextureVK& frame_data_texture = TextureVK::Cast(
@@ -179,17 +186,26 @@ RenderPassVK::RenderPassVK(const std::shared_ptr<const Context>& context,
 
   const auto& target_size = render_target_.GetRenderTargetSize();
 
-  render_pass_ = CreateVKRenderPass(vk_context, frame_data.render_pass,
-                                    command_buffer_, is_swapchain);
+  render_pass_ = CreateVKRenderPass(vk_context, frame_data, is_swapchain);
   if (!render_pass_) {
     VALIDATION_LOG << "Could not create renderpass.";
     is_valid_ = false;
     return;
   }
 
-  auto framebuffer = (frame_data.framebuffer == nullptr)
-                         ? CreateVKFramebuffer(vk_context, *render_pass_)
-                         : frame_data.framebuffer;
+  auto attachments = GetFramebufferAttachments();
+  const bool same_attachments =
+      frame_data.attachments.size() == attachments.size() &&
+      std::equal(frame_data.attachments.begin(), frame_data.attachments.end(),
+                 attachments.begin(),
+                 [](const auto& cached, const auto& current) {
+                   return cached.view == current.view &&
+                          cached.texture.lock() == current.texture.lock();
+                 });
+  auto framebuffer =
+      frame_data.framebuffer && same_attachments
+          ? frame_data.framebuffer
+          : CreateVKFramebuffer(vk_context, *render_pass_, attachments);
   if (!framebuffer) {
     VALIDATION_LOG << "Could not create framebuffer.";
     is_valid_ = false;
@@ -204,6 +220,7 @@ RenderPassVK::RenderPassVK(const std::shared_ptr<const Context>& context,
 
   frame_data.framebuffer = framebuffer;
   frame_data.render_pass = render_pass_;
+  frame_data.attachments = std::move(attachments);
 
   frame_data_texture.SetCachedFrameData(frame_data, sample_count,
                                         cache_mip_level, cache_slice);
@@ -293,53 +310,58 @@ void RenderPassVK::OnSetLabel(std::string_view label) {
 #endif  // IMPELLER_DEBUG
 }
 
-SharedHandleVK<vk::Framebuffer> RenderPassVK::CreateVKFramebuffer(
-    const ContextVK& context,
-    const vk::RenderPass& pass) const {
-  vk::FramebufferCreateInfo fb_info;
-
-  fb_info.renderPass = pass;
-
-  const auto target_size = render_target_.GetRenderTargetSize();
-  fb_info.width = target_size.width;
-  fb_info.height = target_size.height;
-  fb_info.layers = 1u;
-
-  std::array<vk::ImageView, kMaxAttachments> attachments;
-  size_t count = 0;
-
+std::vector<FramebufferAttachmentVK> RenderPassVK::GetFramebufferAttachments()
+    const {
+  std::vector<FramebufferAttachmentVK> attachments;
+  attachments.reserve(render_target_.GetTotalAttachmentCount());
+  const auto append = [&](const std::shared_ptr<Texture>& texture,
+                          uint32_t mip_level = 0u, uint32_t slice = 0u) {
+    attachments.push_back(
+        {texture,
+         TextureVK::Cast(*texture).GetRenderTargetView(mip_level, slice)});
+  };
   // This bit must be consistent to ensure compatibility with the pass created
   // earlier. Follow this order: Color attachments, then depth-stencil, then
   // stencil.
   render_target_.IterateAllColorAttachments(
-      [&attachments, &count](size_t index,
-                             const ColorAttachment& attachment) -> bool {
+      [&append](size_t index, const ColorAttachment& attachment) -> bool {
         // The bind point doesn't matter here since that information is present
         // in the render pass.
-        attachments[count++] =
-            TextureVK::Cast(*attachment.texture)
-                .GetRenderTargetView(attachment.mip_level, attachment.slice);
+        append(attachment.texture, attachment.mip_level, attachment.slice);
         if (attachment.resolve_texture) {
           // The resolve texture resolves into its own base level/layer.
-          attachments[count++] = TextureVK::Cast(*attachment.resolve_texture)
-                                     .GetRenderTargetView();
+          append(attachment.resolve_texture);
         }
         return true;
       });
 
   if (auto depth = render_target_.GetDepthAttachment(); depth.has_value()) {
-    attachments[count++] =
-        TextureVK::Cast(*depth->texture)
-            .GetRenderTargetView(depth->mip_level, depth->slice);
+    append(depth->texture, depth->mip_level, depth->slice);
   } else if (auto stencil = render_target_.GetStencilAttachment();
              stencil.has_value()) {
-    attachments[count++] =
-        TextureVK::Cast(*stencil->texture)
-            .GetRenderTargetView(stencil->mip_level, stencil->slice);
+    append(stencil->texture, stencil->mip_level, stencil->slice);
   }
 
-  fb_info.setPAttachments(attachments.data());
-  fb_info.setAttachmentCount(count);
+  return attachments;
+}
+
+SharedHandleVK<vk::Framebuffer> RenderPassVK::CreateVKFramebuffer(
+    const ContextVK& context,
+    const vk::RenderPass& pass,
+    const std::vector<FramebufferAttachmentVK>& attachments) const {
+  vk::FramebufferCreateInfo fb_info;
+  fb_info.renderPass = pass;
+  const auto target_size = render_target_.GetRenderTargetSize();
+  fb_info.width = target_size.width;
+  fb_info.height = target_size.height;
+  fb_info.layers = 1u;
+
+  std::array<vk::ImageView, kMaxAttachments> views;
+  for (size_t i = 0; i < attachments.size(); i++) {
+    views.at(i) = attachments[i].view;
+  }
+  fb_info.setPAttachments(views.data());
+  fb_info.setAttachmentCount(attachments.size());
 
   auto [result, framebuffer] =
       context.GetDevice().createFramebufferUnique(fb_info);
@@ -501,6 +523,7 @@ bool RenderPassVK::SetIndexBuffer(BufferView index_buffer,
 // |RenderPass|
 fml::Status RenderPassVK::Draw() {
   if (!pipeline_) {
+    ResetDrawState();
     return fml::Status(fml::StatusCode::kCancelled,
                        "No valid pipeline is bound to the RenderPass.");
   }
@@ -527,6 +550,8 @@ fml::Status RenderPassVK::Draw() {
         PipelineVK::Cast(*pipeline_)
             .CreateVariantForImmutableSamplers(immutable_sampler_);
     if (!pipeline_variant) {
+      draw_failed_ = true;
+      ResetDrawState();
       return fml::Status(
           fml::StatusCode::kAborted,
           "Could not create pipeline variant with immutable sampler.");
@@ -541,6 +566,8 @@ fml::Status RenderPassVK::Draw() {
       pipeline_vk.GetDescriptorSetLayout(), pipeline_vk.GetPipelineKey(),
       context_vk);
   if (!descriptor_result.ok()) {
+    draw_failed_ = true;
+    ResetDrawState();
     return fml::Status(fml::StatusCode::kAborted,
                        "Could not allocate descriptor sets.");
   }
@@ -586,6 +613,12 @@ fml::Status RenderPassVK::Draw() {
     );
   }
 
+  ResetDrawState();
+  return fml::Status();
+}
+
+// Every draw, made or not, starts the next from empty bindings.
+void RenderPassVK::ResetDrawState() {
 #ifdef IMPELLER_DEBUG
   if (has_label_) {
     command_buffer_->PopDebugGroup();
@@ -602,7 +635,6 @@ fml::Status RenderPassVK::Draw() {
   pipeline_ = PipelineRef(nullptr);
   pipeline_uses_input_attachments_ = false;
   immutable_sampler_ = nullptr;
-  return fml::Status();
 }
 
 // The RenderPassVK binding methods only need the binding, set, and buffer type
@@ -706,9 +738,13 @@ bool RenderPassVK::BindResource(ShaderStage stage,
   return true;
 }
 
+bool RenderPassVK::DrawFailed() const {
+  return draw_failed_;
+}
+
 bool RenderPassVK::OnEncodeCommands(const Context& context) const {
   command_buffer_->GetCommandBuffer().endRenderPass();
-  return true;
+  return !draw_failed_;
 }
 
 }  // namespace impeller

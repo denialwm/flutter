@@ -6,6 +6,8 @@
 
 #include "impeller/renderer/backend/vulkan/command_queue_vk.h"
 
+#include <atomic>
+
 #include "impeller/base/validation.h"
 #include "impeller/renderer/backend/vulkan/command_buffer_vk.h"
 #include "impeller/renderer/backend/vulkan/context_vk.h"
@@ -14,6 +16,8 @@
 #include "impeller/renderer/command_buffer.h"
 
 namespace impeller {
+
+std::atomic<uint64_t> gDenialVkSubmits{0};
 
 CommandQueueVK::CommandQueueVK(const std::weak_ptr<ContextVK>& context)
     : context_(context) {}
@@ -54,9 +58,11 @@ fml::Status CommandQueueVK::Submit(
     VALIDATION_LOG << "Device lost.";
     return fml::Status(fml::StatusCode::kCancelled, "Device lost.");
   }
-  auto [fence_result, fence] = context->GetDevice().createFenceUnique({});
-  if (fence_result != vk::Result::eSuccess) {
-    VALIDATION_LOG << "Failed to create fence: " << vk::to_string(fence_result);
+  // Denial slice benchmark (DENIAL_SLICE_BENCH_VK): submissions so far.
+  gDenialVkSubmits.fetch_add(1, std::memory_order_relaxed);
+  vk::UniqueFence fence = context->GetFenceWaiter()->AcquireFence();
+  if (!fence) {
+    VALIDATION_LOG << "Failed to create fence.";
     return fml::Status(fml::StatusCode::kCancelled, "Failed to create fence.");
   }
 

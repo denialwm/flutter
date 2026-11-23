@@ -28,6 +28,7 @@ source_set("flow") {
     "compositor_context.h",
     "diff_context.cc",
     "diff_context.h",
+    "texture_damage.h",
     "embedded_views.cc",
     "embedded_views.h",
     "frame_timings.cc",

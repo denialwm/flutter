@@ -32,6 +32,8 @@ class WaitSetEntry {
 
   const vk::Fence& GetFence() const { return fence_.get(); }
 
+  vk::UniqueFence TakeFence() { return std::move(fence_); }
+
   bool IsSignalled() const { return is_signalled_; }
 
  private:
@@ -201,6 +203,12 @@ bool FenceWaiterVK::Wait() {
         wait_set_.end());
   }
 
+  // Signalled fences go back to the pool; their entries keep only the
+  // completion callbacks.
+  for (auto& entry : erased_entries) {
+    RecycleFence(device, entry->TakeFence());
+  }
+
   {
     TRACE_EVENT0("impeller", "ClearSignaledFences");
     // Erase the erased entries which will invoke callbacks.
@@ -208,6 +216,38 @@ bool FenceWaiterVK::Wait() {
   }
 
   return true;
+}
+
+vk::UniqueFence FenceWaiterVK::AcquireFence() {
+  {
+    std::scoped_lock lock(fence_pool_mutex_);
+    if (!fence_pool_.empty()) {
+      vk::UniqueFence fence = std::move(fence_pool_.back());
+      fence_pool_.pop_back();
+      return fence;
+    }
+  }
+  auto device_holder = device_holder_.lock();
+  if (!device_holder) {
+    return {};
+  }
+  auto [result, fence] = device_holder->GetDevice().createFenceUnique({});
+  if (result != vk::Result::eSuccess) {
+    return {};
+  }
+  return std::move(fence);
+}
+
+void FenceWaiterVK::RecycleFence(const vk::Device& device,
+                                 vk::UniqueFence fence) {
+  static constexpr size_t kMaxPooledFences = 32;
+  if (!fence || device.resetFences(1, &fence.get()) != vk::Result::eSuccess) {
+    return;
+  }
+  std::scoped_lock lock(fence_pool_mutex_);
+  if (fence_pool_.size() < kMaxPooledFences) {
+    fence_pool_.push_back(std::move(fence));
+  }
 }
 
 void FenceWaiterVK::Terminate() {

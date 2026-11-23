@@ -95,6 +95,9 @@ class RenderTargetCache : public RenderTargetAllocator {
   std::vector<RenderTargetData> render_target_data_;
   uint32_t keep_alive_frame_count_;
   uint32_t cache_disabled_count_ = 0;
+  // Frames open: a canvas replayed inside another (a picture snapshot taken
+  // mid-frame) must not mark the outer frame's targets unused.
+  uint32_t frame_depth_ = 0;
   bool allow_larger_next_request_ = false;
 
   RenderTargetCache(const RenderTargetCache&) = delete;

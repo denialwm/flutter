@@ -6,6 +6,7 @@
 #define FLUTTER_IMPELLER_ENTITY_CONTENTS_CONTENT_CONTEXT_H_
 
 #include <initializer_list>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -133,6 +134,17 @@ class ContentContext {
       std::shared_ptr<Context> context,
       std::shared_ptr<TypographerContext> typographer_context,
       std::shared_ptr<RenderTargetAllocator> render_target_allocator = nullptr);
+
+  // Denial: render passes that could not be created, encoded or submitted.
+  // Their draws are lost, so a caller that publishes what it rendered
+  // compares the count before and after (a nested pass fails silently).
+  void RecordPassFailure() const {
+    pass_failures_.fetch_add(1, std::memory_order_relaxed);
+  }
+  uint64_t GetPassFailures() const {
+    return pass_failures_.load(std::memory_order_relaxed);
+  }
+
 
   ~ContentContext();
 
@@ -356,6 +368,8 @@ class ContentContext {
   // or pinning a snapshot does not establish that caching saved any work.
   void RecordBackdropSnapshotReuse(int64_t key);
   void CacheBackdropSnapshot(int64_t key, const Snapshot& snapshot);
+  // A replay failed: snapshots it cached may never have been rendered.
+  void DropBackdropSnapshots();
   // Flutter supplies the lifetime of a versioned layer family. The weak
   // owner observes all retained view trees without keeping a layer alive.
   void RegisterBackdropSnapshotOwner(int64_t key, std::weak_ptr<void> owner);
@@ -393,6 +407,7 @@ class ContentContext {
   }
 
  private:
+  mutable std::atomic<uint64_t> pass_failures_ = 0;
   std::shared_ptr<Context> context_;
   std::shared_ptr<LazyGlyphAtlas> lazy_glyph_atlas_;
 

@@ -124,7 +124,8 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
     DiffContext context(layer_tree.frame_size(), layer_tree.paint_region_map(),
                         prev_layer_tree_ ? prev_layer_tree_->paint_region_map()
                                          : empty_paint_region_map,
-                        has_raster_cache, impeller_enabled, dirty_texture_ids_);
+                        has_raster_cache, impeller_enabled, dirty_texture_ids_,
+                        texture_damage_);
     context.PushCullRect(DlRect::MakeSize(layer_tree.frame_size()));
     if (reuse_diff_metadata) {
       context.UseCachedReadbackRegions(&layer_tree.readback_regions());
@@ -144,7 +145,7 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
                                return region.texture_id < id;
                              });
         while (region != regions.end() && region->texture_id == texture_id) {
-          context.AddDamage(region->paint_region);
+          context.AddTexturePaintRegionDamage(*region);
           ++region;
         }
       }
@@ -284,7 +285,8 @@ RasterStatus CompositorContext::ScopedFrame::Raster(
           std::make_unique<impeller::BackdropSnapshotPins>(
               aiks_context_->GetContentContext(), snapshot_transform.value());
       pin_backdrop = [this](int64_t key, const DlRect& coverage) {
-        return backdrop_snapshot_pins_->Pin(key, coverage);
+        return backdrop_snapshot_pins_->Pin(key, coverage) ||
+               (view_embedder_ && view_embedder_->DenialPinBackdrop(key));
       };
     }
 #endif

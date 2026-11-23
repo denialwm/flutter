@@ -27,6 +27,11 @@ class EmbedderSurfaceVulkanImpeller final : public EmbedderSurface,
         get_next_image;  // required
     std::function<bool(VkImage image, VkFormat format)>
         present_image;  // required
+    /// Denial carrier hooks; both or neither.
+    std::function<bool()> denial_begin_frame;
+    std::function<bool(const std::optional<DlRegion>& frame_damage,
+                       const std::optional<DlRegion>& buffer_damage)>
+        denial_present;
   };
 
   EmbedderSurfaceVulkanImpeller(
@@ -54,6 +59,16 @@ class EmbedderSurfaceVulkanImpeller final : public EmbedderSurface,
 
   // |GPUSurfaceVulkanDelegate|
   bool PresentImage(VkImage image, VkFormat format) override;
+
+  // |GPUSurfaceVulkanDelegate|
+  bool DenialCarriesFrames() const override;
+
+  // |GPUSurfaceVulkanDelegate|
+  bool DenialBeginFrame() override;
+
+  // |GPUSurfaceVulkanDelegate|
+  bool DenialPresent(const std::optional<DlRegion>& frame_damage,
+                     const std::optional<DlRegion>& buffer_damage) override;
 
   // |GPUSurfaceVulkanDelegate|
   std::shared_ptr<impeller::Context> CreateImpellerContext() const override;

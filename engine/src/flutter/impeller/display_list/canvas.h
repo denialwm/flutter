@@ -299,7 +299,10 @@ class Canvas {
                     std::optional<BackdropSurfaceContents::AnalyticRRect>
                         analytic_round_rect = std::nullopt);
 
-  void EndReplay();
+  /// False when ending the replay failed (the final pass, its readback
+  /// blit, mipmaps or the flush); failed nested passes are counted on the
+  /// ContentContext (`GetPassFailures`).
+  bool EndReplay();
 
   uint64_t GetOpDepth() const { return current_depth_; }
 
@@ -436,6 +439,9 @@ class Canvas {
   ///        restore.
   bool IsSkipping() const;
 
+  /// The current stack entry was saved while skipping.
+  bool EntrySkips() const;
+
   /// @brief Skip all rendering/clipping entities until next restore.
   void SkipUntilMatchingRestore(size_t total_content_depth);
 
@@ -543,6 +549,17 @@ class Canvas {
       const Paint& paint);
 
   RenderPass& GetCurrentRenderPass() const;
+
+  /// The current pass, null when it failed to begin (already recorded as a
+  /// pass failure).
+  RenderPass* CurrentRenderPassOrNull() const;
+
+  /// A pass of this replay failed (or one nested in it): from then on the
+  /// replay draws nothing and only unwinds its stacks.
+  bool ReplayFailed() const;
+
+  uint64_t replay_failures_ = 0u;
+  bool cache_frame_open_ = false;
 
   Canvas(const Canvas&) = delete;
 

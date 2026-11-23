@@ -53,6 +53,10 @@ bool InlinePassContext::EndPass(bool is_onscreen) {
   if (!pass_->EncodeCommands()) {
     VALIDATION_LOG << "Failed to encode and submit command buffer while ending "
                       "render pass.";
+    // Ended either way: the destructor must not encode it again.
+    pass_ = nullptr;
+    command_buffer_ = nullptr;
+    renderer_.RecordPassFailure();
     return false;
   }
 
@@ -62,17 +66,23 @@ bool InlinePassContext::EndPass(bool is_onscreen) {
     fml::Status mip_status = AddMipmapGeneration(
         command_buffer_, renderer_.GetContext(), target_texture);
     if (!mip_status.ok()) {
+      pass_ = nullptr;
+      command_buffer_ = nullptr;
+      renderer_.RecordPassFailure();
       return false;
     }
   }
 
   pass_ = nullptr;
-  if (is_onscreen) {
-    return renderer_.GetContext()->SubmitOnscreen(std::move(command_buffer_));
-  } else {
-    return renderer_.GetContext()->EnqueueCommandBuffer(
-        std::move(command_buffer_));
+  const bool submitted =
+      is_onscreen
+          ? renderer_.GetContext()->SubmitOnscreen(std::move(command_buffer_))
+          : renderer_.GetContext()->EnqueueCommandBuffer(
+                std::move(command_buffer_));
+  if (!submitted) {
+    renderer_.RecordPassFailure();
   }
+  return submitted;
 }
 
 EntityPassTarget& InlinePassContext::GetPassTarget() const {
@@ -91,6 +101,7 @@ const std::shared_ptr<RenderPass>& InlinePassContext::GetRenderPass() {
   command_buffer_ = renderer_.GetContext()->CreateCommandBuffer();
   if (!command_buffer_) {
     VALIDATION_LOG << "Could not create command buffer.";
+    renderer_.RecordPassFailure();
     return pass_;
   }
 
@@ -101,8 +112,13 @@ const std::shared_ptr<RenderPass>& InlinePassContext::GetRenderPass() {
     bool is_msaa =
         pass_target_.GetRenderTarget().GetColorAttachment(0).resolve_texture !=
         nullptr;
-    if (pass_count_ > 0 && is_msaa) {
-      pass_target_.Flip(renderer_);
+    if (pass_count_ > 0 && is_msaa && !pass_target_.Flip(renderer_)) {
+      // No second resolve image: the resumed pass would sample the one it
+      // resolves into.
+      VALIDATION_LOG << "Could not flip the pass target.";
+      command_buffer_ = nullptr;
+      renderer_.RecordPassFailure();
+      return pass_;
     }
   }
 
@@ -122,12 +138,14 @@ const std::shared_ptr<RenderPass>& InlinePassContext::GetRenderPass() {
   if (!depth.has_value()) {
     VALIDATION_LOG << "Depth attachment unexpectedly missing from the "
                       "EntityPass render target.";
+    renderer_.RecordPassFailure();
     return pass_;
   }
   auto stencil = pass_target_.GetRenderTarget().GetStencilAttachment();
   if (!depth.has_value() || !stencil.has_value()) {
     VALIDATION_LOG << "Stencil/Depth attachment unexpectedly missing from the "
                       "EntityPass render target.";
+    renderer_.RecordPassFailure();
     return pass_;
   }
   const bool load_preserved_depth_stencil =
@@ -149,6 +167,7 @@ const std::shared_ptr<RenderPass>& InlinePassContext::GetRenderPass() {
   pass_ = command_buffer_->CreateRenderPass(pass_target_.GetRenderTarget());
   if (!pass_) {
     VALIDATION_LOG << "Could not create render pass.";
+    renderer_.RecordPassFailure();
     return pass_;
   }
   pass_->SetLabel("EntityPass Render Pass");

@@ -341,7 +341,8 @@ class CanvasDlDispatcher : public DlDispatcherBase {
   }
   using DlDispatcherBase::saveLayer;
 
-  void FinishRecording() { canvas_.EndReplay(); }
+  /// False when the canvas could not end its replay (Canvas::EndReplay).
+  bool FinishRecording() { return canvas_.EndReplay(); }
 
   // Visible for focused command-path tests.
   const Canvas& GetCanvasForTesting() const { return canvas_; }

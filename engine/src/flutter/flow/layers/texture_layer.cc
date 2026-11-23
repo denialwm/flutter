@@ -21,15 +21,22 @@ TextureLayer::TextureLayer(const DlPoint& offset,
 
 void TextureLayer::Diff(DiffContext* context, const Layer* old_layer) {
   DiffContext::AutoSubtreeRestore subtree(context);
+  // The texture's unit rect as Paint draws it.
+  const DlMatrix unit_to_local = DlMatrix::MakeTranslateScale(
+      {size_.width, size_.height, 1}, {offset_.x, offset_.y, 0});
   if (!context->IsSubtreeDirty()) {
     FML_DCHECK(old_layer);
     auto prev = old_layer->as_texture_layer();
-    if (!context->IsTextureDirty(texture_id_)) {
+    // A texture that changed where the embedder said damages only that.
+    if (!context->IsTextureDirty(texture_id_) ||
+        context->AddTextureDamage(texture_id_, unit_to_local,
+                                  context->GetOldLayerPaintRegion(prev))) {
       context->MarkSubtreeHasTextureLayer();
       context->AddExistingPaintRegion(context->GetOldLayerPaintRegion(prev));
       const PaintRegion paint_region = context->CurrentSubtreeRegion();
       context->SetLayerPaintRegion(this, paint_region);
-      context->CacheTexturePaintRegion(texture_id_, paint_region);
+      context->CacheTexturePaintRegion(texture_id_, paint_region,
+                                       unit_to_local);
       return;
     }
     // TODO(knopp) It would be nice to be able to determine that a texture is
@@ -46,7 +53,7 @@ void TextureLayer::Diff(DiffContext* context, const Layer* old_layer) {
   context->AddTextureLayerBounds(DlRect::MakeOriginSize(offset_, size_));
   const PaintRegion paint_region = context->CurrentSubtreeRegion();
   context->SetLayerPaintRegion(this, paint_region);
-  context->CacheTexturePaintRegion(texture_id_, paint_region);
+  context->CacheTexturePaintRegion(texture_id_, paint_region, unit_to_local);
 }
 
 void TextureLayer::Preroll(PrerollContext* context) {

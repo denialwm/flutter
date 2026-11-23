@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "impeller/display_list/canvas.h"
+#include "impeller/display_list/static_picture_cache.h"
 
 #include <algorithm>
 #include <array>
@@ -524,10 +525,9 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
     renderer.GetRenderTargetCache()->AllowLargerTargetForNextRequest();
   }
 
-  /// All of the load/store actions are managed by `InlinePassContext` when
-  /// `RenderPasses` are created, so we just set them to `kDontCare` here.
-  /// What's important is the `StorageMode` of the textures, which cannot be
-  /// changed for the lifetime of the textures.
+  /// `InlinePassContext` keeps the color load action of a target's first
+  /// pass, so a new layer clears to `clear_color` here: GLES clears a
+  /// `kDontCare` attachment, Vulkan leaves it undefined. Later passes load.
 
   RenderTarget target;
   const RenderTarget::AttachmentConfig stencil_config =
@@ -543,7 +543,7 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
         RenderTarget::AttachmentConfigMSAA{
             .storage_mode = StorageMode::kDeviceTransient,
             .resolve_storage_mode = StorageMode::kDevicePrivate,
-            .load_action = LoadAction::kDontCare,
+            .load_action = LoadAction::kClear,
             .store_action = StoreAction::kMultisampleResolve,
             .clear_color = clear_color},
         /*stencil_attachment_config=*/stencil_config);
@@ -555,7 +555,7 @@ static std::unique_ptr<EntityPassTarget> CreateRenderTarget(
         label,  // label
         RenderTarget::AttachmentConfig{
             .storage_mode = StorageMode::kDevicePrivate,
-            .load_action = LoadAction::kDontCare,
+            .load_action = LoadAction::kClear,
             .store_action = StoreAction::kDontCare,
             .clear_color = clear_color,
         },              // color_attachment_config
@@ -704,9 +704,26 @@ class Canvas::PathBlurShape : public BlurShape {
   std::optional<FillPathFromSourceGeometry> source_geometry_;
 };
 
+namespace {
+// Canvases replaying on this thread, outermost first (a picture snapshot
+// replays inside a frame's replay).
+thread_local uint32_t replay_depth = 0u;
+}  // namespace
+
 Canvas::~Canvas() {
   // An abandoned replay never composites the materials it reserved.
   renderer_.GetGlassMaterialSheet().Release(this);
+  if (cache_frame_open_) {
+    // An abandoned replay counts as failed: what it cached may never be
+    // rendered.
+    renderer_.GetRenderTargetCache()->End();
+    if (--replay_depth == 0) {
+      renderer_.DropBackdropSnapshots();
+      if (auto* pictures = renderer_.GetStaticPictureCache()) {
+        pictures->Clear();
+      }
+    }
+  }
 }
 
 Canvas::Canvas(ContentContext& renderer,
@@ -863,7 +880,15 @@ size_t Canvas::GetSaveCount() const {
 }
 
 bool Canvas::IsSkipping() const {
+  return transform_stack_.back().skipping || ReplayFailed();
+}
+
+bool Canvas::EntrySkips() const {
   return transform_stack_.back().skipping;
+}
+
+bool Canvas::ReplayFailed() const {
+  return renderer_.GetPassFailures() != replay_failures_;
 }
 
 void Canvas::RestoreToCount(size_t count) {
@@ -1759,10 +1784,10 @@ void Canvas::ClipGeometry(
   std::optional<IRect32> clip_scissor;
   if (clip_state_result.clip_did_change) {
     // We only need to update the pass scissor if the clip state has changed.
-    clip_scissor = SetClipScissor(
-        clip_coverage_stack_.CurrentClipCoverage(),
-        *render_passes_.back().GetInlinePassContext()->GetRenderPass(),
-        GetGlobalPassPosition());
+    if (RenderPass* pass = CurrentRenderPassOrNull()) {
+      clip_scissor = SetClipScissor(clip_coverage_stack_.CurrentClipCoverage(),
+                                    *pass, GetGlobalPassPosition());
+    }
   }
 
   ++transform_stack_.back().clip_height;
@@ -1792,6 +1817,13 @@ void Canvas::ClipGeometry(
     }
   }
 
+  // A pass that failed to begin was recorded as a failure: the replay
+  // only keeps its stacks consistent from here.
+  RenderPass* const clip_pass = CurrentRenderPassOrNull();
+  if (!clip_pass) {
+    return;
+  }
+
   // Note: this is a bit of a hack. Its not possible to construct a geometry
   // result without begninning the render pass. We should refactor the geometry
   // objects so that they only need a reference to the render pass size and/or
@@ -1800,11 +1832,8 @@ void Canvas::ClipGeometry(
   entity.SetTransform(clip_transform);
   entity.SetClipDepth(clip_depth);
 
-  GeometryResult geometry_result = geometry.GetPositionBuffer(
-      renderer_,                                                      //
-      entity,                                                         //
-      *render_passes_.back().GetInlinePassContext()->GetRenderPass()  //
-  );
+  GeometryResult geometry_result =
+      geometry.GetPositionBuffer(renderer_, entity, *clip_pass);
   clip_contents.SetGeometry(geometry_result);
   clip_coverage_stack_.GetLastReplayResult().clip_contents.SetGeometry(
       geometry_result);
@@ -1829,9 +1858,8 @@ void Canvas::ClipGeometry(
     return;
   }
 
-  clip_contents.Render(
-      renderer_, *render_passes_.back().GetInlinePassContext()->GetRenderPass(),
-      clip_depth, /*is_backdrop_replay=*/false, clip_scissor);
+  clip_contents.Render(renderer_, *clip_pass, clip_depth,
+                       /*is_backdrop_replay=*/false, clip_scissor);
 }
 
 void Canvas::DrawPoints(const Point points[],
@@ -2073,6 +2101,9 @@ void Canvas::DrawAtlas(const std::shared_ptr<AtlasContents>& atlas_contents,
 
 void Canvas::SetupRenderPass() {
   renderer_.GetRenderTargetCache()->Start();
+  cache_frame_open_ = true;
+  ++replay_depth;
+  replay_failures_ = renderer_.GetPassFailures();
   ColorAttachment color0 = render_target_.GetColorAttachment(0);
 
   // Set up the clear color of the root pass.
@@ -2118,13 +2149,26 @@ void Canvas::SetupRenderPass() {
   // isn't supported by onscreen textures. To support this, we immediately begin
   // a second save layer with the same dimensions as the onscreen. When
   // rendering is completed, we must blit this saveLayer to the onscreen.
+  std::unique_ptr<EntityPassTarget> readback_target;
   if (requires_readback_) {
-    auto entity_pass_target = CreateRenderTarget(
+    readback_target = CreateRenderTarget(
         renderer_,                  //
         color0.texture->GetSize(),  //
         /*clear_color=*/Color::BlackTransparent(),
         /*use_msaa=*/true, preserve_depth_stencil_between_passes,
         /*label=*/"Denial root readback layer");
+    if (!readback_target || !readback_target->IsValid()) {
+      // No storage to read back from: the replay draws nothing (its
+      // backdrops would sample the target they render into) and the frame
+      // is reported failed.
+      renderer_.RecordPassFailure();
+      readback_target.reset();
+      requires_readback_ = false;
+      transform_stack_.back().skipping = true;
+    }
+  }
+  if (readback_target) {
+    auto entity_pass_target = std::move(readback_target);
     render_passes_.push_back(
         LazyRenderingConfig(renderer_, std::move(entity_pass_target),
                             preserve_depth_stencil_between_passes));
@@ -2460,7 +2504,9 @@ void Canvas::SaveLayer(const Paint& paint,
         make_backdrop_snapshot_entity(snapshot, is_direct_cache_composite);
     backdrop_entity.SetClipDepth(++current_depth_);
     FlushDeferredRRectClip();
-    backdrop_entity.Render(renderer_, GetCurrentRenderPass());
+    if (RenderPass* pass = CurrentRenderPassOrNull()) {
+      backdrop_entity.Render(renderer_, *pass);
+    }
   };
   if (backdrop_filter) {
     local_position = subpass_coverage.GetOrigin() - GetGlobalPassPosition();
@@ -2494,7 +2540,8 @@ void Canvas::SaveLayer(const Paint& paint,
         if (will_cache_backdrop_texture) {
           backdrop_data->shared_filter_snapshot = cached;
           render_backdrop_snapshot(cached.value());
-          Save(0);
+          // The layer's children keep their depth budget.
+          Save(total_content_depth);
           return;
         }
         isolated_backdrop_snapshot = std::move(cached);
@@ -2530,9 +2577,17 @@ void Canvas::SaveLayer(const Paint& paint,
         // 1. The device supports framebuffer fetch
         // 2. There are no more backdrop filters
         // 3. The current render pass is for the onscreen pass.
+        // 4. The onscreen holds what was drawn: the root pass is the
+        //    onscreen itself, or an MSAA onscreen whose resume redraws the
+        //    backdrop. A single-sample onscreen behind a readback layer
+        //    holds nothing (it may not even be initialized) and would lose
+        //    the layer's pixels; that pass ends in the readback layer and
+        //    is blitted.
         const bool should_use_onscreen =
             renderer_.GetDeviceCapabilities().SupportsFramebufferFetch() &&
-            backdrop_count_ == 0 && render_passes_.size() == 1u;
+            backdrop_count_ == 0 && render_passes_.size() == 1u &&
+            (!requires_readback_ ||
+             render_target_.GetColorAttachment(0).resolve_texture != nullptr);
         input_texture = FlipBackdrop(
             GetGlobalPassPosition(),                                //
             /*should_remove_texture=*/will_cache_backdrop_texture,  //
@@ -2546,8 +2601,10 @@ void Canvas::SaveLayer(const Paint& paint,
         }
       }
       if (!input_texture) {
-        // Validation failures are logged in FlipBackdrop.
-        return;
+        // Validation failures are logged in FlipBackdrop. The layer's
+        // Restore still comes: it must find a matching save.
+        renderer_.RecordPassFailure();
+        return SkipUntilMatchingRestore(total_content_depth);
       }
 
       if (can_render_backdrop_directly) {
@@ -2676,6 +2733,9 @@ void Canvas::SaveLayer(const Paint& paint,
         }
         if (will_cache_backdrop_texture) {
           render_backdrop_snapshot(maybe_snapshot.value());
+          // The layer's Restore pops this, as for a reused snapshot; its
+          // children keep their depth budget.
+          Save(total_content_depth);
           return;
         }
         isolated_backdrop_snapshot = std::move(maybe_snapshot);
@@ -2777,6 +2837,10 @@ void Canvas::SaveLayer(const Paint& paint,
       transform_stack_.back().window = std::move(window);
       return;
     }
+    RenderPass* const backdrop_pass = CurrentRenderPassOrNull();
+    if (!backdrop_pass) {
+      return;
+    }
     if (resolved_backdrop_entity.has_value() &&
         resolved_backdrop_contents != nullptr &&
         renderer_.GetContext()->GetBackendType() ==
@@ -2789,13 +2853,13 @@ void Canvas::SaveLayer(const Paint& paint,
               .alpha_threshold = backdrop_alpha_threshold,
               .coverage = subpass_coverage,
               .scissor = SetClipScissor(
-                  clip_coverage_stack_.CurrentClipCoverage(),
-                  GetCurrentRenderPass(), GetGlobalPassPosition()),
+                  clip_coverage_stack_.CurrentClipCoverage(), *backdrop_pass,
+                  GetGlobalPassPosition()),
           });
       RecordBackdropFusionEvent(BackdropFusionAuditEvent::kCandidate);
     } else if (resolved_backdrop_entity.has_value()) {
       FlushDeferredRRectClip();
-      resolved_backdrop_entity->Render(renderer_, GetCurrentRenderPass());
+      resolved_backdrop_entity->Render(renderer_, *backdrop_pass);
     }
     return;
   }
@@ -2808,9 +2872,7 @@ void Canvas::SaveLayer(const Paint& paint,
   std::optional<SaveLayerState::AlphaThresholdBackdrop>
       alpha_threshold_backdrop;
   if ((window || backdrop_alpha_threshold.has_value()) &&
-      !restore_has_effects && paint.blend_mode == BlendMode::kSrc &&
-      renderer_.GetContext()->GetBackendType() ==
-          Context::BackendType::kOpenGLES) {
+      !restore_has_effects && paint.blend_mode == BlendMode::kSrc) {
     std::optional<Entity> resolved_entity;
     std::shared_ptr<TextureContents> resolved_contents;
     if (isolated_backdrop_snapshot.has_value()) {
@@ -2903,6 +2965,11 @@ void Canvas::SaveLayer(const Paint& paint,
           ? "Denial pooled glass layer"
           : "EntityPass",
       /*pooled=*/pooled_layer);
+  if (!layer_target || !layer_target->IsValid()) {
+    // No storage for the layer: its contents are left out of the frame.
+    renderer_.RecordPassFailure();
+    return SkipUntilMatchingRestore(total_content_depth);
+  }
   std::optional<ISize> texture_region;
   if (layer_target->IsValid() &&
       layer_target->GetRenderTarget().GetRenderTargetSize() != layer_size) {
@@ -2916,9 +2983,10 @@ void Canvas::SaveLayer(const Paint& paint,
       backdrop_filter != nullptr, std::move(alpha_threshold_backdrop),
       texture_region, window});
 
-  render_passes_.back().GetInlinePassContext()->GetRenderPass()->SetLabel(
-      backdrop_filter ? "Denial Backdrop Layer Color"
-                      : "EntityPass Layer Color");
+  if (RenderPass* pass = CurrentRenderPassOrNull()) {
+    pass->SetLabel(backdrop_filter ? "Denial Backdrop Layer Color"
+                                   : "EntityPass Layer Color");
+  }
 
   CanvasStackEntry entry;
   entry.transform = transform_stack_.back().transform;
@@ -2968,7 +3036,9 @@ void Canvas::SaveLayer(const Paint& paint,
         Matrix::MakeTranslation(Vector3(-local_position)));
   }
   backdrop_entity.SetClipDepth(std::numeric_limits<uint32_t>::max());
-  backdrop_entity.Render(renderer_, GetCurrentRenderPass());
+  if (RenderPass* pass = CurrentRenderPassOrNull()) {
+    backdrop_entity.Render(renderer_, *pass);
+  }
 }
 
 bool Canvas::Restore() {
@@ -3012,10 +3082,14 @@ bool Canvas::Restore() {
     frame.SetContents(std::make_shared<WindowSurfaceContents>(
         direct->style, WindowSurfaceContents::Input{}, direct->backdrop,
         direct->threshold, direct->opacity));
-    frame.Render(renderer_, GetCurrentRenderPass());
+    if (RenderPass* pass = CurrentRenderPassOrNull()) {
+      frame.Render(renderer_, *pass);
+    }
   }
 
-  if (IsSkipping()) {
+  // An entry saved while skipping pushed nothing else. One saved before a
+  // failure of this replay still unwinds what it pushed (below).
+  if (EntrySkips()) {
     transform_stack_.pop_back();
     return true;
   }
@@ -3027,11 +3101,21 @@ bool Canvas::Restore() {
     auto lazy_render_pass = std::move(render_passes_.back());
     render_passes_.pop_back();
     // Force the render pass to be constructed if it never was.
-    lazy_render_pass.GetInlinePassContext()->GetRenderPass();
+    const bool layer_began =
+        lazy_render_pass.GetInlinePassContext()->GetRenderPass() != nullptr;
 
     SaveLayerState save_layer_state = std::move(save_layer_state_.back());
     save_layer_state_.pop_back();
     auto global_pass_position = GetGlobalPassPosition();
+    if (!layer_began || ReplayFailed() ||
+        !lazy_render_pass.GetInlinePassContext()->GetTexture()) {
+      // The layer never got storage, or its pass never began (its texture
+      // is uninitialized): nothing of it reaches the parent.
+      renderer_.RecordPassFailure();
+      clip_coverage_stack_.PopSubpass();
+      transform_stack_.pop_back();
+      return true;  // Unwound: RestoreToCount goes on.
+    }
 
     std::shared_ptr<Contents> contents = CreateContentsForSubpassTarget(
         renderer_, save_layer_state.paint,                         //
@@ -3042,7 +3126,14 @@ bool Canvas::Restore() {
                                              : "Subpass",  //
         save_layer_state.texture_region);
 
-    lazy_render_pass.GetInlinePassContext()->EndPass();
+    if (!lazy_render_pass.GetInlinePassContext()->EndPass() ||
+        ReplayFailed()) {
+      // The layer's commands were not encoded (or the replay failed): its
+      // texture is not read. EndPass recorded the failure.
+      clip_coverage_stack_.PopSubpass();
+      transform_stack_.pop_back();
+      return true;  // Unwound: RestoreToCount goes on.
+    }
 
     // Round the subpass texture position for pixel alignment with the parent
     // pass render target. By default, we draw subpass textures with nearest
@@ -3087,7 +3178,9 @@ bool Canvas::Restore() {
               Matrix::MakeTranslation(Vector3(-subpass_texture_position)) *
                   window_to_pass},
           std::move(backdrop), state.threshold, state.opacity));
-      element.Render(renderer_, GetCurrentRenderPass());
+      if (RenderPass* pass = CurrentRenderPassOrNull()) {
+        element.Render(renderer_, *pass);
+      }
       clip_coverage_stack_.PopSubpass();
       transform_stack_.pop_back();
       return true;
@@ -3112,9 +3205,9 @@ bool Canvas::Restore() {
         element_entity.SetContents(std::move(composite));
         element_entity.SetBlendMode(BlendMode::kSrcOver);
         element_entity.SetTransform(surface_transform);
-        element_entity.Render(
-            renderer_,
-            *render_passes_.back().GetInlinePassContext()->GetRenderPass());
+        if (RenderPass* pass = CurrentRenderPassOrNull()) {
+          element_entity.Render(renderer_, *pass);
+        }
         clip_coverage_stack_.PopSubpass();
         transform_stack_.pop_back();
         return true;
@@ -3143,7 +3236,10 @@ bool Canvas::Restore() {
         // all the previous commands in the active pass).
         auto input_texture = FlipBackdrop(GetGlobalPassPosition());
         if (!input_texture) {
-          return false;
+          renderer_.RecordPassFailure();
+          clip_coverage_stack_.PopSubpass();
+          transform_stack_.pop_back();
+          return true;  // Unwound: RestoreToCount goes on.
         }
 
         FilterInput::Vector inputs = {
@@ -3158,10 +3254,9 @@ bool Canvas::Restore() {
       }
     }
 
-    element_entity.Render(
-        renderer_,                                                      //
-        *render_passes_.back().GetInlinePassContext()->GetRenderPass()  //
-    );
+    if (RenderPass* pass = CurrentRenderPassOrNull()) {
+      element_entity.Render(renderer_, *pass);
+    }
     clip_coverage_stack_.PopSubpass();
     transform_stack_.pop_back();
 
@@ -3183,11 +3278,10 @@ bool Canvas::Restore() {
     FML_DCHECK(!clip_state_result.should_render);
     if (clip_state_result.clip_did_change) {
       // We only need to update the pass scissor if the clip state has changed.
-      SetClipScissor(
-          clip_coverage_stack_.CurrentClipCoverage(),                      //
-          *render_passes_.back().GetInlinePassContext()->GetRenderPass(),  //
-          GetGlobalPassPosition()                                          //
-      );
+      if (RenderPass* pass = CurrentRenderPassOrNull()) {
+        SetClipScissor(clip_coverage_stack_.CurrentClipCoverage(), *pass,
+                       GetGlobalPassPosition());
+      }
     }
   }
 
@@ -3691,6 +3785,10 @@ RenderPass& Canvas::GetCurrentRenderPass() const {
   return *render_passes_.back().GetInlinePassContext()->GetRenderPass();
 }
 
+RenderPass* Canvas::CurrentRenderPassOrNull() const {
+  return render_passes_.back().GetInlinePassContext()->GetRenderPass().get();
+}
+
 void Canvas::SetBackdropData(
     std::unordered_map<int64_t, BackdropData> backdrop_data,
     size_t backdrop_count,
@@ -3757,8 +3855,11 @@ std::shared_ptr<Texture> Canvas::FlipBackdrop(Point global_pass_position,
   // In cases where there are no contents, we
   // could instead check the clear color and initialize a 1x2 CPU texture
   // instead of ending the pass.
-  rendering_config.GetInlinePassContext()->GetRenderPass();
-  if (!rendering_config.GetInlinePassContext()->EndPass()) {
+  const bool began =
+      rendering_config.GetInlinePassContext()->GetRenderPass() != nullptr;
+  if (!began || !rendering_config.GetInlinePassContext()->EndPass()) {
+    // A pass that never began leaves its texture uninitialized: it is not
+    // read (the failure is recorded in GetRenderPass).
     VALIDATION_LOG
         << "Failed to end the current render pass in order to read from "
            "the backdrop texture and apply an advanced blend or backdrop "
@@ -3816,8 +3917,11 @@ std::shared_ptr<Texture> Canvas::FlipBackdrop(Point global_pass_position,
       render_passes_.back().GetEntityPassTarget()->RemoveSecondary();
     }
   }
-  RenderPass& current_render_pass =
-      *render_passes_.back().GetInlinePassContext()->GetRenderPass();
+  RenderPass* const resumed_pass = CurrentRenderPassOrNull();
+  if (!resumed_pass) {
+    return nullptr;
+  }
+  RenderPass& current_render_pass = *resumed_pass;
 
   const ColorAttachment current_color = render_passes_.back()
                                             .GetEntityPassTarget()
@@ -3884,6 +3988,10 @@ bool Canvas::SupportsBlitToOnscreen() const {
 
 bool Canvas::BlitToOnscreen(bool is_onscreen) {
   auto command_buffer = renderer_.GetContext()->CreateCommandBuffer();
+  if (!command_buffer) {
+    VALIDATION_LOG << "Failed to create the root blit command buffer.";
+    return false;
+  }
   command_buffer->SetLabel("EntityPass Root Command Buffer");
   auto offscreen_target = render_passes_.back()
                               .GetInlinePassContext()
@@ -3891,6 +3999,10 @@ bool Canvas::BlitToOnscreen(bool is_onscreen) {
                               .GetRenderTarget();
   if (SupportsBlitToOnscreen()) {
     auto blit_pass = command_buffer->CreateBlitPass();
+    if (!blit_pass) {
+      VALIDATION_LOG << "Failed to create the root blit pass.";
+      return false;
+    }
     blit_pass->AddCopy(offscreen_target.GetRenderTargetTexture(),
                        render_target_.GetRenderTargetTexture());
     if (!blit_pass->EncodeCommands()) {
@@ -3899,6 +4011,10 @@ bool Canvas::BlitToOnscreen(bool is_onscreen) {
     }
   } else {
     auto render_pass = command_buffer->CreateRenderPass(render_target_);
+    if (!render_pass) {
+      VALIDATION_LOG << "Failed to create the root blit render pass.";
+      return false;
+    }
     render_pass->SetLabel("EntityPass Root Render Pass");
 
     {
@@ -3945,16 +4061,23 @@ bool Canvas::EnsureFinalMipmapGeneration() const {
   if (!blit_pass) {
     return false;
   }
-  blit_pass->GenerateMipmap(render_target_.GetRenderTargetTexture());
-  blit_pass->EncodeCommands();
+  if (!blit_pass->GenerateMipmap(render_target_.GetRenderTargetTexture()) ||
+      !blit_pass->EncodeCommands()) {
+    return false;
+  }
   return renderer_.GetContext()->EnqueueCommandBuffer(std::move(cmd_buffer));
 }
 
-void Canvas::EndReplay() {
+bool Canvas::EndReplay() {
   FML_DCHECK(render_passes_.size() == 1u);
-  render_passes_.back().GetInlinePassContext()->GetRenderPass();
-  render_passes_.back().GetInlinePassContext()->EndPass(
-      /*is_onscreen=*/!requires_readback_ && is_onscreen_);
+  // A final pass that could not begin leaves its texture uninitialized:
+  // it is not blitted (the failure is recorded in GetRenderPass).
+  const bool began =
+      render_passes_.back().GetInlinePassContext()->GetRenderPass() != nullptr;
+  bool ended = began;
+  ended = render_passes_.back().GetInlinePassContext()->EndPass(
+              /*is_onscreen=*/!requires_readback_ && is_onscreen_) &&
+          ended;
   renderer_.GetGlassMaterialSheet().Release(this);
   FlushBackdropLayerPlanAudit();
   FlushBackdropGraphPlanAudit();
@@ -3967,22 +4090,43 @@ void Canvas::EndReplay() {
   // If requires_readback_ was true, then we rendered to an offscreen texture
   // instead of to the onscreen provided in the render target. Now we need to
   // draw or blit the offscreen back to the onscreen.
-  if (requires_readback_) {
-    BlitToOnscreen(/*is_onscreen_=*/is_onscreen_);
+  // Nothing of a failed replay is blitted or read for mipmaps: its
+  // textures may hold commands that were never encoded.
+  ended = ended && !ReplayFailed();
+  if (requires_readback_ && ended &&
+      !BlitToOnscreen(/*is_onscreen_=*/is_onscreen_)) {
+    VALIDATION_LOG << "Failed to blit the offscreen to the onscreen.";
+    ended = false;
   }
-  if (!EnsureFinalMipmapGeneration()) {
+  if (ended && !EnsureFinalMipmapGeneration()) {
     VALIDATION_LOG << "Failed to generate onscreen mipmaps.";
+    ended = false;
   }
   if (!renderer_.GetContext()->FlushCommandBuffers()) {
-    // Not much we can do.
     VALIDATION_LOG << "Failed to submit command buffers";
+    ended = false;
+  }
+  if (!ended) {
+    renderer_.RecordPassFailure();
+    if (--replay_depth == 0) {
+      // Snapshots this replay cached may never be rendered: the retry
+      // makes them again.
+      renderer_.DropBackdropSnapshots();
+      if (auto* pictures = renderer_.GetStaticPictureCache()) {
+        pictures->Clear();
+      }
+    }
+  } else {
+    --replay_depth;
   }
   render_passes_.clear();
   renderer_.GetRenderTargetCache()->End();
+  cache_frame_open_ = false;
   clip_geometry_.clear();
 
   Reset();
   Initialize(initial_cull_rect_);
+  return ended;
 }
 
 bool Canvas::IsCompatibleWithSDFRendering(const Paint& paint) {

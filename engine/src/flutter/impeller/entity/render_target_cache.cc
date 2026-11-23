@@ -75,6 +75,9 @@ RenderTargetCache::RenderTargetCache(std::shared_ptr<Allocator> allocator,
       keep_alive_frame_count_(keep_alive_frame_count) {}
 
 void RenderTargetCache::Start() {
+  if (frame_depth_++ > 0) {
+    return;
+  }
   cache_disabled_count_ = 0;
   allow_larger_next_request_ = false;
   for (auto& td : render_target_data_) {
@@ -83,6 +86,9 @@ void RenderTargetCache::Start() {
 }
 
 void RenderTargetCache::End() {
+  if (frame_depth_ > 0 && --frame_depth_ > 0) {
+    return;
+  }
   cache_disabled_count_ = 0;
   std::vector<RenderTargetData> retain;
   std::vector<RenderTargetData*> motion_idle;

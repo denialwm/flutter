@@ -880,16 +880,21 @@ ContentContext::ContentContext(
                                                   options_trianglestrip);
   pipelines_->yuv_to_rgb_filter.CreateDefault(*context_, options_trianglestrip);
 
+#if defined(IMPELLER_ENABLE_OPENGLES) && !defined(FML_OS_EMSCRIPTEN)
+  // Denial windows and backdrop composites over 2D images: every backend
+  // draws them (a Vulkan engine composes client windows when the scene
+  // composer cannot).
+  pipelines_->window_surface_texture.CreateDefault(*context_,
+                                                   options_trianglestrip);
+  pipelines_->backdrop_surface_composite_texture.CreateDefault(*context_,
+                                                               options);
+#endif
   if (GetContext()->GetBackendType() == Context::BackendType::kOpenGLES) {
 #if defined(IMPELLER_ENABLE_OPENGLES) && !defined(FML_OS_MACOSX) && \
     !defined(FML_OS_EMSCRIPTEN)
     // GLES only shader that is unsupported on macOS and web.
     pipelines_->backdrop_surface_composite.CreateDefault(*context_, options);
     pipelines_->window_surface.CreateDefault(*context_, options_trianglestrip);
-    pipelines_->window_surface_texture.CreateDefault(*context_,
-                                                     options_trianglestrip);
-    pipelines_->backdrop_surface_composite_texture.CreateDefault(*context_,
-                                                                 options);
     pipelines_->tiled_texture_external.CreateDefault(*context_, options);
     pipelines_->tiled_texture_uv_external.CreateDefault(*context_, options);
 #endif  // !defined(FML_OS_MACOSX)
@@ -960,20 +965,30 @@ fml::StatusOr<RenderTarget> ContentContext::MakeSubpass(
 
   auto subpass_texture = subpass_target.GetRenderTargetTexture();
   if (!subpass_texture) {
+    // The subpass draws nothing: its pass failed, not its contents.
+    RecordPassFailure();
     return fml::Status(fml::StatusCode::kUnknown, "");
   }
 
   auto sub_renderpass = command_buffer->CreateRenderPass(subpass_target);
   if (!sub_renderpass) {
+    // The subpass draws nothing: its pass failed, not its contents.
+    RecordPassFailure();
     return fml::Status(fml::StatusCode::kUnknown, "");
   }
   sub_renderpass->SetLabel(label);
 
   if (!subpass_callback(*this, *sub_renderpass)) {
+    if (sub_renderpass->DrawFailed()) {
+      // Not a contents skip: a draw lost its resources.
+      RecordPassFailure();
+    }
     return fml::Status(fml::StatusCode::kUnknown, "");
   }
 
   if (!sub_renderpass->EncodeCommands()) {
+    // The subpass draws nothing: its pass failed, not its contents.
+    RecordPassFailure();
     return fml::Status(fml::StatusCode::kUnknown, "");
   }
 
@@ -983,6 +998,7 @@ fml::StatusOr<RenderTarget> ContentContext::MakeSubpass(
     fml::Status mipmap_status =
         AddMipmapGeneration(command_buffer, context, target_texture);
     if (!mipmap_status.ok()) {
+      RecordPassFailure();
       return mipmap_status;
     }
   }
@@ -1204,6 +1220,11 @@ void ContentContext::RecordBackdropSnapshotReuse(int64_t key) {
       found->second.key == key) {
     found->second.reused = true;
   }
+}
+
+void ContentContext::DropBackdropSnapshots() {
+  backdrop_snapshot_cache_.clear();
+  backdrop_snapshot_cache_bytes_ = 0u;
 }
 
 void ContentContext::CacheBackdropSnapshot(int64_t key,
@@ -1799,7 +1820,6 @@ PipelineRef ContentContext::GetBackdropSurfaceCompositePipeline(
 
 PipelineRef ContentContext::GetBackdropSurfaceCompositeTexturePipeline(
     ContentContextOptions opts) const {
-  FML_DCHECK(GetContext()->GetBackendType() == Context::BackendType::kOpenGLES);
   return GetPipeline(this, pipelines_->backdrop_surface_composite_texture,
                      opts);
 }

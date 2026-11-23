@@ -95,7 +95,9 @@ RenderPassBuilderVK& RenderPassBuilderVK::SetDepthStencilAttachment(
   desc.storeOp = ToVKAttachmentStoreOp(store_action, false);
   desc.stencilLoadOp = desc.loadOp;    // Not separable in Impeller.
   desc.stencilStoreOp = desc.storeOp;  // Not separable in Impeller.
-  desc.initialLayout = vk::ImageLayout::eUndefined;
+  desc.initialLayout = load_action == LoadAction::kLoad
+                           ? vk::ImageLayout::eDepthStencilAttachmentOptimal
+                           : vk::ImageLayout::eUndefined;
   desc.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
   depth_stencil_ = desc;
   return *this;
@@ -113,7 +115,9 @@ RenderPassBuilderVK& RenderPassBuilderVK::SetStencilAttachment(
   desc.storeOp = vk::AttachmentStoreOp::eDontCare;
   desc.stencilLoadOp = ToVKAttachmentLoadOp(load_action);
   desc.stencilStoreOp = ToVKAttachmentStoreOp(store_action, false);
-  desc.initialLayout = vk::ImageLayout::eUndefined;
+  desc.initialLayout = load_action == LoadAction::kLoad
+                           ? vk::ImageLayout::eDepthStencilAttachmentOptimal
+                           : vk::ImageLayout::eUndefined;
   desc.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
   depth_stencil_ = desc;
   return *this;
@@ -197,11 +201,19 @@ vk::UniqueRenderPass RenderPassBuilderVK::Build(
   deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
   deps[0].dstSubpass = 0u;
   deps[0].srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput |
-                         vk::PipelineStageFlagBits::eFragmentShader;
+                         vk::PipelineStageFlagBits::eFragmentShader |
+                         vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                         vk::PipelineStageFlagBits::eLateFragmentTests;
   deps[0].srcAccessMask = vk::AccessFlagBits::eShaderRead |
-                          vk::AccessFlagBits::eColorAttachmentWrite;
-  deps[0].dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-  deps[0].dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+                          vk::AccessFlagBits::eColorAttachmentWrite |
+                          vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+  deps[0].dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput |
+                         vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                         vk::PipelineStageFlagBits::eLateFragmentTests;
+  deps[0].dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead |
+                          vk::AccessFlagBits::eColorAttachmentWrite |
+                          vk::AccessFlagBits::eDepthStencilAttachmentRead |
+                          vk::AccessFlagBits::eDepthStencilAttachmentWrite;
   deps[0].dependencyFlags = kSelfDependencyFlags;
 
   // Self dependency for reading back the framebuffer, necessary for

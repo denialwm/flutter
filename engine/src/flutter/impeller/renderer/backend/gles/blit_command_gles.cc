@@ -35,9 +35,10 @@ static std::optional<GLuint> ConfigureFBO(
     return std::nullopt;
   }
 
-  if (TextureGLES::Cast(*texture).IsWrapped()) {
+  if (TextureGLES::Cast(*texture).GetFBO().has_value()) {
     // The texture is attached to the default FBO, so there's no need to
-    // create/configure one.
+    // create/configure one. A wrapped texture without a framebuffer (storage
+    // owned elsewhere) attaches to a new FBO below like any other texture.
     gl.BindFramebuffer(fbo_type, 0);
     return 0;
   }

@@ -50,14 +50,16 @@ DiffContext::DiffContext(DlISize frame_size,
                          const PaintRegionMap& last_frame_paint_region_map,
                          bool has_raster_cache,
                          bool impeller_enabled,
-                         const std::unordered_set<int64_t>* dirty_texture_ids)
+                         const std::unordered_set<int64_t>* dirty_texture_ids,
+                         const TextureDamageMap* texture_damage)
     : rects_(std::make_shared<std::vector<DlRect>>()),
       frame_size_(frame_size),
       this_frame_paint_region_map_(this_frame_paint_region_map),
       last_frame_paint_region_map_(last_frame_paint_region_map),
       has_raster_cache_(has_raster_cache),
       impeller_enabled_(impeller_enabled),
-      dirty_texture_ids_(dirty_texture_ids) {}
+      dirty_texture_ids_(dirty_texture_ids),
+      texture_damage_(texture_damage) {}
 
 void DiffContext::BeginSubtree() {
   state_stack_.push_back(state_);
@@ -419,17 +421,78 @@ void DiffContext::SetDiffMetadataCache(
   previous_retained_subtree_cache_ = previous_retained_subtrees;
 }
 
-void DiffContext::CacheTexturePaintRegion(int64_t texture_id,
-                                          const PaintRegion& paint_region) {
+void DiffContext::CacheTexturePaintRegion(
+    int64_t texture_id,
+    const PaintRegion& paint_region,
+    std::optional<DlMatrix> unit_to_local) {
   // AddTextureLayerBounds already captured the visible region. Share the same
   // geometry between normal diffing and autonomous/retained metadata reuse.
+  const TexturePaintRegion region{
+      texture_id, paint_region,
+      unit_to_local ? UnitToDevice(*unit_to_local) : std::nullopt};
   if (texture_region_cache_) {
-    texture_region_cache_->push_back({texture_id, paint_region});
+    texture_region_cache_->push_back(region);
   }
   if (retained_subtree_capture_) {
-    retained_subtree_capture_->texture_paint_regions.push_back(
-        {texture_id, paint_region});
+    retained_subtree_capture_->texture_paint_regions.push_back(region);
   }
+}
+
+const std::vector<DlRect>* DiffContext::TextureDamage(
+    int64_t texture_id) const {
+  if (!texture_damage_) {
+    return nullptr;
+  }
+  const auto found = texture_damage_->find(texture_id);
+  return found == texture_damage_->end() ? nullptr : &found->second;
+}
+
+std::optional<DlMatrix> DiffContext::UnitToDevice(
+    const DlMatrix& unit_to_local) const {
+  if (!filter_bounds_adjustment_stack_.empty()) {
+    return std::nullopt;
+  }
+  return GetMatrix() * unit_to_local;
+}
+
+void DiffContext::AddUnitDamage(const DlMatrix& unit_to_device,
+                                const std::vector<DlRect>& rects,
+                                const DlRect& within) {
+  for (const auto& rect : rects) {
+    // Filtering and an integral-snapped transform can move a change by a
+    // pixel or two.
+    const auto device = rect.TransformBounds(unit_to_device).Expand(2.0f);
+    const auto clipped = device.Intersection(within);
+    if (clipped.has_value()) {
+      AddDamage(*clipped);
+    }
+  }
+}
+
+bool DiffContext::AddTextureDamage(int64_t texture_id,
+                                   const DlMatrix& unit_to_local,
+                                   const PaintRegion& old_region) {
+  const auto* rects = TextureDamage(texture_id);
+  if (!rects || !old_region.is_valid()) {
+    return false;
+  }
+  const auto unit_to_device = UnitToDevice(unit_to_local);
+  if (!unit_to_device.has_value()) {
+    return false;
+  }
+  AddUnitDamage(*unit_to_device, *rects, old_region.ComputeBounds());
+  return true;
+}
+
+void DiffContext::AddTexturePaintRegionDamage(
+    const TexturePaintRegion& texture) {
+  const auto* rects = TextureDamage(texture.texture_id);
+  if (!rects || !texture.unit_to_device.has_value()) {
+    AddDamage(texture.paint_region);
+    return;
+  }
+  AddUnitDamage(*texture.unit_to_device, *rects,
+                texture.paint_region.ComputeBounds());
 }
 
 bool DiffContext::TryReuseRetainedSubtreeMetadata(

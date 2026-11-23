@@ -529,6 +529,19 @@ class ExternalViewEmbedder {
     return DenialOutputMode::kDirect;
   }
 
+  // Damage planning: whether the Denial scene composer, which composes this
+  // frame, holds the backdrop made from `token` (see pin_backdrop in
+  // embedder.h).
+  virtual bool DenialPinBackdrop(int64_t token) { return false; }
+
+  // Whether the last Denial frame of `flutter_view_id` was not presented
+  // (not composed, declined or refused by the embedder), clearing it. The
+  // rasterizer then keeps the view's tree and draws it again on the next
+  // output tick instead of counting the frame as drawn.
+  virtual bool DenialTakeSubmitFailure(int64_t flutter_view_id) {
+    return false;
+  }
+
   // Composes the retained entries of a kRecompose frame inside the frame's
   // buffer damage, presents and submits `frame`.
   virtual void DenialRecompose(

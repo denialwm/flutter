@@ -1501,8 +1501,13 @@ std::shared_ptr<Texture> DisplayListToTexture(
     context.GetContext()->DisposeThreadLocalCachedResources();
   });
 
+  const uint64_t failures = context.GetContentContext().GetPassFailures();
   display_list->Dispatch(impeller_dispatcher, cull_rect);
-  impeller_dispatcher.FinishRecording();
+  if (!impeller_dispatcher.FinishRecording() ||
+      context.GetContentContext().GetPassFailures() != failures) {
+    // An image missing draws is not handed out.
+    return nullptr;
+  }
 
   return target.GetRenderTargetTexture();
 }
@@ -1513,6 +1518,9 @@ bool RenderToTarget(ContentContext& context,
                     Rect cull_rect,
                     bool reset_host_buffer,
                     bool is_onscreen) {
+  // A pass that fails anywhere in this render (subpasses, snapshots,
+  // filters included) leaves draws out of the target.
+  const uint64_t failures = context.GetPassFailures();
   FirstPassDispatcher collector(context, impeller::Matrix(), cull_rect);
   display_list->Dispatch(collector, cull_rect);
 
@@ -1536,10 +1544,10 @@ bool RenderToTarget(ContentContext& context,
   });
 
   display_list->Dispatch(impeller_dispatcher, cull_rect);
-  impeller_dispatcher.FinishRecording();
+  const bool finished = impeller_dispatcher.FinishRecording();
   context.GetLazyGlyphAtlas()->ResetTextFrames();
 
-  return true;
+  return finished && context.GetPassFailures() == failures;
 }
 
 }  // namespace impeller

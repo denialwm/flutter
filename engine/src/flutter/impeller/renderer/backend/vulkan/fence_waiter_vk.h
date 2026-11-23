@@ -39,6 +39,12 @@ class FenceWaiterVK {
       const std::function<fml::Status(vk::Fence)>& submit_callback,
       fml::closure completion_callback);
 
+  /// @brief An unsignalled fence: a signalled one reset for reuse, or a new
+  ///        one. Creating and destroying a fence per submission costs a
+  ///        kernel round trip each on some drivers (NVIDIA: hundreds of
+  ///        microseconds).
+  vk::UniqueFence AcquireFence();
+
  private:
   friend class ContextVK;
 
@@ -48,6 +54,10 @@ class FenceWaiterVK {
   std::condition_variable wait_set_cv_;
   WaitSet wait_set_;
   bool terminate_ = false;
+  std::mutex fence_pool_mutex_;
+  std::vector<vk::UniqueFence> fence_pool_;
+
+  void RecycleFence(const vk::Device& device, vk::UniqueFence fence);
 
   explicit FenceWaiterVK(std::weak_ptr<DeviceHolderVK> device_holder);
 

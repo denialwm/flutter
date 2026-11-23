@@ -95,6 +95,7 @@ PlatformViewEmbedder::PlatformViewEmbedder(
 #endif
 
 #ifdef SHELL_ENABLE_VULKAN
+#if !SLIMPELLER
 PlatformViewEmbedder::PlatformViewEmbedder(
     PlatformView::Delegate& delegate,
     const flutter::TaskRunners& task_runners,
@@ -108,6 +109,7 @@ PlatformViewEmbedder::PlatformViewEmbedder(
           GetWeakPtr(),
           task_runners.GetPlatformTaskRunner())),
       platform_dispatch_table_(std::move(platform_dispatch_table)) {}
+#endif  // !SLIMPELLER
 #endif
 
 PlatformViewEmbedder::~PlatformViewEmbedder() = default;

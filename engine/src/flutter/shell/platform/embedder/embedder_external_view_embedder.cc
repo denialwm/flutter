@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "flutter/shell/platform/embedder/embedder_external_view_embedder.h"
+#include "flutter/shell/platform/embedder/embedder_external_texture_resolver.h"
 
 #include <algorithm>
 #include <cassert>
@@ -13,6 +14,8 @@
 #include <utility>
 
 #include "flutter/common/constants.h"
+#include "flutter/display_list/effects/image_filters/dl_blur_image_filter.h"
+#include "flutter/display_list/effects/image_filters/dl_glass_image_filter.h"
 #include "flutter/display_list/geometry/dl_path_builder.h"
 #include "flutter/display_list/utils/dl_receiver_utils.h"
 #include "flutter/flow/diff_context.h"
@@ -27,11 +30,19 @@
 #include "impeller/display_list/static_picture_cache.h"  // nogncheck
 #include "impeller/renderer/capabilities.h"              // nogncheck
 #include "impeller/renderer/render_target.h"             // nogncheck
+#include "impeller/geometry/round_superellipse.h"       // nogncheck
+#include "impeller/tessellator/path_tessellator.h"       // nogncheck
 #ifdef SHELL_ENABLE_GL
+#include "impeller/renderer/backend/gles/context_gles.h"  // nogncheck
 #include "impeller/renderer/backend/gles/denial_resource_audit_gles.h"  // nogncheck
 #include "impeller/renderer/backend/gles/texture_gles.h"  // nogncheck
 #endif                                                    // SHELL_ENABLE_GL
+#ifdef SHELL_ENABLE_VULKAN
+#include "impeller/renderer/backend/vulkan/texture_source_vk.h"  // nogncheck
+#include "impeller/renderer/backend/vulkan/texture_vk.h"  // nogncheck
+#endif  // SHELL_ENABLE_VULKAN
 #endif  // IMPELLER_SUPPORTS_RENDERING
+
 
 namespace flutter {
 
@@ -68,6 +79,95 @@ static constexpr int64_t kDenialCutBase = int64_t{1} << 40;
 // the frames of an animation.
 static constexpr uint32_t kDenialLayeredBuildStreak = 4;
 
+namespace {
+
+// The scene carries 3x3 matrices: no depth in or out.
+bool DenialMatrixHasDepth(const DlMatrix& m) {
+  return m.m[2] != 0 || m.m[6] != 0 || m.m[8] != 0 || m.m[9] != 0 ||
+         m.m[10] != 1 || m.m[11] != 0 || m.m[14] != 0;
+}
+
+// The composer draws unbounded, clamped Gaussian blur and glass backdrops;
+// an alpha threshold only behind a window (`window`). Why it cannot draw
+// `filter`, or nullptr.
+const char* DenialFilterIneligibility(const DlImageFilter* filter,
+                                      bool window) {
+  if (!filter) {
+    return "material without filter";
+  }
+  if (const DlBlurImageFilter* blur = filter->asBlur()) {
+    if (blur->bounds().has_value() || blur->tile_mode() != DlTileMode::kClamp) {
+      return "bounded or non-clamp blur";
+    }
+    return !window && blur->backdrop_alpha_threshold() >= 0.0f
+               ? "thresholded blur"
+               : nullptr;
+  }
+  if (const DlGlassImageFilter* glass = filter->asGlass()) {
+    return !window && glass->backdrop_alpha_threshold() >= 0.0f
+               ? "thresholded glass"
+               : nullptr;
+  }
+  return "material filter";
+}
+
+const char* DenialMaterialIneligibility(const DenialCutEntry& entry) {
+  return DenialFilterIneligibility(entry.filter.get(), false);
+}
+
+// A window's backdrop, when the composer draws it: direct client windows
+// only. A composed window (children under its material) needs their
+// combined alpha.
+const char* DenialWindowIneligibility(const DenialCutEntry& entry) {
+  if (!entry.window) {
+    return "window without style";
+  }
+  if (!entry.window->backdrop()) {
+    return nullptr;
+  }
+  if (!entry.window->direct_texture()) {
+    return "composed window backdrop";
+  }
+  return DenialFilterIneligibility(entry.window->backdrop().get(), true);
+}
+
+// Why a cut keeps its frame from Denial's scene composer, or nullptr. Read
+// during preroll, before any slice storage is chosen.
+const char* DenialComposerIneligibility(const EmbeddedViewParams& params,
+                                        const DenialCutEntry& entry) {
+  switch (entry.kind) {
+    case DenialCutEntry::Kind::kMaterialBegin:
+      if (const char* reason = DenialMaterialIneligibility(entry)) {
+        return reason;
+      }
+      break;
+    case DenialCutEntry::Kind::kMaterialEnd:
+      return nullptr;
+    case DenialCutEntry::Kind::kWindowSurface:
+      if (const char* reason = DenialWindowIneligibility(entry)) {
+        return reason;
+      }
+      break;
+    case DenialCutEntry::Kind::kTexture:
+      break;
+  }
+  const MutatorsStack& mutators = params.mutatorsStack();
+  for (auto it = mutators.Begin(); it != mutators.End(); ++it) {
+    switch ((*it)->GetType()) {
+      case MutatorType::kTransform:
+        if (DenialMatrixHasDepth((*it)->GetMatrix())) {
+          return "3D transform";
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
 EmbedderExternalViewEmbedder::EmbedderExternalViewEmbedder(
     bool avoid_backing_store_cache,
     const CreateRenderTargetCallback& create_render_target_callback,
@@ -89,6 +189,14 @@ DenialOutputMode EmbedderExternalViewEmbedder::DenialBeginOutputFrame(
     const void* layer_tree,
     bool texture_only) {
   denial_frame_tree_ = layer_tree;
+  DenialCancelTicket();
+  denial_composer_pinned_ = false;
+  denial_composer_ineligible_ = nullptr;
+  if (denial_scene_composer_.has_value() &&
+      flutter_view_id < kFlutterImplicitViewId) {
+    denial_ticket_ = denial_scene_composer_->begin(
+        denial_scene_composer_->user_data, flutter_view_id);
+  }
   denial_output_mode_ =
       DenialChooseOutputMode(flutter_view_id, layer_tree, texture_only);
   if (denial_output_mode_ == DenialOutputMode::kDirect &&
@@ -120,12 +228,42 @@ DenialOutputMode EmbedderExternalViewEmbedder::DenialChooseOutputMode(
   if (texture_only && view.tree == layer_tree &&
       view.frame_size == pending_frame_size_ &&
       view.transformation == pending_surface_transformation_) {
-    return DenialOutputMode::kRecompose;
+    if (denial_ticket_ == 0) {
+      return DenialOutputMode::kRecompose;
+    }
+    if (view.composer_ineligible != nullptr) {
+      // The tree's content keeps it from the composer on every frame. With
+      // lent client images the ticket stays for the engine's fallback.
+      if (!denial_vulkan_fallback_) {
+        DenialCancelTicket();
+      }
+      return DenialOutputMode::kRecompose;
+    }
+    if (!view.composer_engine_slots) {
+      return DenialOutputMode::kRecompose;
+    }
+    if (view.composer_retried) {
+      // A writer was refused again: compose this tree in the engine.
+      if (!denial_vulkan_fallback_) {
+        DenialCancelTicket();
+      }
+      return DenialOutputMode::kRecompose;
+    }
+    // A writer was refused while this tree was built: build it once more
+    // into composer storage.
+    view.composer_retried = true;
+  } else {
+    view.composer_retried = false;
   }
   // Every other frame replaces the target's pixels without the entries, so
   // they no longer describe it.
   view.tree = nullptr;
   view.entries.clear();
+  if (denial_ticket_ != 0) {
+    // The scene composer composes every frame from entries, so every frame
+    // that is not a recomposition builds them.
+    return DenialOutputMode::kLayeredBuild;
+  }
   if (texture_only && layer_tree != view.unlayered_tree &&
       view.texture_only_streak >= kDenialLayeredBuildStreak) {
     return DenialOutputMode::kLayeredBuild;
@@ -137,6 +275,10 @@ int64_t EmbedderExternalViewEmbedder::DenialRegisterCut(
     std::unique_ptr<EmbeddedViewParams> params,
     DenialCutEntry entry) {
   const int64_t cut_id = kDenialCutBase + denial_next_cut_++;
+  if (denial_scene_composer_.has_value() &&
+      denial_composer_ineligible_ == nullptr) {
+    denial_composer_ineligible_ = DenialComposerIneligibility(*params, entry);
+  }
   PrerollCompositeEmbeddedView(cut_id, std::move(params));
   denial_cuts_.emplace(cut_id, std::move(entry));
   return cut_id;
@@ -265,6 +407,11 @@ EmbedderExternalViewEmbedder::PrepareDenialRenderTarget(
       backing_store->open_gl.type == kFlutterOpenGLTargetTypeFramebuffer) {
     existing_damage =
         existing_damage_callback_(backing_store->open_gl.framebuffer.name);
+  } else if (existing_damage_callback_ && backing_store &&
+             backing_store->type == kFlutterBackingStoreTypeVulkan) {
+    // A Denial Vulkan output names its target by its user data.
+    existing_damage = existing_damage_callback_(
+        reinterpret_cast<intptr_t>(backing_store->vulkan.user_data));
   }
   pending_denial_render_target_ = std::move(target);
   return PreparedRenderTarget{.existing_damage = std::move(existing_damage)};
@@ -279,6 +426,7 @@ DlMatrix EmbedderExternalViewEmbedder::GetSurfaceTransformation() const {
 }
 
 void EmbedderExternalViewEmbedder::Reset() {
+  DenialCancelTicket();
   pending_denial_render_target_.reset();
   pending_views_.clear();
   composition_order_.clear();
@@ -818,8 +966,9 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
 #endif  // IMPELLER_SUPPORTS_RENDERING
   if (flutter_view_id < kFlutterImplicitViewId &&
       pending_denial_render_target_) {
-    if (composition_order_.size() > 1u) {
-      // Cuts were registered: compose slices and cuts onto the scanout target.
+    if (composition_order_.size() > 1u || denial_ticket_ != 0) {
+      // Cuts were registered, or the scene composer composes the frame: the
+      // root is a slice like any other.
       SubmitDenialLayered(flutter_view_id, aiks_context, std::move(frame));
       return;
     }
@@ -837,6 +986,17 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
     auto root = pending_views_.find(kRootViewIdentifier);
     FML_DCHECK(root != pending_views_.end());
 
+    if (!pending_denial_render_target_->GetImpellerRenderTarget()) {
+      // The scene composer draws every frame of this target and declined
+      // this one: keep the output's last frame.
+      DenialLogDecline(flutter_view_id, "direct frame without the composer");
+      pending_denial_render_target_.reset();
+      frame->Submit();
+      denial_failed_views_.insert(flutter_view_id);
+      return;
+    }
+
+    DenialTakeComposerHandover(flutter_view_id, *frame);
     const auto& buffer_damage = frame->submit_info().buffer_damage;
     const bool full_repaint =
         !buffer_damage.has_value() ||
@@ -847,6 +1007,7 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
                                 full_repaint)) {
         pending_denial_render_target_.reset();
         frame->Submit();
+        denial_failed_views_.insert(flutter_view_id);
         return;
       }
     }
@@ -865,13 +1026,18 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
     presented_layers.PushBackingStoreLayer(
         pending_denial_render_target_->GetBackingStore(),
         {DlIRect::MakeSize(pending_frame_size_)});
-    presented_layers.InvokePresentCallback(flutter_view_id, present_callback_);
+    const bool presented = presented_layers.InvokePresentCallback(
+        flutter_view_id, present_callback_);
 
     // The embedder owns the FBO allocation. Releasing this temporary wrapper
     // only ends Flutter's borrow; the root frame then delivers the exact frame
     // and buffer damage through present-with-info.
     pending_denial_render_target_.reset();
-    frame->Submit();
+    if (!frame->Submit() || !presented) {
+      // Nothing reached the screen: the rasterizer keeps the tree for the
+      // next output tick.
+      denial_failed_views_.insert(flutter_view_id);
+    }
     return;
   }
 
@@ -1201,6 +1367,212 @@ bool DenialPrepareSliceStorage(
   return true;
 }
 
+#ifdef SHELL_ENABLE_GL
+// Wraps writable storage from the scene composer as a slice texture. The
+// GL name stays the composer's: the wrapper never deletes it and reports
+// the end of the engine's use of this version through drop_engine_ref.
+std::optional<EmbedderExternalViewEmbedder::DenialSliceStorage>
+DenialAcquireComposerStorageGL(
+    const std::shared_ptr<impeller::Context>& context,
+    const DenialFlutterSceneComposer& composer,
+    uint64_t ticket,
+    const DlISize& needed,
+    bool bottom_up) {
+  if (context->GetBackendType() != impeller::Context::BackendType::kOpenGLES ||
+      context->GetCapabilities()->GetDefaultColorFormat() !=
+          impeller::PixelFormat::kR8G8B8A8UNormInt) {
+    // Composer storage is RGBA8.
+    return std::nullopt;
+  }
+  DenialFlutterSliceWriter writer = {};
+  writer.struct_size = sizeof(writer);
+  if (!composer.acquire_writer(composer.user_data, ticket,
+                               static_cast<uint32_t>(needed.width),
+                               static_cast<uint32_t>(needed.height), &writer)) {
+    FML_LOG(ERROR) << "Denial scene composer gave no slice storage";
+    return std::nullopt;
+  }
+  const DenialFlutterSliceKey key = writer.key;
+  if (writer.gl_name == 0 ||
+      writer.width < static_cast<uint32_t>(needed.width) ||
+      writer.height < static_cast<uint32_t>(needed.height)) {
+    FML_LOG(ERROR) << "Denial scene composer slice storage is unusable";
+    composer.drop_engine_ref(composer.user_data, key);
+    return std::nullopt;
+  }
+  const auto& reactor = impeller::ContextGLES::Cast(*context).GetReactor();
+  impeller::TextureDescriptor descriptor;
+  descriptor.storage_mode = impeller::StorageMode::kDevicePrivate;
+  descriptor.format = context->GetCapabilities()->GetDefaultColorFormat();
+  descriptor.size = impeller::ISize(writer.width, writer.height);
+  descriptor.mip_count = 1u;
+  descriptor.usage = impeller::TextureUsage::kRenderTarget |
+                     impeller::TextureUsage::kShaderRead;
+  impeller::HandleGLES handle =
+      reactor->CreateHandle(impeller::HandleType::kTexture, writer.gl_name);
+  // Registered before wrapping: a handle with a cleanup callback is never
+  // deleted, and the wrapper's failure still reports the drop.
+  if (!reactor->RegisterCleanupCallback(handle, [composer, key]() {
+        composer.drop_engine_ref(composer.user_data, key);
+      })) {
+    FML_LOG(ERROR) << "Denial scene composer storage cleanup not registered";
+    composer.drop_engine_ref(composer.user_data, key);
+    return std::nullopt;
+  }
+  auto texture =
+      impeller::TextureGLES::WrapTexture(reactor, descriptor, handle);
+  if (!texture) {
+    FML_LOG(ERROR) << "Denial scene composer storage could not be wrapped";
+    return std::nullopt;
+  }
+  static_cast<impeller::Texture&>(*texture).SetLabel("Denial composer slice");
+  if (bottom_up) {
+    texture->SetStoredBottomUp();
+  }
+  EmbedderExternalViewEmbedder::DenialSliceStorage storage;
+  storage.size = DlISize(writer.width, writer.height);
+  storage.bottom_up = bottom_up;
+  storage.texture = texture;
+  storage.image =
+      impeller::DlImageImpeller::Make(texture, DlImage::OwningContext::kRaster);
+  storage.composer_key = key;
+  storage.composer_unpublished = true;
+  return storage;
+}
+#endif  // SHELL_ENABLE_GL
+
+#ifdef SHELL_ENABLE_VULKAN
+// A composer slice image, borrowed. Impeller's command buffers keep the
+// source until their fences signal, so its end is the end of the engine's
+// use of this version, GPU work included: it reports the drop.
+class DenialComposerSliceSourceVK final : public impeller::TextureSourceVK {
+ public:
+  DenialComposerSliceSourceVK(impeller::TextureDescriptor descriptor,
+                              impeller::vk::Image image,
+                              impeller::vk::ImageView image_view,
+                              impeller::vk::ImageLayout layout,
+                              DenialFlutterSceneComposer composer,
+                              DenialFlutterSliceKey key)
+      : TextureSourceVK(descriptor),
+        image_(image),
+        image_view_(image_view),
+        composer_(composer),
+        key_(key) {
+    SetLayoutWithoutEncoding(layout);
+  }
+
+  ~DenialComposerSliceSourceVK() override {
+    composer_.drop_engine_ref(composer_.user_data, key_);
+  }
+
+  impeller::vk::Image GetImage() const override { return image_; }
+
+  impeller::vk::ImageView GetImageView() const override { return image_view_; }
+
+  impeller::vk::ImageView GetRenderTargetView(
+      uint32_t mip_level,
+      uint32_t array_layer) const override {
+    return image_view_;
+  }
+
+  bool IsSwapchainImage() const override { return false; }
+
+ private:
+  impeller::vk::Image image_;
+  impeller::vk::ImageView image_view_;
+  DenialFlutterSceneComposer composer_;
+  DenialFlutterSliceKey key_;
+};
+
+// Wraps a composer slice image on the Vulkan renderer's device. A fresh
+// wrapper per version keeps Impeller's per-texture framebuffer cache from
+// outliving the attachments of the render it was made for.
+std::optional<EmbedderExternalViewEmbedder::DenialSliceStorage>
+DenialAcquireComposerStorageVK(
+    const std::shared_ptr<impeller::Context>& context,
+    const DenialFlutterSceneComposer& composer,
+    uint64_t ticket,
+    const DlISize& needed,
+    bool sampled = true) {
+  if (composer.acquire_writer_vk == nullptr ||
+      context->GetCapabilities()->GetDefaultColorFormat() !=
+          impeller::PixelFormat::kR8G8B8A8UNormInt) {
+    return std::nullopt;
+  }
+  DenialFlutterSliceWriterVK writer = {};
+  writer.struct_size = sizeof(writer);
+  if (!composer.acquire_writer_vk(composer.user_data, ticket,
+                                  static_cast<uint32_t>(needed.width),
+                                  static_cast<uint32_t>(needed.height),
+                                  &writer)) {
+    FML_LOG(ERROR) << "Denial scene composer gave no Vulkan slice storage";
+    return std::nullopt;
+  }
+  const DenialFlutterSliceKey key = writer.key;
+  if (writer.struct_size != sizeof(writer) || writer.image == 0 ||
+      writer.image_view == 0 ||
+      writer.format !=
+          static_cast<uint32_t>(impeller::vk::Format::eR8G8B8A8Unorm) ||
+      writer.width < static_cast<uint32_t>(needed.width) ||
+      writer.height < static_cast<uint32_t>(needed.height)) {
+    FML_LOG(ERROR) << "Denial scene composer Vulkan slice storage is unusable";
+    composer.drop_engine_ref(composer.user_data, key);
+    return std::nullopt;
+  }
+  impeller::TextureDescriptor descriptor;
+  descriptor.type = impeller::TextureType::kTexture2D;
+  descriptor.storage_mode = impeller::StorageMode::kDevicePrivate;
+  descriptor.format = impeller::PixelFormat::kR8G8B8A8UNormInt;
+  descriptor.size = impeller::ISize(writer.width, writer.height);
+  descriptor.mip_count = 1u;
+  descriptor.sample_count = impeller::SampleCount::kCount1;
+  // Storage written as an output's root is not sampled while it renders:
+  // Canvas reads backdrops from a copy, as from a GLES output.
+  descriptor.usage = sampled ? impeller::TextureUsage::kRenderTarget |
+                                   impeller::TextureUsage::kShaderRead
+                             : impeller::TextureUsage::kRenderTarget;
+  auto source = std::make_shared<DenialComposerSliceSourceVK>(
+      descriptor,
+      impeller::vk::Image(reinterpret_cast<VkImage>(writer.image)),
+      impeller::vk::ImageView(reinterpret_cast<VkImageView>(writer.image_view)),
+      static_cast<impeller::vk::ImageLayout>(writer.layout), composer, key);
+  auto texture =
+      std::make_shared<impeller::TextureVK>(context, std::move(source));
+  static_cast<impeller::Texture&>(*texture).SetLabel("Denial composer slice");
+  EmbedderExternalViewEmbedder::DenialSliceStorage storage;
+  storage.size = DlISize(writer.width, writer.height);
+  storage.bottom_up = false;
+  storage.texture = texture;
+  storage.image =
+      impeller::DlImageImpeller::Make(texture, DlImage::OwningContext::kRaster);
+  storage.composer_key = key;
+  storage.composer_unpublished = true;
+  return storage;
+}
+#endif  // SHELL_ENABLE_VULKAN
+
+// Writable storage from the scene composer, on the renderer's backend.
+std::optional<EmbedderExternalViewEmbedder::DenialSliceStorage>
+DenialAcquireComposerStorage(const std::shared_ptr<impeller::Context>& context,
+                             const DenialFlutterSceneComposer& composer,
+                             uint64_t ticket,
+                             const DlISize& needed,
+                             bool bottom_up) {
+  switch (context->GetBackendType()) {
+#ifdef SHELL_ENABLE_GL
+    case impeller::Context::BackendType::kOpenGLES:
+      return DenialAcquireComposerStorageGL(context, composer, ticket, needed,
+                                            bottom_up);
+#endif  // SHELL_ENABLE_GL
+#ifdef SHELL_ENABLE_VULKAN
+    case impeller::Context::BackendType::kVulkan:
+      return DenialAcquireComposerStorageVK(context, composer, ticket, needed);
+#endif  // SHELL_ENABLE_VULKAN
+    default:
+      return std::nullopt;
+  }
+}
+
 // A rect of the frame's top-left space in target pixels. Output views flip
 // into the backing store's bottom-left origin (see PrepareFlutterView).
 DlIRect DenialTargetRect(const DlIRect& rect, const DlMatrix& transformation) {
@@ -1213,12 +1585,51 @@ DlIRect DenialTargetRect(const DlIRect& rect, const DlMatrix& transformation) {
 // so layered and direct frames rasterize alike. The content context's render
 // target cache ignores existing textures and hands out pooled ones, so slice
 // targets are built directly on the allocator around the retained texture.
-// Depth/stencil and MSAA color are transient: the allocator creates them for
-// this render and they go with the target.
+size_t DenialAttachmentBytes(const std::shared_ptr<impeller::Texture>& texture) {
+  if (!texture) {
+    return 0;
+  }
+  const auto& descriptor = texture->GetTextureDescriptor();
+  return descriptor.GetByteSizeOfBaseMipLevel() *
+         static_cast<size_t>(descriptor.sample_count);
+}
+
+// Drops slice attachments of sizes no build used for a while, then the least
+// recently used ones while the rest exceed a budget: an animation through
+// many slice sizes leaves its attachments behind only for a short time.
+void DenialTrimSliceAttachments(
+    std::map<std::tuple<int64_t, int64_t, bool>,
+             EmbedderExternalViewEmbedder::DenialSliceAttachments>& kept,
+    uint64_t frame) {
+  constexpr uint64_t kIdleFrames = 240;
+  constexpr size_t kBudgetBytes = size_t{192} << 20;
+  std::erase_if(kept, [frame](const auto& entry) {
+    return frame - entry.second.last_frame > kIdleFrames;
+  });
+  size_t bytes = 0;
+  for (const auto& [key, attachments] : kept) {
+    bytes += DenialAttachmentBytes(attachments.msaa_color) +
+             DenialAttachmentBytes(attachments.depth_stencil);
+  }
+  while (bytes > kBudgetBytes && !kept.empty()) {
+    auto oldest = std::min_element(
+        kept.begin(), kept.end(), [](const auto& a, const auto& b) {
+          return a.second.last_frame < b.second.last_frame;
+        });
+    bytes -= DenialAttachmentBytes(oldest->second.msaa_color) +
+             DenialAttachmentBytes(oldest->second.depth_stencil);
+    kept.erase(oldest);
+  }
+}
+
+// Depth/stencil and MSAA color are cleared and not stored: with
+// `attachments` they are kept there for later renders of this size, else the
+// allocator creates them for this render and they go with the target.
 bool DenialRenderSlice(
     impeller::ContentContext& content_context,
     const std::shared_ptr<impeller::Context>& context,
     const EmbedderExternalViewEmbedder::DenialSliceStorage& storage,
+    EmbedderExternalViewEmbedder::DenialSliceAttachments* attachments,
     bool msaa,
     const DlIRect& bounds,
     const DlISize& needed,
@@ -1237,7 +1648,10 @@ bool DenialRenderSlice(
             .store_action = impeller::StoreAction::kMultisampleResolve,
             .clear_color = impeller::Color::BlackTransparent()},
         impeller::RenderTarget::kDefaultStencilAttachmentConfig,
-        /*existing_color_msaa_texture=*/nullptr, storage.texture);
+        /*existing_color_msaa_texture=*/
+        attachments ? attachments->msaa_color : nullptr, storage.texture,
+        /*existing_depth_stencil_texture=*/
+        attachments ? attachments->depth_stencil : nullptr);
   } else {
     target = allocator.CreateOffscreen(
         *context, texture_size, /*mip_count=*/1, "Denial slice",
@@ -1247,11 +1661,21 @@ bool DenialRenderSlice(
             .store_action = impeller::StoreAction::kStore,
             .clear_color = impeller::Color::BlackTransparent()},
         impeller::RenderTarget::kDefaultStencilAttachmentConfig,
-        storage.texture);
+        storage.texture,
+        /*existing_depth_stencil_texture=*/
+        attachments ? attachments->depth_stencil : nullptr);
   }
   if (!target.IsValid()) {
     FML_LOG(ERROR) << "Denial slice render target is invalid";
     return false;
+  }
+  if (attachments) {
+    if (msaa) {
+      attachments->msaa_color = target.GetColorAttachment(0).texture;
+    }
+    const auto& stencil = target.GetStencilAttachment();
+    attachments->depth_stencil =
+        stencil.has_value() ? stencil->texture : nullptr;
   }
   // Render in target pixels, as the direct path does. Glyphs snap to whole
   // pixels, and the flip rounds a glyph on a half pixel the other way, so an
@@ -1261,11 +1685,19 @@ bool DenialRenderSlice(
   builder.Translate(-pixels.GetLeft(), -pixels.GetTop());
   builder.Transform(transformation);
   builder.DrawDisplayList(display_list);
-  return impeller::RenderToTarget(
+  // A pass that failed anywhere in the render (nested ones included) lost
+  // draws: the slice is not published, and its slot renders again.
+  const uint64_t failures = content_context.GetPassFailures();
+  const bool rendered = impeller::RenderToTarget(
       content_context, target, builder.Build(),
       impeller::Rect::MakeSize(impeller::ISize(needed.width, needed.height)),
       /*reset_host_buffer=*/false,
       /*is_onscreen=*/false);
+  if (!rendered || content_context.GetPassFailures() != failures) {
+    FML_LOG(ERROR) << "Denial slice render failed; the frame is not composed";
+    return false;
+  }
+  return true;
 }
 
 // `open_materials` holds the mutator depth of each open material, innermost
@@ -1378,14 +1810,22 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
   }
   bool composed = false;
 #ifdef IMPELLER_SUPPORTS_RENDERING
-  if (pending_denial_render_target_->GetImpellerRenderTarget() &&
-      aiks_context) {
+  if (aiks_context) {
     auto& content_context = aiks_context->GetContentContext();
     const auto context = aiks_context->GetContext();
     auto& view_slices = denial_slices_[flutter_view_id];
     auto& slices = view_slices.slots;
     auto& entries = view_slices.entries;
     entries.clear();
+    ++view_slices.scene_revision;
+    if (denial_ticket_ != 0 && denial_composer_ineligible_ != nullptr) {
+      // Preflight found content the composer cannot describe: render into
+      // engine storage and compose in the engine.
+      DenialLogComposerFallback(flutter_view_id, denial_composer_ineligible_);
+      if (!denial_vulkan_fallback_) {
+        DenialCancelTicket();
+      }
+    }
     const DlIRect frame_rect = DlIRect::MakeSize(pending_frame_size_);
     // A slice stands in for part of the pass its content lands in: the
     // output's root pass, or the save layer of an open material. A direct
@@ -1394,21 +1834,35 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
     // one renders multisampled even on a single-sample output.
     const bool offscreen_msaa =
         context->GetCapabilities()->SupportsOffscreenMSAA();
+    // A target only the composer draws has no Impeller target: its root
+    // pass is single-sample.
+    const auto* output_target =
+        pending_denial_render_target_->GetImpellerRenderTarget();
     const bool output_msaa =
-        offscreen_msaa &&
-        pending_denial_render_target_->GetImpellerRenderTarget()
-                ->GetColorAttachment(0)
+        offscreen_msaa && output_target &&
+        output_target->GetColorAttachment(0)
                 .texture->GetTextureDescriptor()
                 .sample_count != impeller::SampleCount::kCount1;
+    // GLES stores single-sample passes bottom up; Vulkan stores every pass
+    // top down.
+    const bool gles = context->GetBackendType() ==
+                      impeller::Context::BackendType::kOpenGLES;
     // Open materials in paint order, as DenialComposeEntries replays them.
     size_t open_materials = 0;
     // Storage that slices of this build released, for its later slices.
     std::vector<DenialSliceStorage> pool;
+    // Slice attachments are kept on Vulkan, where each would be a fresh
+    // image and memory allocation.
+    const bool keep_attachments =
+        context->GetBackendType() == impeller::Context::BackendType::kVulkan;
+    ++denial_slice_frame_;
+    DenialTrimSliceAttachments(denial_slice_attachments_, denial_slice_frame_);
     // The repaint bounds describe the output's damage clip; slices render
     // in full into their own targets.
     const auto repaint_bounds = content_context.GetFrameRepaintBounds();
     content_context.SetFrameRepaintBounds(std::nullopt);
     size_t slice_index = 0;
+    bool slices_rendered = false;
     composed = true;
     for (const auto& view_id : composition_order_) {
       auto& view = pending_views_[view_id];
@@ -1473,11 +1927,12 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       // the GLES offscreen flip, and a material's content in its offscreen
       // save layer with it. Mirrored rows break pixel-centre ties the other
       // way, which moved single-sample edges on a half pixel by a row.
-      const bool bottom_up = !msaa;
+      const bool bottom_up = gles && !msaa;
       const bool reuse =
           slot.storage.image && slot.display_list && slot.bounds == *bounds &&
           slot.transformation == pending_surface_transformation_ &&
-          slot.msaa == msaa && slot.display_list->Equals(display_list);
+          slot.msaa == msaa && slot.display_list->Equals(display_list) &&
+          (denial_ticket_ == 0 || slot.storage.composer_key.has_value());
       if (audit) {
         if (reuse) {
           ++audit->slices_reused;
@@ -1501,9 +1956,42 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       // The slot's content is replaced either way; drop it first so a
       // failure never leaves stale content marked reusable.
       slot.display_list.reset();
-      if (!DenialPrepareSliceStorage(context, pool, slot.storage, needed,
-                                     bottom_up, allocations, pool_reuses) ||
-          !DenialRenderSlice(content_context, context, slot.storage, msaa,
+      bool prepared = false;
+      if (denial_ticket_ != 0) {
+        // A published version is never written again: a rewrite renders
+        // into fresh storage from the composer, which pools allocations.
+        auto acquired =
+            DenialAcquireComposerStorage(context, *denial_scene_composer_,
+                                         denial_ticket_, needed, bottom_up);
+        if (acquired.has_value()) {
+          slot.storage = std::move(acquired.value());
+          ++allocations;
+          prepared = true;
+        } else if (!denial_vulkan_fallback_) {
+          // Finish this frame in the engine, from engine storage.
+          DenialCancelTicket();
+        }
+      }
+      if (!prepared) {
+        if (slot.storage.composer_key.has_value()) {
+          // The composer may still read this version; draw elsewhere.
+          slot.storage = {};
+        }
+        prepared =
+            DenialPrepareSliceStorage(context, pool, slot.storage, needed,
+                                      bottom_up, allocations, pool_reuses);
+      }
+      slices_rendered = slices_rendered || prepared;
+      DenialSliceAttachments* attachments = nullptr;
+      if (keep_attachments && prepared) {
+        attachments = &denial_slice_attachments_[std::make_tuple(
+            static_cast<int64_t>(slot.storage.size.width),
+            static_cast<int64_t>(slot.storage.size.height), msaa)];
+        attachments->last_frame = denial_slice_frame_;
+      }
+      if (!prepared ||
+          !DenialRenderSlice(content_context, context, slot.storage,
+                             attachments, msaa,
                              *bounds, needed, pending_surface_transformation_,
                              display_list)) {
         composed = false;
@@ -1532,9 +2020,46 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       audit->max_slices =
           std::max(audit->max_slices, static_cast<uint64_t>(slice_index));
     }
-    composed = composed &&
-               DenialComposeEntries(view_slices, aiks_context,
-                                    frame->submit_info().buffer_damage, audit);
+    if (composed) {
+      // What this build leaves the composer, for recompositions of the tree.
+      view_slices.composer_ineligible = denial_composer_ineligible_;
+      view_slices.composer_engine_slots =
+          denial_scene_composer_.has_value() &&
+          std::any_of(slices.begin(), slices.end(), [](const DenialSlice& s) {
+            return !s.storage.composer_key.has_value();
+          });
+    }
+    bool transients_reset = false;
+    // Content the composer cannot describe is not offered to it.
+    const bool stageable =
+        !(denial_vulkan_fallback_ && denial_composer_ineligible_ != nullptr);
+    if (composed && stageable &&
+        DenialStageScene(flutter_view_id, view_slices, aiks_context)) {
+      view_slices.composer_drew = true;
+    } else if (!output_target) {
+      if (composed &&
+          DenialVulkanFallback(flutter_view_id, view_slices, aiks_context,
+                               audit, frame,
+                               stageable ? "scene not staged"
+                                         : denial_composer_ineligible_,
+                               &transients_reset)) {
+        view_slices.composer_drew = true;
+      } else {
+        DenialLogDecline(flutter_view_id, "scene not staged");
+        composed = false;
+      }
+    } else {
+      DenialTakeComposerHandover(flutter_view_id, *frame);
+      composed = composed &&
+                 DenialComposeEntries(view_slices, aiks_context,
+                                      frame->submit_info().buffer_damage,
+                                      audit, &transients_reset);
+    }
+    if (slices_rendered && !transients_reset) {
+      // Slice renders appended to the host buffers; engine composition, when
+      // it ran, already reset them.
+      content_context.ResetTransientsBuffers();
+    }
     if (composed) {
       view_slices.tree = denial_frame_tree_;
       view_slices.frame_size = pending_frame_size_;
@@ -1567,8 +2092,29 @@ void EmbedderExternalViewEmbedder::DenialRecompose(
   auto view = denial_slices_.find(flutter_view_id);
 #ifdef IMPELLER_SUPPORTS_RENDERING
   if (view != denial_slices_.end() && pending_denial_render_target_) {
-    composed = DenialComposeEntries(view->second, aiks_context,
-                                    frame->submit_info().buffer_damage, audit);
+    const bool stageable =
+        !(denial_vulkan_fallback_ && view->second.composer_ineligible != nullptr);
+    if (stageable &&
+        DenialStageScene(flutter_view_id, view->second, aiks_context)) {
+      view->second.composer_drew = true;
+      composed = true;
+    } else if (!pending_denial_render_target_->GetImpellerRenderTarget()) {
+      composed = DenialVulkanFallback(
+          flutter_view_id, view->second, aiks_context, audit, frame,
+          stageable ? "recomposition not staged"
+                    : view->second.composer_ineligible,
+          /*transients_reset=*/nullptr);
+      if (composed) {
+        view->second.composer_drew = true;
+      } else {
+        DenialLogDecline(flutter_view_id, "recomposition not staged");
+      }
+    } else {
+      DenialTakeComposerHandover(flutter_view_id, *frame);
+      composed = DenialComposeEntries(view->second, aiks_context,
+                                      frame->submit_info().buffer_damage, audit,
+                                      /*transients_reset=*/nullptr);
+    }
   }
 #endif  // IMPELLER_SUPPORTS_RENDERING
   if (!composed && view != denial_slices_.end()) {
@@ -1591,10 +2137,12 @@ bool EmbedderExternalViewEmbedder::DenialComposeEntries(
     const DenialViewSlices& view,
     const std::shared_ptr<impeller::AiksContext>& aiks_context,
     const std::optional<DlRegion>& buffer_damage,
-    DenialLayeredAudit* audit) {
+    DenialLayeredAudit* audit,
+    bool* transients_reset,
+    impeller::RenderTarget* target) {
 #ifdef IMPELLER_SUPPORTS_RENDERING
   auto* impeller_target =
-      pending_denial_render_target_->GetImpellerRenderTarget();
+      target ? target : pending_denial_render_target_->GetImpellerRenderTarget();
   if (!impeller_target || !aiks_context) {
     return false;
   }
@@ -1671,13 +2219,676 @@ bool EmbedderExternalViewEmbedder::DenialComposeEntries(
   color0.load_action =
       full_repaint ? impeller::LoadAction::kClear : impeller::LoadAction::kLoad;
   impeller_target->SetColorAttachment(color0, 0u);
-  return impeller::RenderToTarget(
-      aiks_context->GetContentContext(), *impeller_target, composition.Build(),
+  const bool gles = aiks_context->GetContext()->GetBackendType() ==
+                    impeller::Context::BackendType::kOpenGLES;
+  if (gles && denial_scene_composer_.has_value() &&
+      std::any_of(view.slots.begin(), view.slots.end(),
+                  [](const DenialSlice& slot) {
+                    return slot.storage.composer_key.has_value();
+                  })) {
+    // The composer may still be reading this storage on its own queue. On
+    // Vulkan the engine shares that queue: published versions are only read.
+    if (!denial_scene_composer_->prepare_gles_read(
+            denial_scene_composer_->user_data, pending_flutter_view_id_)) {
+      return false;
+    }
+  }
+  sk_sp<DisplayList> display_list = composition.Build();
+  if (target != nullptr && denial_vulkan_fallback_ &&
+      !denial_scene_composer_->lend_textures_vk(
+          denial_scene_composer_->user_data, denial_ticket_)) {
+    // Built: every image a texture resolved is the composer's to return.
+    return false;
+  }
+  if (transients_reset) {
+    *transients_reset = true;
+  }
+  auto& content_context = aiks_context->GetContentContext();
+  const uint64_t failures = content_context.GetPassFailures();
+  const bool rendered = impeller::RenderToTarget(
+      content_context, *impeller_target, display_list,
       impeller::Rect::MakeSize(impeller_target->GetRenderTargetSize()),
       /*reset_host_buffer=*/true,
       /*is_onscreen=*/false);
+  return rendered && content_context.GetPassFailures() == failures;
 #else
   return false;
+#endif  // IMPELLER_SUPPORTS_RENDERING
+}
+
+bool EmbedderExternalViewEmbedder::DenialVulkanFallback(
+    int64_t flutter_view_id,
+    const DenialViewSlices& view,
+    const std::shared_ptr<impeller::AiksContext>& aiks_context,
+    DenialLayeredAudit* audit,
+    std::unique_ptr<SurfaceFrame>& frame,
+    const char* reason,
+    bool* transients_reset) {
+#if defined(SHELL_ENABLE_VULKAN) && defined(IMPELLER_SUPPORTS_RENDERING)
+  if (!denial_vulkan_fallback_ || denial_ticket_ == 0 || !aiks_context ||
+      aiks_context->GetContext()->GetBackendType() !=
+          impeller::Context::BackendType::kVulkan) {
+    return false;
+  }
+  ++denial_fallbacks_;
+  if (denial_fallbacks_ <= 16 ||
+      (denial_fallbacks_ & (denial_fallbacks_ - 1)) == 0) {
+    FML_LOG(ERROR) << "Denial scene composer could not take a frame of view "
+                   << flutter_view_id << " (" << (reason ? reason : "unknown")
+                   << "); the engine composes it, fallbacks="
+                   << denial_fallbacks_;
+  }
+  const std::shared_ptr<impeller::Context>& context =
+      aiks_context->GetContext();
+  const DenialFlutterSceneComposer& composer = *denial_scene_composer_;
+  auto storage =
+      DenialAcquireComposerStorageVK(context, composer, denial_ticket_,
+                                     pending_frame_size_, /*sampled=*/false);
+  if (!storage.has_value()) {
+    return false;
+  }
+  // The root of a direct frame: single-sample, cleared, its own depth and
+  // stencil; Canvas renders backdrop passes into a readback layer.
+  impeller::RenderTargetAllocator allocator(context->GetResourceAllocator());
+  impeller::RenderTarget target = allocator.CreateOffscreen(
+      *context,
+      impeller::ISize(storage->size.width, storage->size.height),
+      /*mip_count=*/1, "Denial engine fallback",
+      impeller::RenderTarget::AttachmentConfig{
+          .storage_mode = impeller::StorageMode::kDevicePrivate,
+          .load_action = impeller::LoadAction::kClear,
+          .store_action = impeller::StoreAction::kStore,
+          .clear_color = impeller::Color::BlackTransparent()},
+      impeller::RenderTarget::kDefaultStencilAttachmentConfig,
+      storage->texture);
+  if (!target.IsValid()) {
+    FML_LOG(ERROR) << "Denial engine fallback target is invalid";
+    return false;
+  }
+  DenialTextureLending lending{.composer = composer, .ticket = denial_ticket_};
+  DenialSetTextureLending(&lending);
+  const bool rendered = DenialComposeEntries(
+      view, aiks_context, /*buffer_damage=*/std::nullopt, audit,
+      transients_reset, &target);
+  DenialSetTextureLending(nullptr);
+  // Submitted or given up: the composer takes its images back either way.
+  composer.return_textures_vk(composer.user_data, denial_ticket_);
+  if (!rendered) {
+    FML_LOG(ERROR) << "Denial engine fallback composition failed";
+    return false;
+  }
+  // The whole output changes renderer: report all of it, frame and buffer.
+  SurfaceFrame::SubmitInfo info = frame->submit_info();
+  info.frame_damage = std::nullopt;
+  info.buffer_damage = std::nullopt;
+  frame->set_submit_info(info);
+  // A scene of that one slice, under the same ticket.
+  const DlIRect frame_rect = DlIRect::MakeSize(pending_frame_size_);
+  DenialViewSlices fallback;
+  fallback.scene_revision = ++denial_fallback_revision_ | (uint64_t{1} << 63);
+  fallback.slots.resize(1);
+  DenialSlice& slot = fallback.slots.front();
+  slot.storage = std::move(storage.value());
+  slot.bounds = frame_rect;
+  slot.transformation = DlMatrix();
+  slot.rects = {frame_rect};
+  fallback.entries.push_back({.slice = 0});
+  return DenialStageScene(flutter_view_id, fallback, aiks_context);
+#else
+  return false;
+#endif  // SHELL_ENABLE_VULKAN && IMPELLER_SUPPORTS_RENDERING
+}
+
+#ifdef IMPELLER_SUPPORTS_RENDERING
+namespace {
+
+FlutterRect DenialFlutterRect(const DlRect& rect) {
+  return FlutterRect{.left = rect.GetLeft(),
+                     .top = rect.GetTop(),
+                     .right = rect.GetRight(),
+                     .bottom = rect.GetBottom()};
+}
+
+FlutterTransformation DenialFlutterTransformation(const DlMatrix& matrix) {
+  FlutterTransformation transformation = {};
+  transformation.scaleX = matrix.m[0];
+  transformation.skewX = matrix.m[4];
+  transformation.transX = matrix.m[12];
+  transformation.skewY = matrix.m[1];
+  transformation.scaleY = matrix.m[5];
+  transformation.transY = matrix.m[13];
+  transformation.pers0 = matrix.m[3];
+  transformation.pers1 = matrix.m[7];
+  transformation.pers2 = matrix.m[15];
+  return transformation;
+}
+
+FlutterRoundedRect DenialFlutterRoundedRect(const DlRoundRect& rrect) {
+  const auto& radii = rrect.GetRadii();
+  FlutterRoundedRect out = {};
+  out.rect = DenialFlutterRect(rrect.GetBounds());
+  out.upper_left_corner_radius = {radii.top_left.width, radii.top_left.height};
+  out.upper_right_corner_radius = {radii.top_right.width,
+                                   radii.top_right.height};
+  out.lower_right_corner_radius = {radii.bottom_right.width,
+                                   radii.bottom_right.height};
+  out.lower_left_corner_radius = {radii.bottom_left.width,
+                                  radii.bottom_left.height};
+  return out;
+}
+
+// Describes `cut`'s material. Returns why it cannot be, or nullptr.
+// `filter`'s parameters into `out`; the filter is eligible.
+void DenialDescribeFilter(const DlImageFilter& filter,
+                          DenialFlutterMaterial& out) {
+  if (const DlBlurImageFilter* blur = filter.asBlur()) {
+    out.filter = kDenialFlutterMaterialBlur;
+    out.sigma_x = blur->sigma_x();
+    out.sigma_y = blur->sigma_y();
+    out.alpha_threshold =
+        std::clamp(blur->backdrop_alpha_threshold(), 0.0f, 1.0f);
+    return;
+  }
+  if (const DlGlassImageFilter* glass = filter.asGlass()) {
+    out.filter = kDenialFlutterMaterialGlass;
+    out.sigma_x = glass->sigma_x();
+    out.sigma_y = glass->sigma_y();
+    out.shape = DenialFlutterRoundedRect(glass->shape());
+    out.thickness = glass->thickness();
+    out.refraction = glass->refraction();
+    out.dispersion = glass->dispersion();
+    out.saturation = glass->saturation();
+    out.tint = glass->tint().argb();
+    out.tint_strength = glass->tint_strength();
+    out.brightness = glass->brightness();
+    out.light_angle = glass->light_angle();
+    out.light_intensity = glass->light_intensity();
+    out.edge_strength = glass->edge_strength();
+    out.bevel_width_scale = glass->bevel_width_scale();
+    out.refraction_depth_scale = glass->refraction_depth_scale();
+    out.rim_width = glass->rim_width();
+    out.rim_falloff = glass->rim_falloff();
+    out.opposite_light_strength = glass->opposite_light_strength();
+    out.alpha_threshold =
+        std::clamp(glass->backdrop_alpha_threshold(), 0.0f, 1.0f);
+  }
+}
+
+// The scene below a window, or a material cut, read now: a recomposition's
+// damage pass may have invalidated the cache.
+void DenialDescribeToken(const DenialCutEntry& cut,
+                         DenialFlutterMaterial& out) {
+  if (cut.backdrop_cache) {
+    out.has_backdrop_token = true;
+    out.backdrop_token = cut.backdrop_cache->token();
+  }
+}
+
+const char* DenialDescribeMaterial(const DenialCutEntry& cut,
+                                   DenialFlutterMaterial& out) {
+  out = {};
+  out.struct_size = sizeof(out);
+  if (const char* reason = DenialMaterialIneligibility(cut)) {
+    return reason;
+  }
+  if (cut.content_clip.has_value()) {
+    out.has_content_clip = true;
+    out.content_clip = DenialFlutterRect(*cut.content_clip);
+  }
+  out.blend_mode = static_cast<uint32_t>(cut.blend_mode);
+  out.bounds = DenialFlutterRect(cut.bounds);
+  DenialDescribeToken(cut, out);
+  DenialDescribeFilter(*cut.filter, out);
+  return nullptr;
+}
+
+// A window's backdrop material: over its material bounds, or its content.
+const char* DenialDescribeWindowMaterial(const DenialCutEntry& cut,
+                                         DenialFlutterMaterial& out) {
+  out = {};
+  out.struct_size = sizeof(out);
+  if (const char* reason = DenialWindowIneligibility(cut)) {
+    return reason;
+  }
+  const auto& style = cut.window->style();
+  out.blend_mode = static_cast<uint32_t>(DlBlendMode::kSrcOver);
+  out.bounds =
+      DenialFlutterRect(style.material_bounds.value_or(style.content_bounds));
+  DenialDescribeToken(cut, out);
+  DenialDescribeFilter(*cut.window->backdrop(), out);
+  return nullptr;
+}
+
+DenialFlutterSceneSampling DenialFlutterSampling(DlImageSampling sampling) {
+  switch (sampling) {
+    case DlImageSampling::kNearestNeighbor:
+      return kDenialFlutterSceneSamplingNearest;
+    case DlImageSampling::kLinear:
+      return kDenialFlutterSceneSamplingLinear;
+    case DlImageSampling::kMipmapLinear:
+      return kDenialFlutterSceneSamplingMipmapLinear;
+    case DlImageSampling::kCubic:
+      return kDenialFlutterSceneSamplingCubic;
+  }
+  return kDenialFlutterSceneSamplingLinear;
+}
+
+// A path clip's contours, as offsets into the scene's point and contour
+// arrays, which grow while entries are described.
+struct DenialClipPathRange {
+  DenialFlutterClipPathFill fill;
+  size_t first_point;
+  size_t point_count;
+  size_t first_contour;
+  size_t contour_count;
+};
+
+// Receives the polygons Impeller's fill tessellation makes of a path.
+class DenialContourWriter : public impeller::PathTessellator::VertexWriter {
+ public:
+  DenialContourWriter(std::vector<FlutterPoint>& points,
+                      std::vector<uint32_t>& contour_ends)
+      : points_(points),
+        contour_ends_(contour_ends),
+        first_point_(points.size()) {}
+
+  void Write(impeller::Point point) override {
+    points_.push_back({.x = point.x, .y = point.y});
+  }
+
+  void EndContour() override {
+    const uint32_t end = static_cast<uint32_t>(points_.size() - first_point_);
+    const uint32_t start =
+        contour_ends_.size() > first_contour_ ? contour_ends_.back() : 0u;
+    if (end > start) {
+      contour_ends_.push_back(end);
+    }
+  }
+
+ private:
+  std::vector<FlutterPoint>& points_;
+  std::vector<uint32_t>& contour_ends_;
+  const size_t first_point_;
+  const size_t first_contour_ = contour_ends_.size();
+};
+
+// Flattens `source` as Impeller fills it under `transform` (the clip's
+// space to target pixels), into the scene's arrays.
+DenialClipPathRange DenialFlattenClip(const impeller::PathSource& source,
+                                      const DlMatrix& transform,
+                                      std::vector<FlutterPoint>& points,
+                                      std::vector<uint32_t>& contour_ends) {
+  DenialClipPathRange range = {
+      .fill = source.GetFillType() == impeller::FillType::kOdd
+                  ? kDenialFlutterClipPathFillEvenOdd
+                  : kDenialFlutterClipPathFillNonZero,
+      .first_point = points.size(),
+      .first_contour = contour_ends.size(),
+  };
+  DenialContourWriter writer(points, contour_ends);
+  impeller::PathTessellator::PathToFilledVertices(
+      source, writer, transform.GetMaxBasisLengthXY());
+  range.point_count = points.size() - range.first_point;
+  range.contour_count = contour_ends.size() - range.first_contour;
+  return range;
+}
+
+// Appends `mutators` outermost first; path and round-superellipse clips
+// flattened under `root` (scene to target pixels) and the transforms before
+// them. Returns why they cannot be described, or nullptr.
+const char* DenialDescribeMutators(
+    const MutatorsStack& mutators,
+    const DlMatrix& root,
+    std::vector<FlutterPlatformViewMutation>& out,
+    std::vector<DenialClipPathRange>& paths,
+    std::vector<FlutterPoint>& points,
+    std::vector<uint32_t>& contour_ends) {
+  DlMatrix transform = root;
+  for (auto it = mutators.Begin(); it != mutators.End(); ++it) {
+    const auto& mutator = *it;
+    FlutterPlatformViewMutation mutation = {};
+    switch (mutator->GetType()) {
+      case MutatorType::kClipRect:
+        mutation.type = kFlutterPlatformViewMutationTypeClipRect;
+        mutation.clip_rect = DenialFlutterRect(mutator->GetRect());
+        break;
+      case MutatorType::kClipRRect:
+        mutation.type = kFlutterPlatformViewMutationTypeClipRoundedRect;
+        mutation.clip_rounded_rect =
+            DenialFlutterRoundedRect(mutator->GetRRect());
+        break;
+      case MutatorType::kTransform:
+        if (DenialMatrixHasDepth(mutator->GetMatrix())) {
+          return "3D transform";
+        }
+        mutation.type = kFlutterPlatformViewMutationTypeTransformation;
+        mutation.transformation =
+            DenialFlutterTransformation(mutator->GetMatrix());
+        transform = transform * mutator->GetMatrix();
+        break;
+      case MutatorType::kOpacity:
+        mutation.type = kFlutterPlatformViewMutationTypeOpacity;
+        mutation.opacity = mutator->GetAlphaFloat();
+        break;
+      case MutatorType::kClipRSE: {
+        const impeller::RoundSuperellipsePathSource source(mutator->GetRSE());
+        mutation.type = kDenialFlutterPlatformViewMutationTypeClipPath;
+        mutation.clip_rect = DenialFlutterRect(source.GetBounds());
+        paths.push_back(
+            DenialFlattenClip(source, transform, points, contour_ends));
+        break;
+      }
+      case MutatorType::kClipPath: {
+        const DlPath& path = mutator->GetPath();
+        mutation.type = kDenialFlutterPlatformViewMutationTypeClipPath;
+        mutation.clip_rect = DenialFlutterRect(path.GetBounds());
+        paths.push_back(
+            DenialFlattenClip(path, transform, points, contour_ends));
+        break;
+      }
+      case MutatorType::kBackdropFilter:
+      case MutatorType::kBackdropClipRect:
+      case MutatorType::kBackdropClipRRect:
+      case MutatorType::kBackdropClipRSuperellipse:
+      case MutatorType::kBackdropClipPath:
+        // Not replayed by engine composition either.
+        continue;
+    }
+    out.push_back(mutation);
+  }
+  return nullptr;
+}
+
+}  // namespace
+#endif  // IMPELLER_SUPPORTS_RENDERING
+
+void EmbedderExternalViewEmbedder::SetDenialSceneComposer(
+    DenialFlutterSceneComposer composer) {
+  // Installed once (EmbedderEngine), before any slot holds composer storage.
+  denial_scene_composer_ = composer;
+  denial_vulkan_fallback_ = composer.acquire_writer_vk != nullptr &&
+                            composer.resolve_texture_vk != nullptr &&
+                            composer.lend_textures_vk != nullptr &&
+                            composer.return_textures_vk != nullptr;
+}
+
+bool EmbedderExternalViewEmbedder::DenialTakeComposerHandover(
+    int64_t flutter_view_id,
+    SurfaceFrame& frame) {
+  auto view = denial_slices_.find(flutter_view_id);
+  const bool drew = view != denial_slices_.end() && view->second.composer_drew;
+  if (view != denial_slices_.end()) {
+    view->second.composer_drew = false;
+  }
+  if (!drew && !denial_composer_pinned_) {
+    return false;
+  }
+  denial_composer_pinned_ = false;
+  denial_handover_taken_.insert(flutter_view_id);
+  SurfaceFrame::SubmitInfo info = frame.submit_info();
+  info.frame_damage = std::nullopt;
+  info.buffer_damage = std::nullopt;
+  frame.set_submit_info(info);
+  return true;
+}
+
+bool EmbedderExternalViewEmbedder::DenialPinBackdrop(int64_t token) {
+  if (denial_ticket_ == 0 || !denial_scene_composer_.has_value() ||
+      !denial_scene_composer_->pin_backdrop(denial_scene_composer_->user_data,
+                                            denial_ticket_, token)) {
+    return false;
+  }
+  denial_composer_pinned_ = true;
+  return true;
+}
+
+void EmbedderExternalViewEmbedder::DenialCancelTicket() {
+  if (denial_ticket_ != 0 && denial_scene_composer_.has_value()) {
+    denial_scene_composer_->cancel(denial_scene_composer_->user_data,
+                                   denial_ticket_);
+  }
+  denial_ticket_ = 0;
+}
+
+void EmbedderExternalViewEmbedder::DenialLogDecline(int64_t flutter_view_id,
+                                                    const char* reason) {
+  // Only the scene composer draws this target: the frame is skipped and the
+  // output keeps its last one.
+  ++denial_declines_;
+  if (denial_declines_ <= 16 || (denial_declines_ & (denial_declines_ - 1)) == 0) {
+    FML_LOG(ERROR) << "Denial scene composer declined a frame of view "
+                   << flutter_view_id << " (" << reason
+                   << "); frame skipped, declines=" << denial_declines_;
+  }
+}
+
+void EmbedderExternalViewEmbedder::DenialLogComposerFallback(
+    int64_t flutter_view_id,
+    const char* reason) {
+  // A few lines are enough to see what keeps frames from the composer.
+  if (denial_stage_fallbacks_logged_ < 16) {
+    ++denial_stage_fallbacks_logged_;
+    FML_LOG(IMPORTANT) << "Denial scene composer: engine composes view "
+                       << flutter_view_id << " (" << reason << ")";
+  }
+}
+
+bool EmbedderExternalViewEmbedder::DenialStageScene(
+    int64_t flutter_view_id,
+    DenialViewSlices& view,
+    const std::shared_ptr<impeller::AiksContext>& aiks_context) {
+#ifndef IMPELLER_SUPPORTS_RENDERING
+  DenialCancelTicket();
+  return false;
+#else
+  if (denial_ticket_ == 0 || !denial_scene_composer_.has_value()) {
+    return false;
+  }
+  const char* unsupported = nullptr;
+  std::vector<DenialFlutterSceneEntry> entries;
+  entries.reserve(view.entries.size());
+  std::vector<DenialFlutterSliceBlit> blits;
+  std::vector<FlutterPlatformViewMutation> mutations;
+  // Path clips, in mutation order, and their contours.
+  std::vector<DenialClipPathRange> path_ranges;
+  std::vector<FlutterPoint> path_points;
+  std::vector<uint32_t> path_contour_ends;
+  // Each entry's first path clip and count.
+  std::vector<std::pair<size_t, size_t>> entry_paths;
+  entry_paths.reserve(view.entries.size());
+  // One per material begin and window material, in entry order.
+  std::vector<DenialFlutterMaterial> materials;
+  // Offsets into `blits` and `mutations`, which grow while entries are
+  // described; pointers are taken once both are complete.
+  std::vector<std::pair<size_t, size_t>> ranges;
+  ranges.reserve(view.entries.size());
+  for (const auto& entry : view.entries) {
+    DenialFlutterSceneEntry out = {};
+    out.struct_size = sizeof(out);
+    if (entry.slice.has_value()) {
+      const DenialSlice& slot = view.slots[entry.slice.value()];
+      if (!slot.storage.composer_key.has_value()) {
+        unsupported = "engine-owned slice storage";
+        break;
+      }
+      out.kind = kDenialFlutterSceneEntrySlice;
+      out.slice = slot.storage.composer_key.value();
+      out.slice_bottom_up = slot.storage.bottom_up;
+      out.slice_storage_width = static_cast<uint32_t>(slot.storage.size.width);
+      out.slice_storage_height =
+          static_cast<uint32_t>(slot.storage.size.height);
+      const size_t first = blits.size();
+      const DlIRect slice_target =
+          DenialTargetRect(slot.bounds, slot.transformation);
+      for (const DlIRect& rect : slot.rects) {
+        const DlIRect target = DenialTargetRect(rect, slot.transformation);
+        blits.push_back(
+            {.source = DenialFlutterRect(DlRect::Make(target.Shift(
+                 -slice_target.GetLeft(), -slice_target.GetTop()))),
+             .destination = DenialFlutterRect(DlRect::Make(target))});
+      }
+      ranges.emplace_back(first, blits.size() - first);
+      entry_paths.emplace_back(path_ranges.size(), 0);
+      entries.push_back(out);
+      continue;
+    }
+    const DenialCutEntry& cut = entry.cut;
+    switch (cut.kind) {
+      case DenialCutEntry::Kind::kMaterialBegin:
+        out.kind = kDenialFlutterSceneEntryMaterialBegin;
+        unsupported = DenialDescribeMaterial(cut, materials.emplace_back());
+        break;
+      case DenialCutEntry::Kind::kMaterialEnd:
+        out.kind = kDenialFlutterSceneEntryMaterialEnd;
+        ranges.emplace_back(mutations.size(), 0);
+        entry_paths.emplace_back(path_ranges.size(), 0);
+        entries.push_back(out);
+        continue;
+      case DenialCutEntry::Kind::kWindowSurface:
+        if (!cut.window) {
+          unsupported = "window without style";
+          break;
+        }
+        if (cut.window->backdrop()) {
+          out.kind = kDenialFlutterSceneEntryWindowMaterial;
+          unsupported =
+              DenialDescribeWindowMaterial(cut, materials.emplace_back());
+          if (unsupported) {
+            break;
+          }
+        } else {
+          out.kind = kDenialFlutterSceneEntryWindow;
+        }
+        {
+          const auto& style = cut.window->style();
+          out.window_bounds = DenialFlutterRect(style.bounds);
+          out.content_bounds = DenialFlutterRect(style.content_bounds);
+          out.has_material_bounds = style.material_bounds.has_value();
+          if (style.material_bounds.has_value()) {
+            out.material_bounds = DenialFlutterRect(*style.material_bounds);
+          }
+          out.radius = style.radius;
+          out.frame_color = style.frame_color.argb();
+          out.direct_texture = cut.window->direct_texture();
+        }
+        break;
+      case DenialCutEntry::Kind::kTexture:
+        out.kind = kDenialFlutterSceneEntryTexture;
+        break;
+    }
+    if (unsupported) {
+      break;
+    }
+    out.texture_id = cut.texture_id;
+    out.texture_bounds = DenialFlutterRect(cut.texture_bounds);
+    out.texture_transform = DenialFlutterTransformation(cut.texture_transform);
+    out.sampling = DenialFlutterSampling(cut.sampling);
+    out.surface_opacity = cut.surface_opacity;
+    out.freeze = cut.freeze;
+    const size_t first = mutations.size();
+    const size_t first_path = path_ranges.size();
+    unsupported = DenialDescribeMutators(
+        entry.params.mutatorsStack(), pending_surface_transformation_,
+        mutations, path_ranges, path_points, path_contour_ends);
+    if (unsupported) {
+      break;
+    }
+    ranges.emplace_back(first, mutations.size() - first);
+    entry_paths.emplace_back(first_path, path_ranges.size() - first_path);
+    entries.push_back(out);
+  }
+  if (unsupported) {
+    DenialLogComposerFallback(flutter_view_id, unsupported);
+    if (!denial_vulkan_fallback_) {
+      DenialCancelTicket();
+    }
+    return false;
+  }
+  // Every array is complete: take pointers.
+  std::vector<DenialFlutterClipPath> clip_paths;
+  clip_paths.reserve(path_ranges.size());
+  for (const DenialClipPathRange& range : path_ranges) {
+    clip_paths.push_back({
+        .fill = range.fill,
+        .point_count = range.point_count,
+        .points = range.point_count ? path_points.data() + range.first_point
+                                    : nullptr,
+        .contour_count = range.contour_count,
+        .contour_ends = range.contour_count ? path_contour_ends.data() +
+                                                  range.first_contour
+                                            : nullptr,
+    });
+  }
+  size_t material = 0;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    auto& out = entries[i];
+    out.clip_path_count = entry_paths[i].second;
+    out.clip_paths = out.clip_path_count
+                         ? clip_paths.data() + entry_paths[i].first
+                         : nullptr;
+    if (out.kind == kDenialFlutterSceneEntrySlice) {
+      out.blit_count = ranges[i].second;
+      out.blits = out.blit_count ? blits.data() + ranges[i].first : nullptr;
+    } else {
+      out.mutation_count = ranges[i].second;
+      out.mutations =
+          out.mutation_count ? mutations.data() + ranges[i].first : nullptr;
+    }
+    if (out.kind == kDenialFlutterSceneEntryMaterialBegin ||
+        out.kind == kDenialFlutterSceneEntryWindowMaterial) {
+      out.material = &materials[material++];
+    }
+  }
+  DenialFlutterScene scene = {};
+  scene.struct_size = sizeof(scene);
+  scene.view_id = flutter_view_id;
+  scene.ticket = denial_ticket_;
+  scene.scene_revision = view.scene_revision;
+  scene.width = static_cast<uint32_t>(pending_frame_size_.width);
+  scene.height = static_cast<uint32_t>(pending_frame_size_.height);
+  scene.output_from_scene =
+      DenialFlutterTransformation(pending_surface_transformation_);
+  scene.entry_count = entries.size();
+  scene.entries = entries.data();
+  // Versions written since the last staged scene that this scene shows; a
+  // version replaced before it was ever staged left with its slot.
+  std::vector<DenialFlutterSliceKey> rewritten;
+  for (const DenialSlice& slot : view.slots) {
+    if (slot.storage.composer_unpublished) {
+      rewritten.push_back(slot.storage.composer_key.value());
+    }
+  }
+  scene.rewritten_count = rewritten.size();
+  scene.rewritten = rewritten.empty() ? nullptr : rewritten.data();
+  if (!denial_scene_composer_->stage(denial_scene_composer_->user_data,
+                                     &scene)) {
+    // With lent client images the ticket stays for the engine's fallback;
+    // DenialPresentLayered cancels whatever is left.
+    if (!denial_vulkan_fallback_) {
+      DenialCancelTicket();
+    }
+    return false;
+  }
+  // The embedder took responsibility for every pending version.
+  for (DenialSlice& slot : view.slots) {
+    slot.storage.composer_unpublished = false;
+  }
+  // Staged: the embedder presents this ticket with the root frame.
+  denial_ticket_ = 0;
+  // The engine draws nothing more for this frame, so the reactor would not
+  // run and a texture the engine let go of would keep its cleanup callback
+  // waiting. For a client buffer the engine composed in an earlier frame,
+  // that callback is what returns the buffer to its client.
+#ifdef SHELL_ENABLE_GL
+  if (aiks_context && aiks_context->GetContext()->GetBackendType() ==
+                          impeller::Context::BackendType::kOpenGLES) {
+    [[maybe_unused]] const bool reacted =
+        impeller::ContextGLES::Cast(*aiks_context->GetContext())
+            .GetReactor()
+            ->React();
+  }
+#endif  // SHELL_ENABLE_GL
+  return true;
 #endif  // IMPELLER_SUPPORTS_RENDERING
 }
 
@@ -1685,10 +2896,13 @@ void EmbedderExternalViewEmbedder::DenialPresentLayered(
     int64_t flutter_view_id,
     bool composed,
     std::unique_ptr<SurfaceFrame> frame) {
+  // A staged frame consumed its ticket; any other is the engine's.
+  DenialCancelTicket();
   if (!composed) {
     FML_LOG(ERROR) << "Denial layered composition failed; frame skipped";
     pending_denial_render_target_.reset();
     frame->Submit();
+    denial_failed_views_.insert(flutter_view_id);
     return;
   }
 
@@ -1704,9 +2918,26 @@ void EmbedderExternalViewEmbedder::DenialPresentLayered(
   presented_layers.PushBackingStoreLayer(
       pending_denial_render_target_->GetBackingStore(),
       {DlIRect::MakeSize(pending_frame_size_)});
-  presented_layers.InvokePresentCallback(flutter_view_id, present_callback_);
+  const bool presented =
+      presented_layers.InvokePresentCallback(flutter_view_id, present_callback_);
   pending_denial_render_target_.reset();
-  frame->Submit();
+  if (!frame->Submit() || !presented) {
+    denial_failed_views_.insert(flutter_view_id);
+  }
+}
+
+bool EmbedderExternalViewEmbedder::DenialTakeSubmitFailure(
+    int64_t flutter_view_id) {
+  const bool failed = denial_failed_views_.erase(flutter_view_id) > 0;
+  const bool handed = denial_handover_taken_.erase(flutter_view_id) > 0;
+  if (failed && handed) {
+    // The retry repaints and reports everything again.
+    auto view = denial_slices_.find(flutter_view_id);
+    if (view != denial_slices_.end()) {
+      view->second.composer_drew = true;
+    }
+  }
+  return failed;
 }
 
 }  // namespace flutter

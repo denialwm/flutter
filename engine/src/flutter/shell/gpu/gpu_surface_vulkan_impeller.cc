@@ -93,6 +93,31 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
     return nullptr;
   }
 
+  // Denial: the compositor's backing stores receive every output frame. The
+  // root frame only carries the raster pass and its damage to the embedder,
+  // as the OpenGL root surface does with FBO 0.
+  if (delegate_ != nullptr && delegate_->DenialCarriesFrames()) {
+    if (!delegate_->DenialBeginFrame()) {
+      return nullptr;
+    }
+    // A swapchain acquisition recycles the thread's command and descriptor
+    // pools; the carrier has none, so it recycles them at its frame boundary.
+    impeller::ContextVK::Cast(*impeller_context_)
+        .DisposeThreadLocalCachedResources();
+    auto submit = [delegate = delegate_,
+                   size](const SurfaceFrame& surface_frame) -> bool {
+      const std::optional<DlRegion> full = DlRegion(DlIRect::MakeSize(size));
+      const auto& info = surface_frame.submit_info();
+      return delegate->DenialPresent(
+          info.frame_damage.has_value() ? info.frame_damage : full,
+          info.buffer_damage.has_value() ? info.buffer_damage : full);
+    };
+    return std::make_unique<SurfaceFrame>(
+        nullptr, SurfaceFrame::FramebufferInfo{.supports_readback = true},
+        [](const SurfaceFrame&, DlCanvas*) { return true; }, std::move(submit),
+        size, nullptr, /*display_list_fallback=*/true);
+  }
+
   if (delegate_ == nullptr) {
     auto& context_vk = impeller::SurfaceContextVK::Cast(*impeller_context_);
     std::unique_ptr<impeller::Surface> surface =

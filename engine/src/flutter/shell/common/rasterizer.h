@@ -383,6 +383,10 @@ class Rasterizer final : public SnapshotDelegate,
   // reused-layer-tree damage calculation.
   void MarkTextureFrameAvailable(int64_t texture_id);
 
+  // Denial: what changes in the texture's next frame mark, as unit rects of
+  // the rect it is painted into. A mark without it damages the whole texture.
+  void SetTextureFrameDamage(int64_t texture_id, std::vector<DlRect> rects);
+
   //----------------------------------------------------------------------------
   /// @brief      Takes the next item from the layer tree pipeline and executes
   ///             the raster thread frame workload for that pipeline item to
@@ -859,6 +863,7 @@ class Rasterizer final : public SnapshotDelegate,
       flutter::LayerTree& layer_tree,
       const flutter::LayerTree* previous_layer_tree,
       const std::unordered_set<int64_t>* dirty_texture_ids,
+      const TextureDamageMap* texture_damage,
       float device_pixel_ratio,
       std::optional<fml::TimePoint> presentation_time);
 
@@ -884,6 +889,10 @@ class Rasterizer final : public SnapshotDelegate,
   std::unordered_set<int64_t> denial_selected_render_view_ids_;
   bool denial_render_selection_pending_ = false;
   std::unordered_set<int64_t> pending_texture_ids_;
+  // What changed in `pending_texture_ids_`, where the embedder said.
+  TextureDamageMap pending_texture_damage_;
+  // Damage the embedder set for textures' next frame marks.
+  TextureDamageMap pending_frame_damage_;
   fml::closure next_frame_callback_;
   bool user_override_resource_cache_bytes_ = false;
   std::optional<size_t> max_cache_bytes_;

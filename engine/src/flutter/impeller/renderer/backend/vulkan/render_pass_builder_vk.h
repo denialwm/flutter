@@ -24,6 +24,10 @@ class RenderPassBuilderVK {
 
   ~RenderPassBuilderVK();
 
+  RenderPassBuilderVK(RenderPassBuilderVK&&) = default;
+
+  bool operator==(const RenderPassBuilderVK&) const = default;
+
   RenderPassBuilderVK(const RenderPassBuilderVK&) = delete;
 
   RenderPassBuilderVK& operator=(const RenderPassBuilderVK&) = delete;
