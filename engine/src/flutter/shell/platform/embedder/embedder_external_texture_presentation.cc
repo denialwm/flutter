@@ -24,8 +24,8 @@ void DenialTexturePresentation::Prepare(
     presentation_ = *supplied;
     const auto finite_rect = [](const double* rect) {
       return std::isfinite(rect[0]) && std::isfinite(rect[1]) &&
-             std::isfinite(rect[2]) && std::isfinite(rect[3]) &&
-             rect[2] >= 0 && rect[3] >= 0;
+             std::isfinite(rect[2]) && std::isfinite(rect[3]) && rect[2] >= 0 &&
+             rect[3] >= 0;
     };
     if (presentation_.struct_size != sizeof(presentation_) ||
         !std::isfinite(presentation_.width) ||

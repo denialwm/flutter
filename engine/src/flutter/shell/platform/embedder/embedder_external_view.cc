@@ -162,12 +162,12 @@ bool EmbedderExternalView::Render(const EmbedderRenderTarget& render_target,
     auto& content_context = aiks_context->GetContentContext();
     const uint64_t failures = content_context.GetPassFailures();
     const bool rendered =
-        impeller::RenderToTarget(content_context,            //
-                                 *impeller_target,           //
-                                 display_list,               //
-                                 cull_rect,                  //
-                                 /*reset_host_buffer=*/true, //
-                                 /*is_onscreen=*/false       //
+        impeller::RenderToTarget(content_context,             //
+                                 *impeller_target,            //
+                                 display_list,                //
+                                 cull_rect,                   //
+                                 /*reset_host_buffer=*/true,  //
+                                 /*is_onscreen=*/false        //
         );
     return rendered && content_context.GetPassFailures() == failures;
   }

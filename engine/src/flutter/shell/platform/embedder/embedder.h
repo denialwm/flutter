@@ -4123,7 +4123,6 @@ FlutterEngineResult DenialFlutterEngineSetExternalTextureGlStateCallback(
     DenialFlutterExternalTextureGlStateCallback callback,
     void* user_data);
 
-
 // Called once alongside each resolved external image, never for retained
 // paints. Return false for the unmodified image path. The callback must not
 // call GL. Geometry changes require marking the texture frame available.

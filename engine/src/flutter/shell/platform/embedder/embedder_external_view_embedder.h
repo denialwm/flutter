@@ -6,10 +6,10 @@
 #define FLUTTER_SHELL_PLATFORM_EMBEDDER_EMBEDDER_EXTERNAL_VIEW_EMBEDDER_H_
 
 #include <map>
-#include <set>
-#include <tuple>
 #include <memory>
 #include <optional>
+#include <set>
+#include <tuple>
 #include <unordered_map>
 
 #include "flutter/common/constants.h"

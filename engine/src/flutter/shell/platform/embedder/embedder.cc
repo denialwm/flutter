@@ -5,8 +5,8 @@
 #define FML_USED_ON_EMBEDDER
 #define RAPIDJSON_HAS_STDSTRING 1
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -769,8 +769,8 @@ InferVulkanPlatformViewCreationCallback(
   // without drawing, as the OpenGL root surface does with FBO 0.
   const FlutterVulkanRendererConfig* vulkan_config = &config->vulkan;
   std::function<bool()> denial_begin_frame;
-  if (auto begin = SAFE_ACCESS(vulkan_config, denial_begin_frame_callback,
-                               nullptr)) {
+  if (auto begin =
+          SAFE_ACCESS(vulkan_config, denial_begin_frame_callback, nullptr)) {
     denial_begin_frame = [begin, user_data]() { return begin(user_data); };
   }
   std::function<bool(const std::optional<flutter::DlRegion>&,
@@ -803,8 +803,8 @@ InferVulkanPlatformViewCreationCallback(
       return present(user_data, &info);
     };
   }
-  if (auto populate = SAFE_ACCESS(vulkan_config,
-                                  denial_populate_existing_damage, nullptr);
+  if (auto populate =
+          SAFE_ACCESS(vulkan_config, denial_populate_existing_damage, nullptr);
       populate && view_embedder) {
     view_embedder->SetExistingDamageCallback(
         [populate, user_data](intptr_t identity) {
@@ -4079,13 +4079,13 @@ FlutterEngineResult DenialFlutterEngineSetTextureDamage(
     for (size_t rect = 0; rect < item.rect_count; rect++) {
       const double* xywh = item.rects + rect * 4;
       if (!std::isfinite(xywh[0]) || !std::isfinite(xywh[1]) ||
-          !std::isfinite(xywh[2]) || !std::isfinite(xywh[3]) ||
-          xywh[2] < 0 || xywh[3] < 0) {
+          !std::isfinite(xywh[2]) || !std::isfinite(xywh[3]) || xywh[2] < 0 ||
+          xywh[3] < 0) {
         return LOG_EMBEDDER_ERROR(kInvalidArguments,
                                   "Invalid Denial texture damage rect.");
       }
-      rects.push_back(flutter::DlRect::MakeXYWH(xywh[0], xywh[1], xywh[2],
-                                                xywh[3]));
+      rects.push_back(
+          flutter::DlRect::MakeXYWH(xywh[0], xywh[1], xywh[2], xywh[3]));
     }
     textures.emplace_back(item.texture_id, std::move(rects));
   }

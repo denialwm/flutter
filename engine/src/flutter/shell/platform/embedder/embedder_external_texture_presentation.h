@@ -40,13 +40,14 @@ class DenialTexturePresentation {
 
   // A window's layer around `paint_surface`, which draws the client with the
   // child context it is given.
-  static void PaintWindow(Texture::PaintContext& context,
-                          bool direct,
-                          const DlMatrix& texture_transform,
-                          const DlWindowSurfaceFilter& window,
-                          std::optional<int64_t> backdrop_id,
-                          DlScalar surface_opacity,
-                          const std::function<void(Texture::PaintContext&)>& paint_surface);
+  static void PaintWindow(
+      Texture::PaintContext& context,
+      bool direct,
+      const DlMatrix& texture_transform,
+      const DlWindowSurfaceFilter& window,
+      std::optional<int64_t> backdrop_id,
+      DlScalar surface_opacity,
+      const std::function<void(Texture::PaintContext&)>& paint_surface);
 
  private:
   DenialFlutterExternalTexturePresentation presentation_ = {};

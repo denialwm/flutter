@@ -56,10 +56,9 @@ void EmbedderExternalTextureGL::PrepareImage(PaintContext& context,
     if (last_image_ && presentation_callback_) {
       DenialFlutterExternalTexturePresentation supplied = {};
       supplied.struct_size = sizeof(supplied);
-      presentation_.Prepare(DlRect::Make(last_image_->GetBounds()),
-                            presentation_callback_(Id(), &supplied)
-                                ? &supplied
-                                : nullptr);
+      presentation_.Prepare(
+          DlRect::Make(last_image_->GetBounds()),
+          presentation_callback_(Id(), &supplied) ? &supplied : nullptr);
     }
   }
 }

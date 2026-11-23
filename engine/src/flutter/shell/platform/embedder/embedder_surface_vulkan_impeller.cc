@@ -113,8 +113,7 @@ bool EmbedderSurfaceVulkanImpeller::PresentImage(VkImage image,
 
 // |GPUSurfaceVulkanDelegate|
 bool EmbedderSurfaceVulkanImpeller::DenialCarriesFrames() const {
-  return external_view_embedder_ &&
-         vulkan_dispatch_table_.denial_begin_frame &&
+  return external_view_embedder_ && vulkan_dispatch_table_.denial_begin_frame &&
          vulkan_dispatch_table_.denial_present;
 }
 

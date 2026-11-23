@@ -28,9 +28,9 @@
 #include "impeller/display_list/dl_dispatcher.h"         // nogncheck
 #include "impeller/display_list/dl_image_impeller.h"     // nogncheck
 #include "impeller/display_list/static_picture_cache.h"  // nogncheck
+#include "impeller/geometry/round_superellipse.h"        // nogncheck
 #include "impeller/renderer/capabilities.h"              // nogncheck
 #include "impeller/renderer/render_target.h"             // nogncheck
-#include "impeller/geometry/round_superellipse.h"       // nogncheck
 #include "impeller/tessellator/path_tessellator.h"       // nogncheck
 #ifdef SHELL_ENABLE_GL
 #include "impeller/renderer/backend/gles/context_gles.h"  // nogncheck
@@ -39,10 +39,9 @@
 #endif                                                    // SHELL_ENABLE_GL
 #ifdef SHELL_ENABLE_VULKAN
 #include "impeller/renderer/backend/vulkan/texture_source_vk.h"  // nogncheck
-#include "impeller/renderer/backend/vulkan/texture_vk.h"  // nogncheck
+#include "impeller/renderer/backend/vulkan/texture_vk.h"         // nogncheck
 #endif  // SHELL_ENABLE_VULKAN
 #endif  // IMPELLER_SUPPORTS_RENDERING
-
 
 namespace flutter {
 
@@ -1501,10 +1500,9 @@ DenialAcquireComposerStorageVK(
   }
   DenialFlutterSliceWriterVK writer = {};
   writer.struct_size = sizeof(writer);
-  if (!composer.acquire_writer_vk(composer.user_data, ticket,
-                                  static_cast<uint32_t>(needed.width),
-                                  static_cast<uint32_t>(needed.height),
-                                  &writer)) {
+  if (!composer.acquire_writer_vk(
+          composer.user_data, ticket, static_cast<uint32_t>(needed.width),
+          static_cast<uint32_t>(needed.height), &writer)) {
     FML_LOG(ERROR) << "Denial scene composer gave no Vulkan slice storage";
     return std::nullopt;
   }
@@ -1532,8 +1530,7 @@ DenialAcquireComposerStorageVK(
                                    impeller::TextureUsage::kShaderRead
                              : impeller::TextureUsage::kRenderTarget;
   auto source = std::make_shared<DenialComposerSliceSourceVK>(
-      descriptor,
-      impeller::vk::Image(reinterpret_cast<VkImage>(writer.image)),
+      descriptor, impeller::vk::Image(reinterpret_cast<VkImage>(writer.image)),
       impeller::vk::ImageView(reinterpret_cast<VkImageView>(writer.image_view)),
       static_cast<impeller::vk::ImageLayout>(writer.layout), composer, key);
   auto texture =
@@ -1585,7 +1582,8 @@ DlIRect DenialTargetRect(const DlIRect& rect, const DlMatrix& transformation) {
 // so layered and direct frames rasterize alike. The content context's render
 // target cache ignores existing textures and hands out pooled ones, so slice
 // targets are built directly on the allocator around the retained texture.
-size_t DenialAttachmentBytes(const std::shared_ptr<impeller::Texture>& texture) {
+size_t DenialAttachmentBytes(
+    const std::shared_ptr<impeller::Texture>& texture) {
   if (!texture) {
     return 0;
   }
@@ -1845,8 +1843,8 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
                 .sample_count != impeller::SampleCount::kCount1;
     // GLES stores single-sample passes bottom up; Vulkan stores every pass
     // top down.
-    const bool gles = context->GetBackendType() ==
-                      impeller::Context::BackendType::kOpenGLES;
+    const bool gles =
+        context->GetBackendType() == impeller::Context::BackendType::kOpenGLES;
     // Open materials in paint order, as DenialComposeEntries replays them.
     size_t open_materials = 0;
     // Storage that slices of this build released, for its later slices.
@@ -1991,9 +1989,8 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       }
       if (!prepared ||
           !DenialRenderSlice(content_context, context, slot.storage,
-                             attachments, msaa,
-                             *bounds, needed, pending_surface_transformation_,
-                             display_list)) {
+                             attachments, msaa, *bounds, needed,
+                             pending_surface_transformation_, display_list)) {
         composed = false;
         break;
       }
@@ -2038,11 +2035,10 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       view_slices.composer_drew = true;
     } else if (!output_target) {
       if (composed &&
-          DenialVulkanFallback(flutter_view_id, view_slices, aiks_context,
-                               audit, frame,
-                               stageable ? "scene not staged"
-                                         : denial_composer_ineligible_,
-                               &transients_reset)) {
+          DenialVulkanFallback(
+              flutter_view_id, view_slices, aiks_context, audit, frame,
+              stageable ? "scene not staged" : denial_composer_ineligible_,
+              &transients_reset)) {
         view_slices.composer_drew = true;
       } else {
         DenialLogDecline(flutter_view_id, "scene not staged");
@@ -2050,10 +2046,10 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       }
     } else {
       DenialTakeComposerHandover(flutter_view_id, *frame);
-      composed = composed &&
-                 DenialComposeEntries(view_slices, aiks_context,
-                                      frame->submit_info().buffer_damage,
-                                      audit, &transients_reset);
+      composed =
+          composed && DenialComposeEntries(view_slices, aiks_context,
+                                           frame->submit_info().buffer_damage,
+                                           audit, &transients_reset);
     }
     if (slices_rendered && !transients_reset) {
       // Slice renders appended to the host buffers; engine composition, when
@@ -2092,8 +2088,8 @@ void EmbedderExternalViewEmbedder::DenialRecompose(
   auto view = denial_slices_.find(flutter_view_id);
 #ifdef IMPELLER_SUPPORTS_RENDERING
   if (view != denial_slices_.end() && pending_denial_render_target_) {
-    const bool stageable =
-        !(denial_vulkan_fallback_ && view->second.composer_ineligible != nullptr);
+    const bool stageable = !(denial_vulkan_fallback_ &&
+                             view->second.composer_ineligible != nullptr);
     if (stageable &&
         DenialStageScene(flutter_view_id, view->second, aiks_context)) {
       view->second.composer_drew = true;
@@ -2142,7 +2138,8 @@ bool EmbedderExternalViewEmbedder::DenialComposeEntries(
     impeller::RenderTarget* target) {
 #ifdef IMPELLER_SUPPORTS_RENDERING
   auto* impeller_target =
-      target ? target : pending_denial_render_target_->GetImpellerRenderTarget();
+      target ? target
+             : pending_denial_render_target_->GetImpellerRenderTarget();
   if (!impeller_target || !aiks_context) {
     return false;
   }
@@ -2291,8 +2288,7 @@ bool EmbedderExternalViewEmbedder::DenialVulkanFallback(
   // stencil; Canvas renders backdrop passes into a readback layer.
   impeller::RenderTargetAllocator allocator(context->GetResourceAllocator());
   impeller::RenderTarget target = allocator.CreateOffscreen(
-      *context,
-      impeller::ISize(storage->size.width, storage->size.height),
+      *context, impeller::ISize(storage->size.width, storage->size.height),
       /*mip_count=*/1, "Denial engine fallback",
       impeller::RenderTarget::AttachmentConfig{
           .storage_mode = impeller::StorageMode::kDevicePrivate,
@@ -2307,9 +2303,9 @@ bool EmbedderExternalViewEmbedder::DenialVulkanFallback(
   }
   DenialTextureLending lending{.composer = composer, .ticket = denial_ticket_};
   DenialSetTextureLending(&lending);
-  const bool rendered = DenialComposeEntries(
-      view, aiks_context, /*buffer_damage=*/std::nullopt, audit,
-      transients_reset, &target);
+  const bool rendered =
+      DenialComposeEntries(view, aiks_context, /*buffer_damage=*/std::nullopt,
+                           audit, transients_reset, &target);
   DenialSetTextureLending(nullptr);
   // Submitted or given up: the composer takes its images back either way.
   composer.return_textures_vk(composer.user_data, denial_ticket_);
@@ -2655,7 +2651,8 @@ void EmbedderExternalViewEmbedder::DenialLogDecline(int64_t flutter_view_id,
   // Only the scene composer draws this target: the frame is skipped and the
   // output keeps its last one.
   ++denial_declines_;
-  if (denial_declines_ <= 16 || (denial_declines_ & (denial_declines_ - 1)) == 0) {
+  if (denial_declines_ <= 16 ||
+      (denial_declines_ & (denial_declines_ - 1)) == 0) {
     FML_LOG(ERROR) << "Denial scene composer declined a frame of view "
                    << flutter_view_id << " (" << reason
                    << "); frame skipped, declines=" << denial_declines_;
@@ -2814,9 +2811,9 @@ bool EmbedderExternalViewEmbedder::DenialStageScene(
         .points = range.point_count ? path_points.data() + range.first_point
                                     : nullptr,
         .contour_count = range.contour_count,
-        .contour_ends = range.contour_count ? path_contour_ends.data() +
-                                                  range.first_contour
-                                            : nullptr,
+        .contour_ends = range.contour_count
+                            ? path_contour_ends.data() + range.first_contour
+                            : nullptr,
     });
   }
   size_t material = 0;
@@ -2918,8 +2915,8 @@ void EmbedderExternalViewEmbedder::DenialPresentLayered(
   presented_layers.PushBackingStoreLayer(
       pending_denial_render_target_->GetBackingStore(),
       {DlIRect::MakeSize(pending_frame_size_)});
-  const bool presented =
-      presented_layers.InvokePresentCallback(flutter_view_id, present_callback_);
+  const bool presented = presented_layers.InvokePresentCallback(
+      flutter_view_id, present_callback_);
   pending_denial_render_target_.reset();
   if (!frame->Submit() || !presented) {
     denial_failed_views_.insert(flutter_view_id);

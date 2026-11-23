@@ -1161,11 +1161,10 @@ std::unique_ptr<FrameItem> Rasterizer::DrawToSurfacesUnsafe(
     const LayerTree* previous_layer_tree =
         is_reused_layer_tree ? layer_tree.get() : GetLastLayerTree(view_id);
 
-    DrawSurfaceStatus status =
-        DrawToSurfaceUnsafe(view_id, *layer_tree, previous_layer_tree,
-                            dirty_texture_ids ? &*dirty_texture_ids : nullptr,
-                            &texture_damage, device_pixel_ratio,
-                            presentation_time);
+    DrawSurfaceStatus status = DrawToSurfaceUnsafe(
+        view_id, *layer_tree, previous_layer_tree,
+        dirty_texture_ids ? &*dirty_texture_ids : nullptr, &texture_damage,
+        device_pixel_ratio, presentation_time);
     FML_DCHECK(status != DrawSurfaceStatus::kDiscarded);
 
     auto& view_record = EnsureViewRecord(task->view_id);

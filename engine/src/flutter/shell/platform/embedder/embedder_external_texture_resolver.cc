@@ -11,10 +11,10 @@
 #include "flutter/shell/platform/embedder/embedder_external_texture_presentation.h"
 
 #if defined(SHELL_ENABLE_VULKAN) && defined(IMPELLER_SUPPORTS_RENDERING)
-#include "impeller/display_list/aiks_context.h"  // nogncheck
-#include "impeller/display_list/dl_image_impeller.h"  // nogncheck
+#include "impeller/display_list/aiks_context.h"                  // nogncheck
+#include "impeller/display_list/dl_image_impeller.h"             // nogncheck
 #include "impeller/renderer/backend/vulkan/texture_source_vk.h"  // nogncheck
-#include "impeller/renderer/backend/vulkan/texture_vk.h"  // nogncheck
+#include "impeller/renderer/backend/vulkan/texture_vk.h"         // nogncheck
 #endif
 
 namespace flutter {
@@ -125,8 +125,7 @@ class DenialComposerTexture final : public Texture {
       DenialFlutterTextureImageVK lent = {};
       lent.struct_size = sizeof(lent);
       if (!lending->composer.resolve_texture_vk(lending->composer.user_data,
-                                                lending->ticket, Id(),
-                                                &lent)) {
+                                                lending->ticket, Id(), &lent)) {
         return nullptr;
       }
       // Even an image refused below was resolved: the composer lends and
@@ -148,19 +147,19 @@ class DenialComposerTexture final : public Texture {
       descriptor.sample_count = impeller::SampleCount::kCount1;
       descriptor.usage = impeller::TextureUsage::kShaderRead;
       auto source = std::make_shared<DenialLentTextureSourceVK>(
-          descriptor, impeller::vk::Image(reinterpret_cast<VkImage>(lent.image)),
+          descriptor,
+          impeller::vk::Image(reinterpret_cast<VkImage>(lent.image)),
           impeller::vk::ImageView(
               reinterpret_cast<VkImageView>(lent.image_view)));
       auto texture = std::make_shared<impeller::TextureVK>(
           context.aiks_context->GetContext(), std::move(source));
-      static_cast<impeller::Texture&>(*texture).SetLabel(
-          "Denial lent client");
+      static_cast<impeller::Texture&>(*texture).SetLabel("Denial lent client");
       sk_sp<DlImage> image = impeller::DlImageImpeller::Make(
           texture, DlImage::OwningContext::kRaster,
           /*is_external_texture=*/true);
-      presentation.Prepare(DlRect::Make(image->GetBounds()),
-                           lent.has_presentation ? &lent.presentation
-                                                 : nullptr);
+      presentation.Prepare(
+          DlRect::Make(image->GetBounds()),
+          lent.has_presentation ? &lent.presentation : nullptr);
       return image;
     }
 #endif  // SHELL_ENABLE_VULKAN && IMPELLER_SUPPORTS_RENDERING

@@ -2852,9 +2852,9 @@ void Canvas::SaveLayer(const Paint& paint,
               .scene_snapshot = std::move(direct_scene_snapshot),
               .alpha_threshold = backdrop_alpha_threshold,
               .coverage = subpass_coverage,
-              .scissor = SetClipScissor(
-                  clip_coverage_stack_.CurrentClipCoverage(), *backdrop_pass,
-                  GetGlobalPassPosition()),
+              .scissor =
+                  SetClipScissor(clip_coverage_stack_.CurrentClipCoverage(),
+                                 *backdrop_pass, GetGlobalPassPosition()),
           });
       RecordBackdropFusionEvent(BackdropFusionAuditEvent::kCandidate);
     } else if (resolved_backdrop_entity.has_value()) {
@@ -3126,8 +3126,7 @@ bool Canvas::Restore() {
                                              : "Subpass",  //
         save_layer_state.texture_region);
 
-    if (!lazy_render_pass.GetInlinePassContext()->EndPass() ||
-        ReplayFailed()) {
+    if (!lazy_render_pass.GetInlinePassContext()->EndPass() || ReplayFailed()) {
       // The layer's commands were not encoded (or the replay failed): its
       // texture is not read. EndPass recorded the failure.
       clip_coverage_stack_.PopSubpass();
