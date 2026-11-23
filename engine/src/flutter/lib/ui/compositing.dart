@@ -243,6 +243,13 @@ class WindowSurfaceEngineLayer extends _EngineLayerWrapper {
   WindowSurfaceEngineLayer._(super.nativeLayer) : super._();
 }
 
+/// A retained Denial glass material over a precomputed frost.
+///
+/// Instances of this class are created by [SceneBuilder.pushFrozenGlass].
+class FrozenGlassEngineLayer extends _EngineLayerWrapper {
+  FrozenGlassEngineLayer._(super.nativeLayer) : super._();
+}
+
 /// An opaque handle to a shader mask engine layer.
 ///
 /// Instances of this class are created by [SceneBuilder.pushShaderMask].
@@ -503,6 +510,26 @@ abstract class SceneBuilder {
     double textureOpacity = 1,
     FilterQuality filterQuality = FilterQuality.none,
     WindowSurfaceEngineLayer? oldLayer,
+  });
+
+  /// Pushes Denial glass over a frost made once for a whole scene.
+  ///
+  /// [glass] is an [ImageFilter.glass]: its shape and its material, which
+  /// refracts and lights [frost] instead of a blur of the scene below. [frost]
+  /// covers [frostRect], in this layer's coordinates. [overlay], straight
+  /// color, is drawn over the material within its shape, and [opacity] fades
+  /// the material (not the overlay).
+  ///
+  /// A compositor that draws the material itself (Denial's scene composer)
+  /// draws it from these. Otherwise the children draw it, and they should
+  /// draw the same: they are painted only when the compositor does not.
+  FrozenGlassEngineLayer pushFrozenGlass({
+    required ImageFilter glass,
+    required Image frost,
+    required Rect frostRect,
+    Color overlay = const Color(0x00000000),
+    double opacity = 1,
+    FrozenGlassEngineLayer? oldLayer,
   });
 
   /// Pushes a shader mask operation onto the operation stack.
@@ -1030,6 +1057,55 @@ base class _NativeSceneBuilder extends NativeFieldWrapperClass1 implements Scene
     assert(_debugPushLayer(layer));
     return layer;
   }
+
+  @override
+  FrozenGlassEngineLayer pushFrozenGlass({
+    required ImageFilter glass,
+    required Image frost,
+    required Rect frostRect,
+    Color overlay = const Color(0x00000000),
+    double opacity = 1,
+    FrozenGlassEngineLayer? oldLayer,
+  }) {
+    assert(glass is _GlassImageFilter, 'pushFrozenGlass takes ImageFilter.glass');
+    assert(frostRect.isFinite && !frostRect.isEmpty);
+    assert(opacity >= 0 && opacity <= 1);
+    assert(!frost.debugDisposed);
+    assert(_debugCheckCanBeUsedAsOldLayer(oldLayer, 'pushFrozenGlass'));
+    final Float64List geometry = Float64List(9);
+    geometry[0] = frostRect.left;
+    geometry[1] = frostRect.top;
+    geometry[2] = frostRect.right;
+    geometry[3] = frostRect.bottom;
+    geometry[4] = opacity;
+    // Premultiplied.
+    geometry[5] = overlay.r * overlay.a;
+    geometry[6] = overlay.g * overlay.a;
+    geometry[7] = overlay.b * overlay.a;
+    geometry[8] = overlay.a;
+    final EngineLayer engineLayer = _NativeEngineLayer._();
+    _pushFrozenGlass(
+      engineLayer,
+      geometry,
+      glass._toNativeImageFilter(),
+      frost._image,
+      oldLayer?._nativeLayer,
+    );
+    final layer = FrozenGlassEngineLayer._(engineLayer);
+    assert(_debugPushLayer(layer));
+    return layer;
+  }
+
+  @Native<Void Function(Pointer<Void>, Handle, Handle, Handle, Handle, Handle)>(
+    symbol: 'SceneBuilder::pushFrozenGlass',
+  )
+  external void _pushFrozenGlass(
+    EngineLayer layer,
+    Float64List geometry,
+    _ImageFilter glass,
+    _Image frost,
+    EngineLayer? oldLayer,
+  );
 
   @Native<Void Function(Pointer<Void>, Handle, Handle, Handle, Int64, Int64, Int32, Handle)>(
     symbol: 'SceneBuilder::pushWindowSurface',

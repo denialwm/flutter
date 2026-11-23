@@ -14,6 +14,7 @@
 #include "flutter/flow/layers/color_filter_layer.h"
 #include "flutter/flow/layers/container_layer.h"
 #include "flutter/flow/layers/display_list_layer.h"
+#include "flutter/flow/layers/frozen_glass_layer.h"
 #include "flutter/flow/layers/image_filter_layer.h"
 #include "flutter/flow/layers/layer.h"
 #include "flutter/flow/layers/opacity_layer.h"
@@ -26,6 +27,7 @@
 #include "flutter/fml/build_config.h"
 #include "flutter/lib/ui/compositing/scene.h"
 #include "flutter/lib/ui/floating_point.h"
+#include "flutter/lib/ui/painting/image.h"
 #include "flutter/lib/ui/painting/matrix.h"
 #include "flutter/lib/ui/painting/shader.h"
 
@@ -94,6 +96,29 @@ void SceneBuilder::pushWindowSurface(
     layer->AssignOldLayer(old_layer->Layer().get());
   }
 }
+void SceneBuilder::pushFrozenGlass(Dart_Handle layer_handle,
+                                   Dart_Handle geometry_handle,
+                                   Dart_Handle glass_handle,
+                                   Dart_Handle frost_handle,
+                                   const fml::RefPtr<EngineLayer>& old_layer) {
+  tonic::Float64List geometry(geometry_handle);
+  FML_CHECK(geometry.num_elements() == 9);
+  const auto g = [&](size_t i) { return SafeNarrow(geometry[i]); };
+  auto* glass = tonic::DartConverter<ImageFilter*>::FromDart(glass_handle);
+  auto* frost = tonic::DartConverter<CanvasImage*>::FromDart(frost_handle);
+  auto layer = std::make_shared<FrozenGlassLayer>(
+      glass ? glass->filter(DlTileMode::kClamp) : nullptr,
+      frost ? frost->image() : nullptr,
+      DlRect::MakeLTRB(g(0), g(1), g(2), g(3)),
+      std::array<DlScalar, 4>{g(5), g(6), g(7), g(8)}, g(4));
+  geometry.Release();
+  PushLayer(layer);
+  EngineLayer::MakeRetained(layer_handle, layer);
+  if (old_layer && old_layer->Layer()) {
+    layer->AssignOldLayer(old_layer->Layer().get());
+  }
+}
+
 void SceneBuilder::pushOffset(Dart_Handle layer_handle,
                               double dx,
                               double dy,

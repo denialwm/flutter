@@ -2420,6 +2420,23 @@ typedef struct {
   double opposite_light_strength;
   /// Window materials only: the client alpha the material needs, 0..1.
   double alpha_threshold;
+  /// Glass over a frost made once for a whole scene: the frost is
+  /// `frozen_frost`, a slice version whose top-left `frozen_frost_width` by
+  /// `frozen_frost_height` pixels cover `frozen_frost_rect` (local), not a
+  /// blur of the scene below. The material has no content.
+  /// `frozen_overlay` (premultiplied RGBA) is drawn over the material within
+  /// its shape; `frozen_opacity` fades the material. Present when
+  /// `struct_size` covers it.
+  bool has_frozen_frost;
+  DenialFlutterSliceKey frozen_frost;
+  bool frozen_frost_bottom_up;
+  uint32_t frozen_frost_storage_width;
+  uint32_t frozen_frost_storage_height;
+  uint32_t frozen_frost_width;
+  uint32_t frozen_frost_height;
+  FlutterRect frozen_frost_rect;
+  double frozen_overlay[4];
+  double frozen_opacity;
 } DenialFlutterMaterial;
 
 /// A path clip's fill rule.

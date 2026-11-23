@@ -167,6 +167,14 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
     DenialSliceStorage storage;
   };
 
+  // A frozen glass material's frost, copied once into slice storage the
+  // scene composer reads: kept while the build that last used it is shown.
+  struct DenialFrostSlice {
+    sk_sp<DlImage> image;
+    DenialSliceStorage storage;
+    uint64_t frame = 0;
+  };
+
   // One entry of a layered build, in paint order: an engine slice (an index
   // into the view's slots) or a cut with its mutators.
   struct DenialComposedEntry {
@@ -180,6 +188,7 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   // `transformation` while `tree` is set.
   struct DenialViewSlices {
     std::vector<DenialSlice> slots;
+    std::vector<DenialFrostSlice> frosts;
     std::vector<DenialComposedEntry> entries;
     const void* tree = nullptr;
     DlISize frame_size;
@@ -374,6 +383,17 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
       int64_t flutter_view_id,
       DenialViewSlices& view,
       const std::shared_ptr<impeller::AiksContext>& aiks_context);
+#ifdef IMPELLER_SUPPORTS_RENDERING
+  // Frozen glass: `image` in composer slice storage for this frame's
+  // ticket, copied the first time a build uses it and kept in
+  // `view.frosts` while builds use it. False when the composer gave no
+  // storage or the copy failed.
+  bool DenialPrepareFrost(DenialViewSlices& view,
+                          impeller::ContentContext& content_context,
+                          const std::shared_ptr<impeller::Context>& context,
+                          const sk_sp<DlImage>& image,
+                          bool gles);
+#endif  // IMPELLER_SUPPORTS_RENDERING
   // A frame of a target only the scene composer draws that it did not
   // stage: logged and counted; the caller skips the frame.
   void DenialLogDecline(int64_t flutter_view_id, const char* reason);

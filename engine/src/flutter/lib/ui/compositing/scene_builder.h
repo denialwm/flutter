@@ -52,6 +52,11 @@ class SceneBuilder : public RefCountedDartWrappable<SceneBuilder> {
                          int64_t frame_color,
                          int sampling,
                          const fml::RefPtr<EngineLayer>& old_layer);
+  void pushFrozenGlass(Dart_Handle layer_handle,
+                       Dart_Handle geometry,
+                       Dart_Handle glass,
+                       Dart_Handle frost,
+                       const fml::RefPtr<EngineLayer>& old_layer);
   void pushOffset(Dart_Handle layer_handle,
                   double dx,
                   double dy,

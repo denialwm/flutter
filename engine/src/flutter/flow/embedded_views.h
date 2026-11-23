@@ -5,6 +5,7 @@
 #ifndef FLUTTER_FLOW_EMBEDDED_VIEWS_H_
 #define FLUTTER_FLOW_EMBEDDED_VIEWS_H_
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -482,6 +483,19 @@ struct DenialCutEntry {
   // fallback when the layer prepared no cache state.
   std::shared_ptr<BackdropFilterCacheState> backdrop_cache;
   std::optional<int64_t> backdrop_id;
+  // kMaterialBegin of frozen glass (FrozenGlassLayer): `filter` is glass
+  // that refracts and lights `frozen_frost`, a frost made once for a whole
+  // scene covering `frozen_frost_rect` (local), instead of a blur of the
+  // scene below. `frozen_overlay` (premultiplied RGBA) is drawn over the
+  // material within its shape and `frozen_opacity` fades the material. The
+  // layer's children, recorded when it paints, draw the same: the engine
+  // draws them when it composes the cut itself. The material has no
+  // content.
+  sk_sp<DlImage> frozen_frost;
+  DlRect frozen_frost_rect;
+  std::array<DlScalar, 4> frozen_overlay = {0, 0, 0, 0};
+  DlScalar frozen_opacity = 1;
+  std::shared_ptr<sk_sp<DisplayList>> frozen_picture;
   // kMaterialEnd.
   int64_t begin_cut = -1;
 };

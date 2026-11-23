@@ -1757,6 +1757,18 @@ void DenialComposeCut(DlCanvas& canvas,
       break;
     }
     case DenialCutEntry::Kind::kMaterialBegin: {
+      if (entry.frozen_frost) {
+        // The recording carries the layer's transform and clips itself.
+        canvas.Restore();
+        if (entry.frozen_picture && *entry.frozen_picture) {
+          canvas.DrawDisplayList(*entry.frozen_picture);
+        }
+        // Without content: the matching kMaterialEnd restores these.
+        canvas.Save();
+        canvas.Save();
+        open_materials.push_back(params.mutatorsStack().stack_count());
+        return;
+      }
       paint.setBlendMode(entry.blend_mode);
       canvas.SaveLayer(entry.bounds, &paint, entry.filter.get(),
                        backdrop_token);
@@ -1880,6 +1892,17 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
           entries.push_back({.slice = std::nullopt,
                              .cut = std::move(cut->second),
                              .params = *view->GetEmbeddedViewParams()});
+          const DenialCutEntry& added = entries.back().cut;
+          if (added.frozen_frost && denial_ticket_ != 0 &&
+              !DenialPrepareFrost(view_slices, content_context, context,
+                                  added.frozen_frost, gles)) {
+            // The composer cannot draw the glass: the engine composes the
+            // frame, and the cut draws its children.
+            DenialLogComposerFallback(flutter_view_id, "frozen frost storage");
+            if (!denial_vulkan_fallback_) {
+              DenialCancelTicket();
+            }
+          }
         }
       }
       if (!view->HasEngineRenderedContents()) {
@@ -2018,8 +2041,12 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
     }
     content_context.SetFrameRepaintBounds(repaint_bounds);
     if (composed) {
-      // Slices beyond this frame's last free their storage.
+      // Slices beyond this frame's last free their storage, and so do
+      // frosts this build did not use.
       slices.resize(slice_index);
+      std::erase_if(view_slices.frosts, [this](const DenialFrostSlice& frost) {
+        return frost.frame != denial_slice_frame_;
+      });
     }
     if (audit) {
       audit->slices += slice_index;
@@ -2086,6 +2113,50 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
   }
   DenialPresentLayered(flutter_view_id, composed, std::move(frame));
 }
+
+#ifdef IMPELLER_SUPPORTS_RENDERING
+bool EmbedderExternalViewEmbedder::DenialPrepareFrost(
+    DenialViewSlices& view,
+    impeller::ContentContext& content_context,
+    const std::shared_ptr<impeller::Context>& context,
+    const sk_sp<DlImage>& image,
+    bool gles) {
+  auto found = std::find_if(view.frosts.begin(), view.frosts.end(),
+                            [&](const auto& f) { return f.image == image; });
+  if (found != view.frosts.end() && found->storage.composer_key.has_value()) {
+    found->frame = denial_slice_frame_;
+    return true;
+  }
+  const DlISize size(image->width(), image->height());
+  if (size.IsEmpty() || !denial_scene_composer_.has_value()) {
+    return false;
+  }
+  auto storage = DenialAcquireComposerStorage(context, *denial_scene_composer_,
+                                              denial_ticket_, size, gles);
+  if (!storage.has_value()) {
+    return false;
+  }
+  // A copy, texel for texel, at the storage's top-left corner.
+  const DlRect whole = DlRect::MakeSize(DlSize(size));
+  DisplayListBuilder builder(whole);
+  DlPaint paint;
+  paint.setBlendMode(DlBlendMode::kSrc);
+  builder.DrawImageRect(image, whole, whole, DlImageSampling::kNearestNeighbor,
+                        &paint);
+  if (!DenialRenderSlice(content_context, context, storage.value(),
+                         /*attachments=*/nullptr, /*msaa=*/false,
+                         DlIRect::MakeSize(size), size, DlMatrix(),
+                         builder.Build())) {
+    return false;
+  }
+  if (found == view.frosts.end()) {
+    found = view.frosts.insert(view.frosts.end(), {.image = image});
+  }
+  found->storage = std::move(storage.value());
+  found->frame = denial_slice_frame_;
+  return true;
+}
+#endif  // IMPELLER_SUPPORTS_RENDERING
 
 void EmbedderExternalViewEmbedder::DenialRecompose(
     int64_t flutter_view_id,
@@ -2464,6 +2535,35 @@ const char* DenialDescribeWindowMaterial(const DenialCutEntry& cut,
   return nullptr;
 }
 
+// A frozen glass material's frost: the slice version the build copied it
+// into (EmbedderExternalViewEmbedder::DenialPrepareFrost).
+const char* DenialDescribeFrost(
+    const EmbedderExternalViewEmbedder::DenialViewSlices& view,
+    const DenialCutEntry& cut,
+    DenialFlutterMaterial& out) {
+  const auto frost =
+      std::find_if(view.frosts.begin(), view.frosts.end(),
+                   [&](const auto& f) { return f.image == cut.frozen_frost; });
+  if (frost == view.frosts.end() || !frost->storage.composer_key.has_value()) {
+    return "frozen frost storage";
+  }
+  out.has_frozen_frost = true;
+  out.frozen_frost = frost->storage.composer_key.value();
+  out.frozen_frost_bottom_up = frost->storage.bottom_up;
+  out.frozen_frost_storage_width =
+      static_cast<uint32_t>(frost->storage.size.width);
+  out.frozen_frost_storage_height =
+      static_cast<uint32_t>(frost->storage.size.height);
+  out.frozen_frost_width = static_cast<uint32_t>(frost->image->width());
+  out.frozen_frost_height = static_cast<uint32_t>(frost->image->height());
+  out.frozen_frost_rect = DenialFlutterRect(cut.frozen_frost_rect);
+  for (size_t i = 0; i < 4; ++i) {
+    out.frozen_overlay[i] = cut.frozen_overlay[i];
+  }
+  out.frozen_opacity = cut.frozen_opacity;
+  return nullptr;
+}
+
 DenialFlutterSceneSampling DenialFlutterSampling(DlImageSampling sampling) {
   switch (sampling) {
     case DlImageSampling::kNearestNeighbor:
@@ -2743,6 +2843,9 @@ bool EmbedderExternalViewEmbedder::DenialStageScene(
       case DenialCutEntry::Kind::kMaterialBegin:
         out.kind = kDenialFlutterSceneEntryMaterialBegin;
         unsupported = DenialDescribeMaterial(cut, materials.emplace_back());
+        if (!unsupported && cut.frozen_frost) {
+          unsupported = DenialDescribeFrost(view, cut, materials.back());
+        }
         break;
       case DenialCutEntry::Kind::kMaterialEnd:
         out.kind = kDenialFlutterSceneEntryMaterialEnd;
@@ -2864,6 +2967,11 @@ bool EmbedderExternalViewEmbedder::DenialStageScene(
       rewritten.push_back(slot.storage.composer_key.value());
     }
   }
+  for (const DenialFrostSlice& frost : view.frosts) {
+    if (frost.storage.composer_unpublished) {
+      rewritten.push_back(frost.storage.composer_key.value());
+    }
+  }
   scene.rewritten_count = rewritten.size();
   scene.rewritten = rewritten.empty() ? nullptr : rewritten.data();
   if (!denial_scene_composer_->stage(denial_scene_composer_->user_data,
@@ -2878,6 +2986,9 @@ bool EmbedderExternalViewEmbedder::DenialStageScene(
   // The embedder took responsibility for every pending version.
   for (DenialSlice& slot : view.slots) {
     slot.storage.composer_unpublished = false;
+  }
+  for (DenialFrostSlice& frost : view.frosts) {
+    frost.storage.composer_unpublished = false;
   }
   // Staged: the embedder presents this ticket with the root frame.
   denial_ticket_ = 0;
