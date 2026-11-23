@@ -662,7 +662,7 @@ bool ContextVK::EnqueueCommandBuffer(
 }
 
 bool ContextVK::FlushCommandBuffers() {
-  if (pending_command_buffers_.empty()) {
+  if (flushes_held_ || pending_command_buffers_.empty()) {
     return true;
   }
 
@@ -673,6 +673,15 @@ bool ContextVK::FlushCommandBuffers() {
   } else {
     return true;
   }
+}
+
+void ContextVK::HoldCommandBufferFlushes() {
+  flushes_held_ = true;
+}
+
+bool ContextVK::ReleaseCommandBufferFlushes() {
+  flushes_held_ = false;
+  return FlushCommandBuffers();
 }
 
 bool ContextVK::FinishQueue() {

@@ -1862,6 +1862,10 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
     size_t slice_index = 0;
     bool slices_rendered = false;
     composed = true;
+    // The frame's slices go to the GPU in one submission, after the last:
+    // a submission per slice costs a kernel entry each (about 7% of the
+    // raster thread on an Adreno 722). The loop never waits on the GPU.
+    context->HoldCommandBufferFlushes();
     for (const auto& view_id : composition_order_) {
       auto& view = pending_views_[view_id];
       if (view_id.platform_view_id.has_value()) {
@@ -2006,6 +2010,11 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       slot.bounds = *bounds;
       slot.transformation = pending_surface_transformation_;
       slot.msaa = msaa;
+    }
+    if (!context->ReleaseCommandBufferFlushes()) {
+      FML_LOG(ERROR) << "Denial slice submission failed; the frame is not "
+                        "composed";
+      composed = false;
     }
     content_context.SetFrameRepaintBounds(repaint_bounds);
     if (composed) {

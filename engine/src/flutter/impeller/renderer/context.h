@@ -245,6 +245,15 @@ class Context {
   /// rendering a 2D workload.
   [[nodiscard]] virtual bool FlushCommandBuffers();
 
+  /// @brief Denial: until the release, FlushCommandBuffers keeps what was
+  ///        enqueued pending, so several canvases submit together.
+  ///
+  /// The same contract as FlushCommandBuffers: one thread, a 2D workload.
+  virtual void HoldCommandBufferFlushes() {}
+
+  /// @brief Ends a hold and flushes what it kept, in one submission.
+  [[nodiscard]] virtual bool ReleaseCommandBufferFlushes() { return true; }
+
   virtual bool AddTrackingFence(const std::shared_ptr<Texture>& texture) const;
 
   virtual std::shared_ptr<const IdleWaiter> GetIdleWaiter() const;

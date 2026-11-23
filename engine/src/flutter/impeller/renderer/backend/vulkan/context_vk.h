@@ -239,6 +239,12 @@ class ContextVK final : public Context,
   bool FlushCommandBuffers() override;
 
   // | Context |
+  void HoldCommandBufferFlushes() override;
+
+  // | Context |
+  bool ReleaseCommandBufferFlushes() override;
+
+  // | Context |
   [[nodiscard]] bool FinishQueue() override;
 
   RuntimeStageBackend GetRuntimeStageBackend() const override;
@@ -299,6 +305,7 @@ class ContextVK final : public Context,
   bool should_enable_surface_control_ = false;
   bool should_batch_cmd_buffers_ = false;
   std::vector<std::shared_ptr<CommandBuffer>> pending_command_buffers_;
+  bool flushes_held_ = false;
 
   const uint64_t hash_;
 
