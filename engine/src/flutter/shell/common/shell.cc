@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <atomic>
 #include <cstring>
 #include <future>
 #include "fml/task_runner.h"
@@ -1422,28 +1423,7 @@ void Shell::RenderOutputs(std::vector<int64_t> render_view_ids,
   FML_DCHECK(task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread());
   FML_DCHECK(!render_view_ids.empty());
 
-  std::shared_ptr<DenialRenderTransaction> transaction;
-  if (on_complete) {
-    transaction = std::make_shared<DenialRenderTransaction>();
-    transaction->render_view_ids = render_view_ids;
-    transaction->texture_identifiers = texture_identifiers;
-    transaction->on_begin = std::move(on_begin);
-    transaction->on_complete = std::move(on_complete);
-  }
-  if (rebuild_scene && transaction) {
-    // Queue before OnVsync delivers its UI task. The Animator transfers this
-    // ticket to the actual FrameItem, rather than to a marker which can run
-    // before an older pipeline item has finished.
-    task_runners_.GetUITaskRunner()->PostTask(
-        [engine = engine_->GetWeakPtr(),
-         transaction = std::move(transaction)]() mutable {
-          if (engine) {
-            engine->SetDenialRenderTransaction(std::move(transaction));
-          }
-        });
-    return;
-  }
-  if (rebuild_scene) {
+  if (rebuild_scene && !on_complete) {
     task_runners_.GetRasterTaskRunner()->PostTask(
         [rasterizer = rasterizer_->GetWeakPtr(),
          render_view_ids = std::move(render_view_ids),
@@ -1456,29 +1436,71 @@ void Shell::RenderOutputs(std::vector<int64_t> render_view_ids,
     return;
   }
 
-  const auto frame_start = fml::TimePoint::FromEpochDelta(
-      fml::TimeDelta::FromNanoseconds(frame_start_time_nanos));
-  const auto frame_target = fml::TimePoint::FromEpochDelta(
-      fml::TimeDelta::FromNanoseconds(frame_target_time_nanos));
-  task_runners_.GetRasterTaskRunner()->PostTask(
-      [rasterizer = rasterizer_->GetWeakPtr(),
-       render_view_ids = std::move(render_view_ids),
-       texture_identifiers = std::move(texture_identifiers), frame_start,
-       frame_target, transaction = std::move(transaction)]() mutable {
-        if (!rasterizer) {
-          return;
+  auto transaction = std::make_shared<DenialRenderTransaction>();
+  transaction->render_view_ids = std::move(render_view_ids);
+  transaction->texture_identifiers = std::move(texture_identifiers);
+  transaction->on_begin = std::move(on_begin);
+  transaction->on_complete = std::move(on_complete);
+
+  auto draw_retained = [runner = task_runners_.GetRasterTaskRunner(),
+                        rasterizer = rasterizer_->GetWeakPtr(),
+                        frame_start_time_nanos, frame_target_time_nanos](
+                           std::shared_ptr<DenialRenderTransaction> work) {
+    runner->PostTask([rasterizer, work = std::move(work),
+                      frame_start_time_nanos, frame_target_time_nanos]() {
+      if (!rasterizer) {
+        return;
+      }
+      if (work->on_begin) {
+        work->on_begin();
+      }
+      auto recorder = std::make_unique<FrameTimingsRecorder>();
+      recorder->RecordVsync(
+          fml::TimePoint::FromEpochDelta(
+              fml::TimeDelta::FromNanoseconds(frame_start_time_nanos)),
+          fml::TimePoint::FromEpochDelta(
+              fml::TimeDelta::FromNanoseconds(frame_target_time_nanos)));
+      const auto now = fml::TimePoint::Now();
+      recorder->RecordBuildStart(now);
+      recorder->RecordBuildEnd(now);
+      rasterizer->DrawDenialRenderOutputs(std::move(work->render_view_ids),
+                                          std::move(work->texture_identifiers),
+                                          std::move(recorder));
+    });
+  };
+  if (!rebuild_scene) {
+    draw_retained(std::move(transaction));
+    return;
+  }
+
+  // A hover-only vsync or a framework frame with no new layer tree can
+  // finish without ever reaching raster. Keep its texture work and output
+  // reservation together until the retained scene has actually been drawn.
+  if (!transaction->texture_identifiers.empty()) {
+    auto texture_work = std::make_shared<DenialRenderTransaction>();
+    texture_work->render_view_ids = transaction->render_view_ids;
+    texture_work->texture_identifiers = transaction->texture_identifiers;
+    texture_work->on_begin = std::move(transaction->on_begin);
+    texture_work->on_complete = std::move(transaction->on_complete);
+    auto began = std::make_shared<std::atomic_bool>(false);
+    transaction->on_begin = [began, texture_work] {
+      began->store(true);
+      if (texture_work->on_begin) {
+        texture_work->on_begin();
+      }
+    };
+    transaction->on_complete = [began, texture_work, draw_retained] {
+      if (!began->load()) {
+        draw_retained(texture_work);
+      }
+    };
+  }
+  task_runners_.GetUITaskRunner()->PostTask(
+      [engine = engine_->GetWeakPtr(),
+       transaction = std::move(transaction)]() mutable {
+        if (engine) {
+          engine->SetDenialRenderTransaction(std::move(transaction));
         }
-        if (transaction && transaction->on_begin) {
-          transaction->on_begin();
-        }
-        auto recorder = std::make_unique<FrameTimingsRecorder>();
-        recorder->RecordVsync(frame_start, frame_target);
-        const auto now = fml::TimePoint::Now();
-        recorder->RecordBuildStart(now);
-        recorder->RecordBuildEnd(now);
-        rasterizer->DrawDenialRenderOutputs(std::move(render_view_ids),
-                                            std::move(texture_identifiers),
-                                            std::move(recorder));
       });
 }
 

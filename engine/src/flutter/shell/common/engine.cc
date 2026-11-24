@@ -591,7 +591,11 @@ FontCollection& Engine::GetFontCollection() {
 
 void Engine::DoDispatchPacket(std::unique_ptr<PointerDataPacket> packet,
                               uint64_t trace_flow_id) {
+#if FLUTTER_TIMELINE_ENABLED
+  // Cleaning up a pointer trace flow requests a secondary vsync. A build
+  // without timeline events has no flow to close on the next display tick.
   animator_->EnqueueTraceFlowId(trace_flow_id);
+#endif
   if (runtime_controller_) {
     runtime_controller_->DispatchPointerDataPacket(*packet);
   }
