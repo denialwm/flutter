@@ -2352,7 +2352,9 @@ typedef struct {
 } DenialFlutterTextureImageVK;
 
 /// Copies `source` (storage pixels, top-left origin as rendered) to
-/// `destination` (target pixels). Both have the same size.
+/// `destination` (target pixels). Both have the same size, unless the slice
+/// entry samples linearly: a placed slice scales `source` onto
+/// `destination`, whose edges need not be whole pixels.
 typedef struct {
   FlutterRect source;
   FlutterRect destination;
@@ -2475,7 +2477,10 @@ typedef struct {
   DenialFlutterSceneEntryKind kind;
   /// Slice: storage version and blits. Slices hold target pixels and take no
   /// mutations. `slice_bottom_up` storage holds rendered row y at storage row
-  /// `storage_height - 1 - y`.
+  /// `storage_height - 1 - y`. A slice samples `sampling`: nearest for
+  /// same-size blits, linear for a placed slice's scaled one. A placed
+  /// slice draws at `surface_opacity`; the others draw opaque and leave it
+  /// zero.
   DenialFlutterSliceKey slice;
   bool slice_bottom_up;
   uint32_t slice_storage_width;

@@ -335,6 +335,10 @@ EmbedderExternalViewEmbedder::DenialLayeredAuditFrame(int64_t flutter_view_id) {
       << " rendered_new=" << audit.rendered_new
       << " rendered_bounds=" << audit.rendered_bounds
       << " rendered_content=" << audit.rendered_content
+      << " placed_rendered=" << audit.placed_rendered
+      << " placed_rendered_pixels=" << audit.placed_rendered_pixels
+      << " placed_reused=" << audit.placed_reused
+      << " placed_settled=" << audit.placed_settled
       << " rendered_pixels=" << audit.rendered_pixels
       << " rendered_slice_pixels=" << audit.rendered_slice_pixels
       << " slice_allocations=" << audit.slice_allocations
@@ -1277,6 +1281,353 @@ void DenialDescribeLargeOps(const sk_sp<DisplayList>& display_list,
   }
 }
 
+// Whether two retained pictures draw alike: the same object, or equal ops
+// over equal bounds.
+bool DenialSamePicture(const sk_sp<DisplayList>& a,
+                       const sk_sp<DisplayList>& b) {
+  return a == b ||
+         (a && b && a->GetBounds() == b->GetBounds() && a->Equals(b.get()));
+}
+
+// Slices of more top-level ops are not searched for a sole picture.
+constexpr uint32_t kDenialSoleOpLimit = 24;
+
+// The one retained picture a slice draws, when that is all it draws: under
+// a scale-and-translate matrix, at a group opacity (`group_opacity`), which
+// it inherits or a save layer that only fades it applies.
+// Hard intersecting rect clips stay in frame space (`clip`, their
+// intersection), applied where the slice is shown; every other clip of a
+// rect, oval or rounded shape is baked into the picture's raster, in the
+// picture's own space (`baked`). Anything else fails the capture.
+class DenialSoleCapture final : public virtual DlOpReceiver,
+                                private IgnoreAttributeDispatchHelper,
+                                private IgnoreDrawDispatchHelper {
+ public:
+  using BakedClip = EmbedderExternalViewEmbedder::DenialBakedClip;
+
+  // What a save layer is drawn with.
+  void setColor(DlColor color) override { alpha_ = color.getAlphaF(); }
+  void setBlendMode(DlBlendMode mode) override { blend_ = mode; }
+  void setColorFilter(const DlColorFilter* filter) override {
+    color_filter_ = filter != nullptr;
+  }
+  void setImageFilter(const DlImageFilter* filter) override {
+    image_filter_ = filter != nullptr;
+  }
+  void setInvertColors(bool invert) override { invert_ = invert; }
+
+  void save() override { stack_.push_back(state_); }
+  // A save layer that only fades its content multiplies the group opacity;
+  // any filter, blend or backdrop fails the capture. Bounds the caller gave
+  // clip the content.
+  void saveLayer(const DlRect& bounds,
+                 const SaveLayerOptions options,
+                 const DlImageFilter* backdrop,
+                 std::optional<int64_t> backdrop_id) override {
+    stack_.push_back(state_);
+    if (backdrop || options.contains_backdrop_filter()) {
+      Fail();
+      return;
+    }
+    if (options.renders_with_attributes()) {
+      if (blend_ != DlBlendMode::kSrcOver || color_filter_ || image_filter_ ||
+          invert_) {
+        Fail();
+        return;
+      }
+      state_.opacity *= alpha_;
+    }
+    if (options.bounds_from_caller()) {
+      clipRect(bounds, DlClipOp::kIntersect, false);
+    }
+  }
+  void restore() override {
+    if (!stack_.empty()) {
+      state_ = stack_.back();
+      stack_.pop_back();
+    }
+  }
+  void translate(DlScalar tx, DlScalar ty) override {
+    state_.matrix = state_.matrix * DlMatrix::MakeTranslation({tx, ty, 0});
+  }
+  void scale(DlScalar sx, DlScalar sy) override {
+    state_.matrix = state_.matrix * DlMatrix::MakeScale({sx, sy, 1});
+  }
+  void rotate(DlScalar degrees) override { Fail(); }
+  void skew(DlScalar sx, DlScalar sy) override { Fail(); }
+  // clang-format off
+  void transform2DAffine(DlScalar mxx, DlScalar mxy, DlScalar mxt,
+                         DlScalar myx, DlScalar myy, DlScalar myt) override {
+    state_.matrix = state_.matrix * DlMatrix::MakeRow(mxx, mxy, 0, mxt,
+                                                      myx, myy, 0, myt,
+                                                      0, 0, 1, 0,
+                                                      0, 0, 0, 1);
+  }
+  void transformFullPerspective(
+      DlScalar mxx, DlScalar mxy, DlScalar mxz, DlScalar mxt,
+      DlScalar myx, DlScalar myy, DlScalar myz, DlScalar myt,
+      DlScalar mzx, DlScalar mzy, DlScalar mzz, DlScalar mzt,
+      DlScalar mwx, DlScalar mwy, DlScalar mwz, DlScalar mwt) override {
+    state_.matrix = state_.matrix * DlMatrix::MakeRow(mxx, mxy, mxz, mxt,
+                                                      myx, myy, myz, myt,
+                                                      mzx, mzy, mzz, mzt,
+                                                      mwx, mwy, mwz, mwt);
+  }
+  // clang-format on
+  void transformReset() override { state_.matrix = DlMatrix(); }
+  void clipRect(const DlRect& rect, DlClipOp clip_op, bool is_aa) override {
+    if (!state_.matrix.IsTranslationScaleOnly()) {
+      Fail();
+      return;
+    }
+    if (clip_op != DlClipOp::kIntersect || is_aa) {
+      Bake({.kind = BakedClip::Kind::kRect, .rect = rect}, clip_op, is_aa);
+      return;
+    }
+    const DlRect mapped = rect.TransformAndClipBounds(state_.matrix);
+    state_.clip = state_.clip.has_value()
+                      ? state_.clip->Intersection(mapped).value_or(DlRect())
+                      : mapped;
+  }
+  void clipOval(const DlRect& bounds, DlClipOp clip_op, bool is_aa) override {
+    Bake({.kind = BakedClip::Kind::kOval, .rect = bounds}, clip_op, is_aa);
+  }
+  void clipRoundRect(const DlRoundRect& rrect,
+                     DlClipOp clip_op,
+                     bool is_aa) override {
+    Bake({.kind = BakedClip::Kind::kRoundRect, .round_rect = rrect}, clip_op,
+         is_aa);
+  }
+  void clipRoundSuperellipse(const DlRoundSuperellipse& rse,
+                             DlClipOp clip_op,
+                             bool is_aa) override {
+    Bake({.kind = BakedClip::Kind::kRoundSuperellipse,
+          .round_superellipse = rse},
+         clip_op, is_aa);
+  }
+  void clipPath(const DlPath& path, DlClipOp clip_op, bool is_aa) override {
+    Fail();
+  }
+  void drawDisplayList(const sk_sp<DisplayList> display_list,
+                       DlScalar opacity) override {
+    if (picture || !(state_.opacity * opacity > 0) ||
+        !state_.matrix.IsTranslationScaleOnly()) {
+      Fail();
+      return;
+    }
+    picture = display_list;
+    group_opacity = state_.opacity * opacity;
+    matrix = state_.matrix;
+    clip = state_.clip;
+    // Each baked clip in the picture's own space.
+    const DlMatrix local = matrix.Invert();
+    baked = state_.baked;
+    for (BakedClip& baked_clip : baked) {
+      baked_clip.matrix = local * baked_clip.matrix;
+    }
+  }
+
+  bool ok() const { return !failed_ && picture; }
+
+  sk_sp<DisplayList> picture;
+  DlScalar group_opacity = 1;
+  DlMatrix matrix;
+  std::optional<DlRect> clip;
+  std::vector<BakedClip> baked;
+
+ private:
+  struct State {
+    DlMatrix matrix;
+    std::optional<DlRect> clip;
+    std::vector<BakedClip> baked;
+    DlScalar opacity = 1;
+  };
+
+  void Bake(BakedClip baked_clip, DlClipOp clip_op, bool is_aa) {
+    if (!state_.matrix.IsTranslationScaleOnly()) {
+      Fail();
+      return;
+    }
+    baked_clip.matrix = state_.matrix;
+    baked_clip.op = clip_op;
+    baked_clip.antialias = is_aa;
+    state_.baked.push_back(baked_clip);
+  }
+  void Fail() { failed_ = true; }
+
+  State state_;
+  std::vector<State> stack_;
+  bool failed_ = false;
+  DlScalar alpha_ = 1;
+  DlBlendMode blend_ = DlBlendMode::kSrcOver;
+  bool color_filter_ = false;
+  bool image_filter_ = false;
+  bool invert_ = false;
+};
+
+DlRect DenialBakedClipBounds(
+    const EmbedderExternalViewEmbedder::DenialBakedClip& clip) {
+  using Kind = EmbedderExternalViewEmbedder::DenialBakedClip::Kind;
+  switch (clip.kind) {
+    case Kind::kRect:
+    case Kind::kOval:
+      return clip.rect;
+    case Kind::kRoundRect:
+      return clip.round_rect.GetBounds();
+    case Kind::kRoundSuperellipse:
+      return clip.round_superellipse.GetBounds();
+  }
+  return clip.rect;
+}
+
+// Whether two pictures' baked clips cut them alike: the same shapes, in
+// the same place within a 64th of a picture unit.
+bool DenialSameClips(
+    const std::vector<EmbedderExternalViewEmbedder::DenialBakedClip>& a,
+    const std::vector<EmbedderExternalViewEmbedder::DenialBakedClip>& b);
+
+// Applies `clips` (in picture space) to `builder`, whose transform maps
+// picture space by `matrix`, and leaves that transform.
+void DenialApplyBakedClips(
+    DisplayListBuilder& builder,
+    const DlMatrix& matrix,
+    const std::vector<EmbedderExternalViewEmbedder::DenialBakedClip>& clips) {
+  using Kind = EmbedderExternalViewEmbedder::DenialBakedClip::Kind;
+  for (const auto& clip : clips) {
+    builder.SetTransform(matrix * clip.matrix);
+    switch (clip.kind) {
+      case Kind::kRect:
+        builder.ClipRect(clip.rect, clip.op, clip.antialias);
+        break;
+      case Kind::kOval:
+        builder.ClipOval(clip.rect, clip.op, clip.antialias);
+        break;
+      case Kind::kRoundRect:
+        builder.ClipRoundRect(clip.round_rect, clip.op, clip.antialias);
+        break;
+      case Kind::kRoundSuperellipse:
+        builder.ClipRoundSuperellipse(clip.round_superellipse, clip.op,
+                                      clip.antialias);
+        break;
+    }
+  }
+  builder.SetTransform(matrix);
+}
+
+// Whether `display_list` holds a single drawing op. The capture ignores
+// draws; the R-tree indexes every recorded one (split into rectangles that
+// share its id).
+bool DenialSingleDraw(const sk_sp<DisplayList>& display_list) {
+  const auto rtree = display_list->rtree();
+  if (!rtree || rtree->leaf_count() < 1) {
+    return false;
+  }
+  for (int i = 1; i < rtree->leaf_count(); ++i) {
+    if (rtree->id(i) != rtree->id(0)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Whether a picture lands on the same target pixels under both matrices,
+// within a 64th of a pixel at every edge.
+bool DenialSamePlace(const DlMatrix& a,
+                     const DlMatrix& b,
+                     const DlRect& local) {
+  const DlRect pa = local.TransformAndClipBounds(a);
+  const DlRect pb = local.TransformAndClipBounds(b);
+  constexpr DlScalar kSlack = 1.0f / 64.0f;
+  return std::abs(pa.GetLeft() - pb.GetLeft()) <= kSlack &&
+         std::abs(pa.GetTop() - pb.GetTop()) <= kSlack &&
+         std::abs(pa.GetRight() - pb.GetRight()) <= kSlack &&
+         std::abs(pa.GetBottom() - pb.GetBottom()) <= kSlack;
+}
+
+bool DenialSameClips(
+    const std::vector<EmbedderExternalViewEmbedder::DenialBakedClip>& a,
+    const std::vector<EmbedderExternalViewEmbedder::DenialBakedClip>& b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < a.size(); ++i) {
+    const auto& x = a[i];
+    const auto& y = b[i];
+    if (x.kind != y.kind || x.op != y.op || x.antialias != y.antialias ||
+        x.rect != y.rect || !(x.round_rect == y.round_rect) ||
+        !(x.round_superellipse == y.round_superellipse) ||
+        !DenialSamePlace(x.matrix, y.matrix, DenialBakedClipBounds(x))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Raster extents placed slices never exceed.
+constexpr int32_t kDenialPlacedMaxExtent = 8192;
+
+DlIRect DenialTargetRect(const DlIRect& rect, const DlMatrix& transformation);
+
+// The blits that show a raster of `raster_rect`, rendered under `raster`,
+// at `matrix` (both scale and translate, scales of like signs): one per
+// rect of `paint` (the slice's paint region, frame space, which
+// `transformation` maps to target pixels), inside `visible` (target pixels).
+EmbedderExternalViewEmbedder::DenialPlacement DenialPlace(
+    const DlMatrix& raster,
+    const DlIRect& raster_rect,
+    const DlMatrix& matrix,
+    const DlRect& visible,
+    const std::vector<DlIRect>& paint,
+    const DlMatrix& transformation) {
+  // matrix = place · raster, where place scales by positive factors.
+  const DlScalar sx = matrix.m[0] / raster.m[0];
+  const DlScalar sy = matrix.m[5] / raster.m[5];
+  const DlScalar tx = matrix.m[12];
+  const DlScalar ty = matrix.m[13];
+  const DlRect q = DlRect::Make(raster_rect);
+  const DlRect full =
+      DlRect::MakeLTRB(sx * q.GetLeft() + tx, sy * q.GetTop() + ty,
+                       sx * q.GetRight() + tx, sy * q.GetBottom() + ty);
+  const std::optional<DlRect> shown = full.Intersection(visible);
+  EmbedderExternalViewEmbedder::DenialPlacement placement;
+  placement.raster = raster;
+  placement.raster_rect = raster_rect;
+  if (!shown.has_value() || shown->IsEmpty()) {
+    return placement;
+  }
+  for (const DlIRect& rect : paint) {
+    const std::optional<DlRect> destination = shown->Intersection(
+        DlRect::Make(DenialTargetRect(rect, transformation)));
+    if (!destination.has_value() || destination->IsEmpty()) {
+      continue;
+    }
+    placement.blits.push_back(
+        {.source = DlRect::MakeLTRB(
+             (destination->GetLeft() - tx) / sx - q.GetLeft(),
+             (destination->GetTop() - ty) / sy - q.GetTop(),
+             (destination->GetRight() - tx) / sx - q.GetLeft(),
+             (destination->GetBottom() - ty) / sy - q.GetTop()),
+         .destination = *destination});
+  }
+  return placement;
+}
+
+// Adds `rect` (frame space) to the frame's damage, where it has any.
+void DenialAddDamage(SurfaceFrame& frame, const DlIRect& rect) {
+  if (rect.IsEmpty()) {
+    return;
+  }
+  SurfaceFrame::SubmitInfo info = frame.submit_info();
+  const DlRegion added(std::vector<DlIRect>{rect});
+  if (info.frame_damage.has_value()) {
+    info.frame_damage = DlRegion::MakeUnion(*info.frame_damage, added);
+  }
+  if (info.buffer_damage.has_value()) {
+    info.buffer_damage = DlRegion::MakeUnion(*info.buffer_damage, added);
+  }
+  frame.set_submit_info(info);
+}
+
 // Storage suits a slice when the slice fits and the storage is at most twice
 // its area, since every re-render clears the whole storage, and it is stored
 // the way the slice renders.
@@ -1873,6 +2224,10 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
     content_context.SetFrameRepaintBounds(std::nullopt);
     size_t slice_index = 0;
     bool slices_rendered = false;
+    // Frame-space rects of slices that changed how they are drawn, and
+    // whether any slice is left placed.
+    std::vector<DlIRect> representation_damage;
+    bool placed_slices = false;
     composed = true;
     // The frame's slices go to the GPU in one submission, after the last:
     // a submission per slice costs a kernel entry each (about 7% of the
@@ -1956,7 +2311,8 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       const bool reuse =
           slot.storage.image && slot.display_list && slot.bounds == *bounds &&
           slot.transformation == pending_surface_transformation_ &&
-          slot.msaa == msaa && slot.display_list->Equals(display_list) &&
+          slot.msaa == msaa && !slot.placement.has_value() &&
+          slot.display_list->Equals(display_list) &&
           (denial_ticket_ == 0 || slot.storage.composer_key.has_value());
       if (audit) {
         if (reuse) {
@@ -1972,67 +2328,209 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
       if (reuse) {
         continue;
       }
-      const fml::TimePoint render_start =
-          audit ? fml::TimePoint::Now() : fml::TimePoint();
-      const DlISize needed(DenialRoundSliceExtent(bounds->GetWidth()),
-                           DenialRoundSliceExtent(bounds->GetHeight()));
-      uint64_t allocations = 0;
-      uint64_t pool_reuses = 0;
-      // The slot's content is replaced either way; drop it first so a
-      // failure never leaves stale content marked reusable.
-      slot.display_list.reset();
-      bool prepared = false;
-      if (denial_ticket_ != 0) {
-        // A published version is never written again: a rewrite renders
-        // into fresh storage from the composer, which pools allocations.
-        auto acquired =
-            DenialAcquireComposerStorage(context, *denial_scene_composer_,
-                                         denial_ticket_, needed, bottom_up);
-        if (acquired.has_value()) {
-          slot.storage = std::move(acquired.value());
-          ++allocations;
-          prepared = true;
-        } else if (!denial_vulkan_fallback_) {
-          // Finish this frame in the engine, from engine storage.
-          DenialCancelTicket();
+      // A slice that draws one retained picture which only moved since the
+      // last build is placed: its storage holds the picture rendered once,
+      // and composition resamples it.
+      sk_sp<DisplayList> picture;
+      DlMatrix picture_matrix;
+      DlScalar picture_opacity = 1;
+      std::optional<DlRect> picture_clip;
+      std::vector<DenialBakedClip> picture_clips;
+      if (denial_frame_request_ &&
+          display_list->op_count(false) <= kDenialSoleOpLimit) {
+        DenialSoleCapture sole;
+        display_list->Dispatch(sole);
+        if (sole.ok() && DenialSingleDraw(display_list)) {
+          picture = sole.picture;
+          picture_opacity = sole.group_opacity;
+          picture_matrix = pending_surface_transformation_ * sole.matrix;
+          picture_clip = sole.clip;
+          picture_clips = std::move(sole.baked);
+          if (!picture_matrix.IsTranslationScaleOnly()) {
+            picture.reset();
+          }
         }
       }
-      if (!prepared) {
-        if (slot.storage.composer_key.has_value()) {
-          // The composer may still read this version; draw elsewhere.
-          slot.storage = {};
+      // Moved, or faded where it stands: either way the picture's raster
+      // still serves.
+      const bool moved = picture && slot.picture &&
+                         DenialSamePicture(slot.picture, picture) &&
+                         DenialSameClips(slot.picture_clips, picture_clips) &&
+                         (!DenialSamePlace(slot.picture_matrix, picture_matrix,
+                                           picture->GetBounds()) ||
+                          picture_opacity != slot.picture_opacity);
+      const bool was_placed = slot.placement.has_value();
+      std::optional<DenialPlacement> placement;
+      // What renders into storage, when anything does.
+      DlIRect render_bounds = *bounds;
+      DlMatrix render_transformation = pending_surface_transformation_;
+      sk_sp<DisplayList> render_list = display_list;
+      bool render = true;
+      if (moved) {
+        const DlScalar ax = picture_matrix.m[0];
+        const DlScalar ay = picture_matrix.m[5];
+        const DlScalar large = std::max(std::abs(ax), std::abs(ay));
+        const DlScalar small = std::min(std::abs(ax), std::abs(ay));
+        // Target pixels the picture may show in: the slice's, inside its
+        // clips.
+        DlRect visible = DlRect::Make(
+            DenialTargetRect(*bounds, pending_surface_transformation_));
+        if (picture_clip.has_value()) {
+          visible = visible
+                        .Intersection(picture_clip->TransformAndClipBounds(
+                            pending_surface_transformation_))
+                        .value_or(DlRect());
         }
-        prepared =
-            DenialPrepareSliceStorage(context, pool, slot.storage, needed,
-                                      bottom_up, allocations, pool_reuses);
+        // A raster serves while it holds at least the shown scale (never
+        // magnified) and at most twice it (bilinear minification beyond
+        // that skips texels), in the same orientation.
+        const auto serves = [&](const DlMatrix& raster) {
+          const DlScalar scale = std::abs(raster.m[0]);
+          return raster.m[0] * ax > 0 && raster.m[5] * ay > 0 &&
+                 scale >= large * (1 - 1e-4f) && small * 2 >= scale;
+        };
+        if (was_placed && serves(slot.placement->raster) && slot.msaa == msaa &&
+            slot.storage.image && slot.storage.bottom_up == bottom_up &&
+            (denial_ticket_ == 0 || slot.storage.composer_key.has_value())) {
+          placement =
+              DenialPlace(slot.placement->raster, slot.placement->raster_rect,
+                          picture_matrix, visible, slot.rects,
+                          pending_surface_transformation_);
+          render = false;
+        } else {
+          // A growing picture renders ahead of its scale, so the next frames
+          // keep the raster.
+          const DlScalar before =
+              was_placed ? std::abs(slot.placement->raster.m[0])
+                         : std::max(std::abs(slot.picture_matrix.m[0]),
+                                    std::abs(slot.picture_matrix.m[5]));
+          DlScalar scale = large > before ? large * 1.25f : large;
+          if (small * 2 < scale) {
+            scale = large;
+          }
+          const DlMatrix raster = DlMatrix::MakeScale(
+              {std::copysign(scale, ax), std::copysign(scale, ay), 1});
+          // The picture, inside the clips it carries.
+          DlRect local = picture->GetBounds();
+          for (const DenialBakedClip& clip : picture_clips) {
+            if (clip.op == DlClipOp::kIntersect) {
+              local =
+                  local
+                      .Intersection(
+                          DenialBakedClipBounds(clip).TransformAndClipBounds(
+                              clip.matrix))
+                      .value_or(DlRect());
+            }
+          }
+          const DlIRect raster_rect =
+              DlIRect::RoundOut(local.TransformAndClipBounds(raster)).Expand(1);
+          const uint64_t visible_area =
+              static_cast<uint64_t>(std::ceil(visible.GetWidth())) *
+              static_cast<uint64_t>(std::ceil(visible.GetHeight()));
+          if (small * 2 >= scale && !raster_rect.IsEmpty() &&
+              raster_rect.GetWidth() <= kDenialPlacedMaxExtent &&
+              raster_rect.GetHeight() <= kDenialPlacedMaxExtent &&
+              DenialSliceArea(raster_rect.GetSize()) <=
+                  std::max<uint64_t>(4 * visible_area, 512 * 512)) {
+            placement =
+                DenialPlace(raster, raster_rect, picture_matrix, visible,
+                            slot.rects, pending_surface_transformation_);
+            render_bounds = raster_rect;
+            render_transformation = DlMatrix();
+            DisplayListBuilder raster_builder(DlRect::Make(raster_rect));
+            DenialApplyBakedClips(raster_builder, raster, picture_clips);
+            raster_builder.DrawDisplayList(picture);
+            render_list = raster_builder.Build();
+          }
+        }
       }
-      slices_rendered = slices_rendered || prepared;
-      DenialSliceAttachments* attachments = nullptr;
-      if (keep_attachments && prepared) {
-        attachments = &denial_slice_attachments_[std::make_tuple(
-            static_cast<int64_t>(slot.storage.size.width),
-            static_cast<int64_t>(slot.storage.size.height), msaa)];
-        attachments->last_frame = denial_slice_frame_;
-      }
-      if (!prepared ||
-          !DenialRenderSlice(content_context, context, slot.storage,
-                             attachments, msaa, *bounds, needed,
-                             pending_surface_transformation_, display_list)) {
-        composed = false;
-        break;
+      if (placement.has_value() != was_placed) {
+        // The slice changes how it is drawn: where it stands still, the
+        // frame's damage does not cover it.
+        representation_damage.push_back(slot.bounds);
+        representation_damage.push_back(*bounds);
       }
       if (audit) {
-        audit->slice_render_time =
-            audit->slice_render_time + (fml::TimePoint::Now() - render_start);
-        audit->rendered_pixels += DenialSliceArea(slot.storage.size);
-        audit->rendered_slice_pixels += DenialSliceArea(needed);
-        audit->slice_allocations += allocations;
-        audit->slice_pool_reuses += pool_reuses;
+        if (placement.has_value()) {
+          ++(render ? audit->placed_rendered : audit->placed_reused);
+        } else if (was_placed) {
+          ++audit->placed_settled;
+        }
+      }
+      if (render) {
+        const fml::TimePoint render_start =
+            audit ? fml::TimePoint::Now() : fml::TimePoint();
+        const DlISize needed(DenialRoundSliceExtent(render_bounds.GetWidth()),
+                             DenialRoundSliceExtent(render_bounds.GetHeight()));
+        uint64_t allocations = 0;
+        uint64_t pool_reuses = 0;
+        // The slot's content is replaced either way; drop it first so a
+        // failure never leaves stale content marked reusable.
+        slot.display_list.reset();
+        slot.picture.reset();
+        slot.placement.reset();
+        bool prepared = false;
+        if (denial_ticket_ != 0) {
+          // A published version is never written again: a rewrite renders
+          // into fresh storage from the composer, which pools allocations.
+          auto acquired =
+              DenialAcquireComposerStorage(context, *denial_scene_composer_,
+                                           denial_ticket_, needed, bottom_up);
+          if (acquired.has_value()) {
+            slot.storage = std::move(acquired.value());
+            ++allocations;
+            prepared = true;
+          } else if (!denial_vulkan_fallback_) {
+            // Finish this frame in the engine, from engine storage.
+            DenialCancelTicket();
+          }
+        }
+        if (!prepared) {
+          if (slot.storage.composer_key.has_value()) {
+            // The composer may still read this version; draw elsewhere.
+            slot.storage = {};
+          }
+          prepared =
+              DenialPrepareSliceStorage(context, pool, slot.storage, needed,
+                                        bottom_up, allocations, pool_reuses);
+        }
+        slices_rendered = slices_rendered || prepared;
+        DenialSliceAttachments* attachments = nullptr;
+        if (keep_attachments && prepared) {
+          attachments = &denial_slice_attachments_[std::make_tuple(
+              static_cast<int64_t>(slot.storage.size.width),
+              static_cast<int64_t>(slot.storage.size.height), msaa)];
+          attachments->last_frame = denial_slice_frame_;
+        }
+        if (!prepared ||
+            !DenialRenderSlice(content_context, context, slot.storage,
+                               attachments, msaa, render_bounds, needed,
+                               render_transformation, render_list)) {
+          composed = false;
+          break;
+        }
+        if (audit) {
+          audit->slice_render_time =
+              audit->slice_render_time + (fml::TimePoint::Now() - render_start);
+          audit->rendered_pixels += DenialSliceArea(slot.storage.size);
+          audit->rendered_slice_pixels += DenialSliceArea(needed);
+          if (placement.has_value()) {
+            audit->placed_rendered_pixels += DenialSliceArea(needed);
+          }
+          audit->slice_allocations += allocations;
+          audit->slice_pool_reuses += pool_reuses;
+        }
       }
       slot.display_list = display_list;
       slot.bounds = *bounds;
       slot.transformation = pending_surface_transformation_;
       slot.msaa = msaa;
+      slot.picture = picture;
+      slot.picture_matrix = picture_matrix;
+      slot.picture_opacity = picture_opacity;
+      slot.picture_clips = std::move(picture_clips);
+      slot.placement = placement;
+      placed_slices = placed_slices || placement.has_value();
     }
     if (!context->ReleaseCommandBufferFlushes()) {
       FML_LOG(ERROR) << "Denial slice submission failed; the frame is not "
@@ -2061,6 +2559,15 @@ void EmbedderExternalViewEmbedder::SubmitDenialLayered(
           std::any_of(slices.begin(), slices.end(), [](const DenialSlice& s) {
             return !s.storage.composer_key.has_value();
           });
+    }
+    if (composed) {
+      for (const DlIRect& rect : representation_damage) {
+        DenialAddDamage(*frame, rect);
+      }
+      if (placed_slices) {
+        // Placed slices settle sharp on a build where they stand still.
+        denial_frame_request_();
+      }
     }
     bool transients_reset = false;
     // Content the composer cannot describe is not offered to it.
@@ -2273,6 +2780,21 @@ bool EmbedderExternalViewEmbedder::DenialComposeEntries(
     composition.TransformReset();
     const DlIRect slice_target =
         DenialTargetRect(slot.bounds, slot.transformation);
+    if (slot.placement.has_value()) {
+      DlPaint paint;
+      paint.setOpacity(slot.placement->opacity);
+      for (const DenialPlacement::Blit& blit : slot.placement->blits) {
+        if (audit) {
+          audit->slice_blit_pixels += static_cast<uint64_t>(
+              blit.destination.GetWidth() * blit.destination.GetHeight());
+        }
+        composition.DrawImageRect(slot.storage.image, blit.source,
+                                  blit.destination, DlImageSampling::kLinear,
+                                  &paint, DlSrcRectConstraint::kStrict);
+      }
+      composition.Restore();
+      continue;
+    }
     // Pixels outside the slice's paint region are transparent; skip them.
     for (const DlIRect& rect : slot.rects) {
       if (audit) {
@@ -2707,6 +3229,11 @@ const char* DenialDescribeMutators(
 }  // namespace
 #endif  // IMPELLER_SUPPORTS_RENDERING
 
+void EmbedderExternalViewEmbedder::SetDenialFrameRequest(
+    std::function<void()> request) {
+  denial_frame_request_ = std::move(request);
+}
+
 void EmbedderExternalViewEmbedder::SetDenialSceneComposer(
     DenialFlutterSceneComposer composer) {
   // Installed once (EmbedderEngine), before any slot holds composer storage.
@@ -2826,12 +3353,22 @@ bool EmbedderExternalViewEmbedder::DenialStageScene(
       const size_t first = blits.size();
       const DlIRect slice_target =
           DenialTargetRect(slot.bounds, slot.transformation);
-      for (const DlIRect& rect : slot.rects) {
-        const DlIRect target = DenialTargetRect(rect, slot.transformation);
-        blits.push_back(
-            {.source = DenialFlutterRect(DlRect::Make(target.Shift(
-                 -slice_target.GetLeft(), -slice_target.GetTop()))),
-             .destination = DenialFlutterRect(DlRect::Make(target))});
+      if (slot.placement.has_value()) {
+        // Scaled blits, sampled linearly, at the picture's group opacity.
+        out.sampling = kDenialFlutterSceneSamplingLinear;
+        out.surface_opacity = slot.placement->opacity;
+        for (const DenialPlacement::Blit& blit : slot.placement->blits) {
+          blits.push_back({.source = DenialFlutterRect(blit.source),
+                           .destination = DenialFlutterRect(blit.destination)});
+        }
+      } else {
+        for (const DlIRect& rect : slot.rects) {
+          const DlIRect target = DenialTargetRect(rect, slot.transformation);
+          blits.push_back(
+              {.source = DenialFlutterRect(DlRect::Make(target.Shift(
+                   -slice_target.GetLeft(), -slice_target.GetTop()))),
+               .destination = DenialFlutterRect(DlRect::Make(target))});
+        }
       }
       ranges.emplace_back(first, blits.size() - first);
       entry_paths.emplace_back(path_ranges.size(), 0);

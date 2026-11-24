@@ -5,6 +5,7 @@
 #ifndef FLUTTER_SHELL_PLATFORM_EMBEDDER_EMBEDDER_EXTERNAL_VIEW_EMBEDDER_H_
 #define FLUTTER_SHELL_PLATFORM_EMBEDDER_EMBEDDER_EXTERNAL_VIEW_EMBEDDER_H_
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -153,6 +154,41 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
     uint64_t last_frame = 0;
   };
 
+  // A clip that moves with a placed picture, which its raster carries:
+  // `matrix` maps the clip's shape into the picture's own space.
+  struct DenialBakedClip {
+    enum class Kind { kRect, kOval, kRoundRect, kRoundSuperellipse };
+    Kind kind = Kind::kRect;
+    DlRect rect;
+    DlRoundRect round_rect;
+    DlRoundSuperellipse round_superellipse;
+    DlMatrix matrix;
+    DlClipOp op = DlClipOp::kIntersect;
+    bool antialias = false;
+  };
+
+  // A slice that draws one retained picture, and nothing else, keeps it with
+  // its target-from-picture matrix. When a later build draws the same
+  // picture under another scale-and-translate matrix, the slice is placed:
+  // storage holds the picture rendered once under `raster` (a scale), and
+  // composition resamples it until the matrix stays put for a build, which
+  // renders the slice exactly again.
+  struct DenialPlacement {
+    DlMatrix raster;
+    // The raster's extent in raster space; storage holds it at its origin.
+    DlIRect raster_rect;
+    // Storage pixels and target pixels of each blit, linear: one per rect
+    // of the slice's paint region.
+    struct Blit {
+      DlRect source;
+      DlRect destination;
+    };
+    std::vector<Blit> blits;
+    // The group opacity the blits draw at; the raster holds the picture
+    // opaque.
+    DlScalar opacity = 1;
+  };
+
   // One retained engine-rendered slice of a Denial output view. `rects` are
   // the parts of `bounds` the slice paints, which composition blits instead
   // of the whole bounds when they cover markedly less.
@@ -165,6 +201,13 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
     bool msaa = false;
     std::vector<DlIRect> rects;
     DenialSliceStorage storage;
+    // The sole picture the last build drew, its target-from-picture matrix
+    // and group opacity; null when the slice drew anything else.
+    sk_sp<DisplayList> picture;
+    DlMatrix picture_matrix;
+    DlScalar picture_opacity = 1;
+    std::vector<DenialBakedClip> picture_clips;
+    std::optional<DenialPlacement> placement;
   };
 
   // A frozen glass material's frost, copied once into slice storage the
@@ -213,6 +256,10 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
 
   // Hands output views to the embedder's scene composer.
   void SetDenialSceneComposer(DenialFlutterSceneComposer composer);
+  // Asks the framework for a frame, from the raster thread. A build that
+  // leaves placed slices asks for one more so they settle sharp; without
+  // it, slices are never placed.
+  void SetDenialFrameRequest(std::function<void()> request);
 
   void SetExistingDamageCallback(
       ExistingDamageCallback existing_damage_callback);
@@ -278,6 +325,7 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   std::unordered_map<int64_t, DenialViewSlices> denial_slices_;
   std::shared_ptr<TextureRegistry> denial_texture_registry_;
   std::optional<DenialFlutterSceneComposer> denial_scene_composer_;
+  std::function<void()> denial_frame_request_;
   // The scene composer's ticket for the output frame being drawn; zero when
   // the engine composes it.
   uint64_t denial_ticket_ = 0;
@@ -320,6 +368,13 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
     uint64_t rendered_new = 0;
     uint64_t rendered_bounds = 0;
     uint64_t rendered_content = 0;
+    // Placed slices: rasters rendered (and their pixels), placements that
+    // reused their raster, and slices rendered exactly again once their
+    // picture stopped moving.
+    uint64_t placed_rendered = 0;
+    uint64_t placed_rendered_pixels = 0;
+    uint64_t placed_reused = 0;
+    uint64_t placed_settled = 0;
     // Re-rendering clears and draws the whole storage (`rendered_pixels`),
     // which can exceed the slice's own rounded extent (`rendered_slice_pixels`)
     // when storage grew for an earlier, larger slice.

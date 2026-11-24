@@ -428,9 +428,22 @@ bool EmbedderEngine::SetDenialSceneComposer(
   denial_scene_composer_installed_ = true;
   // Raster tasks run in order, so every frame authorized after this call
   // sees the composer. The rasterizer keeps the view embedder alive.
+  // Placed slices ask for a frame from the raster thread; the platform view
+  // takes it on the platform thread.
+  std::function<void()> frame_request =
+      [runner = shell_->GetTaskRunners().GetPlatformTaskRunner(),
+       platform_view = shell_->GetPlatformView()]() {
+        runner->PostTask([platform_view]() {
+          if (platform_view) {
+            platform_view->ScheduleFrame();
+          }
+        });
+      };
   shell_->GetTaskRunners().GetRasterTaskRunner()->PostTask(
-      [view_embedder = denial_view_embedder_, composer]() {
+      [view_embedder = denial_view_embedder_, composer,
+       frame_request = std::move(frame_request)]() {
         view_embedder->SetDenialSceneComposer(composer);
+        view_embedder->SetDenialFrameRequest(frame_request);
       });
   return true;
 }
