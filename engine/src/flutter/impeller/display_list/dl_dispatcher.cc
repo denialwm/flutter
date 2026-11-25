@@ -1442,7 +1442,8 @@ std::shared_ptr<Texture> DisplayListToTexture(
     // the snapshot renders: reuse those of the last snapshot of this size and
     // format. Not with implicit resolves, where the multisample texture is
     // the snapshot itself.
-    const bool keep_attachments = !capabilities->SupportsImplicitResolvingMSAA();
+    const bool keep_attachments =
+        !capabilities->SupportsImplicitResolvingMSAA();
     AiksContext::SnapshotAttachments& kept = context.GetSnapshotAttachments();
     const PixelFormat format =
         target_pixel_format.value_or(capabilities->GetDefaultColorFormat());
@@ -1465,7 +1466,7 @@ std::shared_ptr<Texture> DisplayListToTexture(
         impeller::RenderTarget::
             kDefaultColorAttachmentConfigMSAA,  // color_attachment_config
         kStencilConfig,                         // stencil_attachment_config
-        kept.color,          // existing_color_msaa_texture
+        kept.color,                             // existing_color_msaa_texture
         nullptr,             // existing_color_resolve_texture
         kept.depth_stencil,  // existing_depth_stencil_texture
         target_pixel_format  // target_format
