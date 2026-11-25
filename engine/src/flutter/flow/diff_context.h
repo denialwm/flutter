@@ -192,6 +192,15 @@ class DiffContext {
 
   bool IsSubtreeDirty() const { return state_.dirty; }
 
+  // Repaints the current subtree without diffing it as new: its layers are
+  // still diffed against their old layers, so retained content and backdrop
+  // cache identities carry over, but every paint region added from here to
+  // the end of the subtree is also damage. For a container whose only change
+  // is how it blends its unchanged children, such as an OpacityLayer's alpha.
+  void MarkSubtreeRepaint() { state_.repaint = true; }
+
+  bool IsSubtreeRepaint() const { return state_.repaint; }
+
   // Marks that current subtree contains a TextureLayer. This is needed to
   // ensure that we'll Diff the TextureLayer even if inside retained layer.
   void MarkSubtreeHasTextureLayer();
@@ -358,6 +367,9 @@ class DiffContext {
     State();
 
     bool dirty = false;
+
+    // See MarkSubtreeRepaint.
+    bool repaint = false;
 
     size_t rect_index = 0;
 

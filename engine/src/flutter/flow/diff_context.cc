@@ -312,7 +312,7 @@ void DiffContext::AddLayerBounds(const DlRect& rect, bool clip_texture_bounds) {
       }
     }
     rects_->push_back(transformed_rect);
-    if (IsSubtreeDirty()) {
+    if (IsSubtreeDirty() || IsSubtreeRepaint()) {
       AddDamage(transformed_rect);
     }
   }
@@ -334,6 +334,9 @@ void DiffContext::AddExistingPaintRegion(const PaintRegion& region) {
   FML_DCHECK(!IsSubtreeDirty());
   if (region.is_valid()) {
     rects_->insert(rects_->end(), region.begin(), region.end());
+    if (IsSubtreeRepaint()) {
+      AddDamage(region);
+    }
   }
 }
 
@@ -439,8 +442,9 @@ bool DiffContext::TryReuseRetainedSubtreeMetadata(
   FML_DCHECK(paint_region.is_valid());
   FML_DCHECK(paint_region.has_texture());
   FML_DCHECK(!paint_region.has_readback());
-  if (!previous_retained_subtree_cache_ || !retained_subtree_cache_ ||
-      !texture_region_cache_) {
+  // A repainted subtree takes the diff that adds its regions as damage.
+  if (IsSubtreeRepaint() || !previous_retained_subtree_cache_ ||
+      !retained_subtree_cache_ || !texture_region_cache_) {
     return false;
   }
 

@@ -14,6 +14,7 @@
 #include "flutter/flow/layers/clip_rect_layer.h"
 #include "flutter/flow/layers/image_filter_layer.h"
 #include "flutter/flow/layers/layer_tree.h"
+#include "flutter/flow/layers/opacity_layer.h"
 #include "flutter/flow/layers/texture_layer.h"
 #include "flutter/flow/layers/transform_layer.h"
 #include "flutter/flow/layers/window_surface_layer.h"
@@ -535,6 +536,124 @@ TEST(FrameDamageTest,
   EXPECT_NE(invalidated_token, initial_token);
   EXPECT_EQ(GetBackdropFilterCacheFamily(invalidated_token),
             GetBackdropFilterCacheFamily(initial_token));
+}
+
+// A fading glass backdrop, like Denial's overview scrim: a wallpaper texture
+// beneath, and inside a clip an OpacityLayer over a blurred backdrop with a
+// texture of its own. The second frame is a new OpacityLayer over the same
+// children inside a new clip, both replacing the first frame's, as the
+// framework builds it when only the opacity animates.
+struct FadingBackdropFrames {
+  explicit FadingBackdropFrames(bool child_before_backdrop) {
+    first_opacity = std::make_shared<OpacityLayer>(128, DlPoint());
+    if (child_before_backdrop) {
+      lower_child = std::make_shared<CountingTextureLayer>(DlPoint(30, 30),
+                                                           DlSize(10, 10), 9);
+      first_opacity->Add(lower_child);
+    }
+    backdrop = std::make_shared<BackdropFilterLayer>(
+        DlImageFilter::MakeBlur(6, 6, DlTileMode::kClamp), DlBlendMode::kSrc);
+    backdrop->Add(std::make_shared<CountingTextureLayer>(DlPoint(20, 20),
+                                                         DlSize(60, 60), 8));
+    first_opacity->Add(backdrop);
+    first = MakeTree(first_opacity);
+    FrameDamage first_frame;
+    first_frame.ComputeDamageRegion(*first, true, true);
+  }
+
+  // Diffs a frame whose OpacityLayer replaces the first one with |alpha| and
+  // |offset| over the same children, and returns its damage.
+  DlRegion NextFrame(uint8_t alpha, const DlPoint& offset) {
+    auto opacity = std::make_shared<OpacityLayer>(alpha, offset);
+    opacity->AssignOldLayer(first_opacity.get());
+    if (lower_child) {
+      opacity->Add(lower_child);
+    }
+    opacity->Add(backdrop);
+    second = MakeTree(opacity, first_clip.get());
+    // No texture has a new frame: only the layer tree changes.
+    const std::unordered_set<int64_t> no_dirty_textures;
+    FrameDamage frame;
+    frame.SetPreviousLayerTree(first.get());
+    frame.SetDirtyTextureIds(&no_dirty_textures);
+    frame.SetExistingDamage(DlRegion());
+    frame.ComputeDamageRegion(*second, true, true);
+    return frame.GetFrameDamage().value_or(DlRegion());
+  }
+
+  static int64_t TokenOf(const LayerTree& tree) {
+    return tree.backdrop_filter_caches().front().state->token();
+  }
+
+  std::unique_ptr<LayerTree> MakeTree(
+      const std::shared_ptr<OpacityLayer>& opacity,
+      ClipRectLayer* old_clip = nullptr) {
+    auto root = std::make_shared<ContainerLayer>();
+    root->Add(wallpaper);
+    auto clip = std::make_shared<ClipRectLayer>(
+        DlRect::MakeLTRB(20, 20, 80, 80), Clip::kHardEdge);
+    if (old_clip) {
+      clip->AssignOldLayer(old_clip);
+    } else {
+      first_clip = clip;
+    }
+    clip->Add(opacity);
+    root->Add(clip);
+    return std::make_unique<LayerTree>(root, kFrameSize);
+  }
+
+  std::shared_ptr<CountingTextureLayer> wallpaper =
+      std::make_shared<CountingTextureLayer>(DlPoint(), DlSize(100, 100), 7);
+  std::shared_ptr<CountingTextureLayer> lower_child;
+  std::shared_ptr<BackdropFilterLayer> backdrop;
+  std::shared_ptr<OpacityLayer> first_opacity;
+  std::shared_ptr<ClipRectLayer> first_clip;
+  std::unique_ptr<LayerTree> first;
+  std::unique_ptr<LayerTree> second;
+};
+
+TEST(FrameDamageTest, UnchangedOpacityKeepsBackdropCacheWithoutDamage) {
+  FadingBackdropFrames frames(/*child_before_backdrop=*/false);
+  const int64_t token = FadingBackdropFrames::TokenOf(*frames.first);
+
+  const DlRegion damage = frames.NextFrame(128, DlPoint());
+
+  EXPECT_EQ(FadingBackdropFrames::TokenOf(*frames.second), token);
+  EXPECT_TRUE(damage.isEmpty());
+}
+
+TEST(FrameDamageTest, OpacityChangeKeepsBackdropCacheAndRepaintsGroup) {
+  FadingBackdropFrames frames(/*child_before_backdrop=*/false);
+  ASSERT_EQ(frames.first->backdrop_filter_caches().size(), 1u);
+  const int64_t token = FadingBackdropFrames::TokenOf(*frames.first);
+
+  const DlRegion damage = frames.NextFrame(140, DlPoint());
+
+  // Nothing beneath the group changed: the blurred input is reused.
+  EXPECT_EQ(FadingBackdropFrames::TokenOf(*frames.second), token);
+  // The whole group blends differently and is repainted.
+  const DlRegion group(DlIRect::MakeLTRB(20, 20, 80, 80));
+  EXPECT_EQ(DlRegion::MakeUnion(damage, group).getRects(), damage.getRects());
+}
+
+TEST(FrameDamageTest, OpacityChangeRefiltersBackdropOverFadedContent) {
+  // A child painted before the backdrop inside the group fades with it, so
+  // the backdrop's input changes.
+  FadingBackdropFrames frames(/*child_before_backdrop=*/true);
+  const int64_t token = FadingBackdropFrames::TokenOf(*frames.first);
+
+  frames.NextFrame(140, DlPoint());
+
+  EXPECT_NE(FadingBackdropFrames::TokenOf(*frames.second), token);
+}
+
+TEST(FrameDamageTest, OpacityOffsetChangeRefiltersBackdrop) {
+  FadingBackdropFrames frames(/*child_before_backdrop=*/false);
+  const int64_t token = FadingBackdropFrames::TokenOf(*frames.first);
+
+  frames.NextFrame(128, DlPoint(1, 0));
+
+  EXPECT_NE(FadingBackdropFrames::TokenOf(*frames.second), token);
 }
 
 TEST(FrameDamageTest,
