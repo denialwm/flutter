@@ -1434,8 +1434,29 @@ std::shared_ptr<Texture> DisplayListToTexture(
       impeller::RenderTargetAllocator(
           context.GetContext()->GetResourceAllocator());
   impeller::RenderTarget target;
-  if (context.GetContext()->GetCapabilities()->SupportsOffscreenMSAA() &&
+  const std::shared_ptr<const Capabilities>& capabilities =
+      context.GetContext()->GetCapabilities();
+  if (capabilities->SupportsOffscreenMSAA() &&
       PixelFormatSupportsMSAA(target_pixel_format)) {
+    // The multisample color and depth/stencil attachments are only used while
+    // the snapshot renders: reuse those of the last snapshot of this size and
+    // format. Not with implicit resolves, where the multisample texture is
+    // the snapshot itself.
+    const bool keep_attachments = !capabilities->SupportsImplicitResolvingMSAA();
+    AiksContext::SnapshotAttachments& kept = context.GetSnapshotAttachments();
+    const PixelFormat format =
+        target_pixel_format.value_or(capabilities->GetDefaultColorFormat());
+    if (!keep_attachments ||
+        (kept.color && (kept.color->GetSize() != size ||
+                        kept.color->GetTextureDescriptor().format != format))) {
+      kept = {};
+    }
+    // The depth/stencil attachment Canvas sets up for a target without one.
+    static constexpr RenderTarget::AttachmentConfig kStencilConfig = {
+        .storage_mode = StorageMode::kDeviceTransient,
+        .load_action = LoadAction::kDontCare,
+        .store_action = StoreAction::kDontCare,
+    };
     target = render_target_allocator.CreateOffscreenMSAA(
         *context.GetContext(),  // context
         size,                   // size
@@ -1443,12 +1464,17 @@ std::shared_ptr<Texture> DisplayListToTexture(
         "Picture Snapshot MSAA",  // label
         impeller::RenderTarget::
             kDefaultColorAttachmentConfigMSAA,  // color_attachment_config
-        std::nullopt,                           // stencil_attachment_config
-        nullptr,                                // existing_color_msaa_texture
+        kStencilConfig,                         // stencil_attachment_config
+        kept.color,          // existing_color_msaa_texture
         nullptr,             // existing_color_resolve_texture
-        nullptr,             // existing_depth_stencil_texture
+        kept.depth_stencil,  // existing_depth_stencil_texture
         target_pixel_format  // target_format
     );
+    if (keep_attachments && target.IsValid() &&
+        target.GetDepthAttachment().has_value()) {
+      kept.color = target.GetColorAttachment(0).texture;
+      kept.depth_stencil = target.GetDepthAttachment()->texture;
+    }
   } else {
     target = render_target_allocator.CreateOffscreen(
         *context.GetContext(),  // context

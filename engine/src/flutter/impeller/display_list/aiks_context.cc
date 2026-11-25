@@ -50,4 +50,12 @@ StaticPictureCache& AiksContext::GetStaticPictureCache() const {
   return *static_picture_cache_;
 }
 
+AiksContext::SnapshotAttachments& AiksContext::GetSnapshotAttachments() {
+  return snapshot_attachments_;
+}
+
+void AiksContext::ReleaseSnapshotAttachments() {
+  snapshot_attachments_ = {};
+}
+
 }  // namespace impeller

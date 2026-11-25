@@ -46,10 +46,28 @@ class AiksContext {
 
   StaticPictureCache& GetStaticPictureCache() const;
 
+  /// The multisample color and depth/stencil attachments of the last picture
+  /// snapshot (DisplayListToTexture), kept for the next snapshot of the same
+  /// size and format. They only live while a snapshot renders, but at four
+  /// samples a full-screen snapshot needs 2x130 MB of them on a 3392x2400
+  /// screen, which the driver would otherwise allocate and zero again for
+  /// every snapshot, in its first frame.
+  struct SnapshotAttachments {
+    std::shared_ptr<Texture> color;
+    std::shared_ptr<Texture> depth_stencil;
+  };
+
+  SnapshotAttachments& GetSnapshotAttachments();
+
+  /// Drops the kept snapshot attachments (an application that is hidden
+  /// keeps no GPU memory it does not need).
+  void ReleaseSnapshotAttachments();
+
  private:
   std::shared_ptr<Context> context_;
   std::unique_ptr<ContentContext> content_context_;
   std::unique_ptr<StaticPictureCache> static_picture_cache_;
+  SnapshotAttachments snapshot_attachments_;
   bool is_valid_ = false;
 
   AiksContext(const AiksContext&) = delete;
