@@ -19,10 +19,17 @@ OpacityLayer::OpacityLayer(uint8_t alpha, const DlPoint& offset)
 void OpacityLayer::Diff(DiffContext* context, const Layer* old_layer) {
   DiffContext::AutoSubtreeRestore subtree(context);
   auto* prev = static_cast<const OpacityLayer*>(old_layer);
+  bool alpha_changed = false;
   if (!context->IsSubtreeDirty()) {
     FML_DCHECK(prev);
-    if (alpha_ != prev->alpha_ || offset_ != prev->offset_) {
+    if (offset_ != prev->offset_) {
       context->MarkSubtreeDirty(context->GetOldLayerPaintRegion(old_layer));
+    } else if (alpha_ != prev->alpha_) {
+      // Only the blending of unchanged children changes. Repaint them without
+      // diffing them as new, so a backdrop child that nothing beneath it
+      // changed for keeps its cached input.
+      alpha_changed = true;
+      context->MarkSubtreeRepaint();
     }
   }
   context->PushTransform(DlMatrix::MakeTranslation(offset_));
@@ -30,6 +37,13 @@ void OpacityLayer::Diff(DiffContext* context, const Layer* old_layer) {
     context->WillPaintWithIntegralTransform();
   }
   DiffChildren(context, prev);
+  if (alpha_changed) {
+    // The pixels the group covered last frame and no longer covers.
+    const PaintRegion old_region = context->GetOldLayerPaintRegion(old_layer);
+    if (old_region.is_valid()) {
+      context->AddDamage(old_region);
+    }
+  }
   context->SetLayerPaintRegion(this, context->CurrentSubtreeRegion());
 }
 

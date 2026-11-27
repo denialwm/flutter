@@ -267,6 +267,7 @@ void Rasterizer::ReleaseCachedRenderTargets() {
   aiks_context->GetContentContext()
       .GetRenderTargetCache()
       ->ReleaseCachedTargets();
+  aiks_context->ReleaseSnapshotAttachments();
   // The backend frees what was released when it next submits work, and
   // nothing else submits any while the application is hidden.
   [[maybe_unused]] const bool flushed =
