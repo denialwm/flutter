@@ -5,8 +5,10 @@
 #ifndef FLUTTER_SHELL_COMMON_RASTERIZER_H_
 #define FLUTTER_SHELL_COMMON_RASTERIZER_H_
 
+#include <algorithm>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -116,6 +118,17 @@ struct DenialRenderOutput {
   }
 };
 
+struct DenialRenderTransaction;
+
+// Requests to draw the latest scene that arrive while a scene rebuild is still
+// open wait for that scene instead of drawing the one before it. The rebuild
+// seals its join when it reaches the rasterizer, or when it ends without one.
+struct DenialRenderJoin {
+  std::mutex mutex;
+  bool sealed = false;
+  std::vector<std::shared_ptr<DenialRenderTransaction>> requests;
+};
+
 // A reservation follows its actual UI/pipeline/raster work, including frames
 // which produce no layer tree. Destruction acknowledges completion on whichever
 // runner owns the final reference; the embedder callback must be thread-safe.
@@ -124,6 +137,40 @@ struct DenialRenderTransaction {
   std::vector<int64_t> texture_identifiers;
   fml::closure on_begin;
   fml::closure on_complete;
+  // Set on a scene rebuild only.
+  std::shared_ptr<DenialRenderJoin> join;
+  // Joined requests complete after this transaction's own completion.
+  std::vector<std::shared_ptr<DenialRenderTransaction>> joined;
+
+  // Raster thread, before the outputs are read: takes the joined requests'
+  // outputs and textures into this transaction and begins them.
+  void SealJoin() {
+    if (!join) {
+      return;
+    }
+    std::vector<std::shared_ptr<DenialRenderTransaction>> requests;
+    {
+      std::scoped_lock lock(join->mutex);
+      join->sealed = true;
+      requests.swap(join->requests);
+    }
+    for (auto& request : requests) {
+      for (int64_t view_id : request->render_view_ids) {
+        if (std::find(render_view_ids.begin(), render_view_ids.end(),
+                      view_id) == render_view_ids.end()) {
+          render_view_ids.push_back(view_id);
+        }
+      }
+      texture_identifiers.insert(texture_identifiers.end(),
+                                 request->texture_identifiers.begin(),
+                                 request->texture_identifiers.end());
+      if (request->on_begin) {
+        request->on_begin();
+        request->on_begin = nullptr;
+      }
+      joined.push_back(std::move(request));
+    }
+  }
 
   ~DenialRenderTransaction() {
     if (on_complete) {
@@ -331,6 +378,13 @@ class Rasterizer final : public SnapshotDelegate,
   /// Atomically replaces Denial's physical raster-output snapshot. This method
   /// runs only on the raster task runner between queued frame transactions.
   void SetDenialRenderOutputs(std::vector<DenialRenderOutput> outputs);
+
+  /// Reports, after each draw of a Denial physical output, whether the scene
+  /// itself changed there rather than only external texture content. Runs on
+  /// the raster task runner.
+  using DenialSceneChangeCallback =
+      std::function<void(int64_t render_view_id, bool scene_changed)>;
+  void SetDenialSceneChangeCallback(DenialSceneChangeCallback callback);
 
   /// Selects the physical outputs for the next framework-produced scene.
   void PrepareDenialRenderOutputs(std::vector<int64_t> render_view_ids,
@@ -888,6 +942,7 @@ class Rasterizer final : public SnapshotDelegate,
       denial_pending_output_tasks_;
   std::unordered_set<int64_t> denial_selected_render_view_ids_;
   bool denial_render_selection_pending_ = false;
+  DenialSceneChangeCallback denial_scene_change_callback_;
   std::unordered_set<int64_t> pending_texture_ids_;
   // What changed in `pending_texture_ids_`, where the embedder said.
   TextureDamageMap pending_texture_damage_;

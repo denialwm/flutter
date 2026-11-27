@@ -4117,6 +4117,26 @@ FlutterEngineResult DenialFlutterEngineSetRenderOutputs(
     const DenialFlutterRenderOutput* outputs,
     size_t output_count);
 
+/// Called on the raster thread after each draw of a Denial physical output.
+/// `scene_changed` is true when the scene itself changed on that output (a
+/// layer changed, moved, appeared or disappeared there) and false when only
+/// external texture content did.
+typedef void (*DenialFlutterSceneChangeCallback)(int64_t render_view_id,
+                                                 bool scene_changed,
+                                                 void* user_data);
+
+//------------------------------------------------------------------------------
+/// @brief      Installs Denial's per-output scene-change report. The callback
+///             is installed on the raster thread ahead of any raster task
+///             posted after this call. `user_data` stays valid until
+///             FlutterEngineShutdown returns.
+///
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineSetSceneChangeCallback(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    DenialFlutterSceneChangeCallback callback,
+    void* user_data);
+
 //------------------------------------------------------------------------------
 /// Callback used to declare whether an external-texture resolve may mutate GL
 /// state or destroy GL/EGL objects. It runs synchronously immediately before

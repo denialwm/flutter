@@ -21,6 +21,9 @@ TextureLayer::TextureLayer(const DlPoint& offset,
 
 void TextureLayer::Diff(DiffContext* context, const Layer* old_layer) {
   DiffContext::AutoSubtreeRestore subtree(context);
+  // A clean subtree damaged here changed only through the client's buffer.
+  DiffContext::AutoTextureDamageScope texture_damage(
+      context, !context->IsSubtreeDirty());
   // The texture's unit rect as Paint draws it.
   const DlMatrix unit_to_local = DlMatrix::MakeTranslateScale(
       {size_.width, size_.height, 1}, {offset_.x, offset_.y, 0});

@@ -57,6 +57,10 @@ void WindowSurfaceLayer::Diff(DiffContext* context, const Layer* old_layer) {
     context->AddReadbackRegion(target, target, cache_, mapped);
   }
   if (texture_id_ >= 0) {
+    // Past the window's own checks, a clean subtree damaged here changed only
+    // through the client's buffer.
+    DiffContext::AutoTextureDamageScope texture_damage(
+        context, !context->IsSubtreeDirty());
     context->MarkSubtreeHasTextureLayer();
     // The texture's unit rect as Paint draws it: into texture_bounds_, after
     // texture_transform_.

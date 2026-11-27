@@ -146,6 +146,11 @@ class FrameDamage {
     return damage_ ? std::make_optional(damage_->buffer_damage) : std::nullopt;
   }
 
+  // Whether the last ComputeDamageRegion found damage from the scene itself
+  // rather than only from external texture content. A frame without a previous
+  // layer tree counts as changed.
+  bool scene_damaged() const { return scene_damaged_; }
+
   // Records the conservative region selected for rasterization. Frame damage
   // remains precise for output routing and accumulation by other framebuffer
   // slots.
@@ -154,6 +159,7 @@ class FrameDamage {
  private:
   std::optional<DlRegion> existing_damage_ = std::nullopt;
   std::optional<Damage> damage_;
+  bool scene_damaged_ = false;
   const LayerTree* prev_layer_tree_ = nullptr;
   const std::unordered_set<int64_t>* dirty_texture_ids_ = nullptr;
   const TextureDamageMap* texture_damage_ = nullptr;

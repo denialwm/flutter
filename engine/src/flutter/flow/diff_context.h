@@ -152,6 +152,33 @@ class DiffContext {
     DiffContext* context_;
   };
 
+  // Damage added while one is active comes from an external texture's own
+  // content, not from the scene: Denial reports only scene damage as shell
+  // motion on an output.
+  class AutoTextureDamageScope {
+    FML_DISALLOW_COPY_ASSIGN_AND_MOVE(AutoTextureDamageScope);
+
+   public:
+    AutoTextureDamageScope(DiffContext* context, bool active)
+        : context_(active ? context : nullptr) {
+      if (context_) {
+        context_->texture_damage_depth_++;
+      }
+    }
+    ~AutoTextureDamageScope() {
+      if (context_) {
+        context_->texture_damage_depth_--;
+      }
+    }
+
+   private:
+    DiffContext* context_;
+  };
+
+  // Whether any damage so far came from the scene itself: a changed, moved,
+  // added or removed layer rather than a texture's new content.
+  bool scene_damaged() const { return scene_damaged_; }
+
   // Pushes additional transform for current subtree
   void PushTransform(const DlMatrix& transform);
 
@@ -419,6 +446,8 @@ class DiffContext {
   DlRect ApplyFilterBoundsAdjustment(DlRect rect) const;
 
   DlRegion damage_;
+  int texture_damage_depth_ = 0;
+  bool scene_damaged_ = false;
 
   PaintRegionMap& this_frame_paint_region_map_;
   const PaintRegionMap& last_frame_paint_region_map_;

@@ -109,6 +109,9 @@ class EmbedderEngine {
 
   bool SetRenderOutputs(std::vector<DenialRenderOutput> outputs);
 
+  bool SetDenialSceneChangeCallback(
+      Rasterizer::DenialSceneChangeCallback callback);
+
   // The view embedder the rasterizer owns, for Denial's scene composer.
   void SetDenialViewEmbedder(EmbedderExternalViewEmbedder* view_embedder);
   // Once per engine: slice keys belong to the composer that issued them.

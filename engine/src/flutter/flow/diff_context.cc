@@ -615,6 +615,7 @@ void DiffContext::AddDamage(const DlRect& rect) {
       DlIRect::MakeSize(frame_size_));
   if (!damage_rect.IsEmpty()) {
     damage_ = DlRegion::MakeUnion(damage_, DlRegion(damage_rect));
+    scene_damaged_ = scene_damaged_ || texture_damage_depth_ == 0;
   }
 }
 

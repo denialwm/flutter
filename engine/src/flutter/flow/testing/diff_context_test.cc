@@ -20,7 +20,8 @@ Damage DiffContextTest::DiffLayerTree(
     int vertical_clip_alignment,
     bool use_raster_cache,
     bool impeller_enabled,
-    const std::unordered_set<int64_t>* dirty_texture_ids) {
+    const std::unordered_set<int64_t>* dirty_texture_ids,
+    bool* scene_damaged) {
   FML_CHECK(layer_tree.size() == old_layer_tree.size());
 
   DiffContext dc(layer_tree.size(), layer_tree.paint_region_map(),
@@ -28,6 +29,9 @@ Damage DiffContextTest::DiffLayerTree(
                  impeller_enabled, dirty_texture_ids);
   dc.PushCullRect(DlRect::MakeSize(layer_tree.size()));
   layer_tree.root()->Diff(&dc, old_layer_tree.root());
+  if (scene_damaged) {
+    *scene_damaged = dc.scene_damaged();
+  }
   return dc.ComputeDamage(DlRegion(additional_damage),
                           horizontal_clip_alignment, vertical_clip_alignment);
 }

@@ -4290,6 +4290,27 @@ FlutterEngineResult DenialFlutterEngineSetRenderOutputs(
                    "Could not install Denial render-output snapshot.");
 }
 
+FLUTTER_EXPORT
+FlutterEngineResult DenialFlutterEngineSetSceneChangeCallback(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    DenialFlutterSceneChangeCallback callback,
+    void* user_data) {
+  if (engine == nullptr || callback == nullptr) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Invalid Denial scene-change callback.");
+  }
+  return reinterpret_cast<flutter::EmbedderEngine*>(engine)
+                 ->SetDenialSceneChangeCallback(
+                     [callback, user_data](int64_t render_view_id,
+                                           bool scene_changed) {
+                       callback(render_view_id, scene_changed, user_data);
+                     })
+             ? kSuccess
+             : LOG_EMBEDDER_ERROR(
+                   kInternalInconsistency,
+                   "Could not install the Denial scene-change callback.");
+}
+
 #ifdef SHELL_ENABLE_GL
 FLUTTER_EXPORT
 FlutterEngineResult DenialFlutterEngineSetExternalTexturePresentationCallback(

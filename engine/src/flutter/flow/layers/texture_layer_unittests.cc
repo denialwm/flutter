@@ -138,6 +138,37 @@ TEST_F(TextureLayerDiffTest, AutonomousFrameDamagesOnlyMarkedTextures) {
   EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(200, 0, 300, 100));
 }
 
+TEST_F(TextureLayerDiffTest, SceneDamageExcludesTextureContent) {
+  MockLayerTree tree;
+  auto container = std::make_shared<ContainerLayer>();
+  tree.root()->Add(container);
+  container->Add(std::make_shared<TextureLayer>(
+      DlPoint(200, 0), DlSize(100, 100), 2, false, DlImageSampling::kLinear));
+
+  bool scene_damaged = false;
+  DiffLayerTree(tree, MockLayerTree(), DlIRect(), 0, 0, true, false, nullptr,
+                &scene_damaged);
+  EXPECT_TRUE(scene_damaged);
+
+  // A client's new buffer damages the frame but not the scene.
+  const std::unordered_set<int64_t> dirty_texture_ids = {2};
+  auto damage = DiffLayerTree(tree, tree, DlIRect(), 0, 0, true, false,
+                              &dirty_texture_ids, &scene_damaged);
+  EXPECT_EQ(damage.frame_damage.bounds(), DlIRect::MakeLTRB(200, 0, 300, 100));
+  EXPECT_FALSE(scene_damaged);
+
+  // Moving the texture is a scene change, whatever its content did.
+  MockLayerTree moved;
+  auto moved_container = std::make_shared<ContainerLayer>();
+  moved.root()->Add(moved_container);
+  moved_container->Add(std::make_shared<TextureLayer>(
+      DlPoint(210, 0), DlSize(100, 100), 2, false, DlImageSampling::kLinear));
+  const std::unordered_set<int64_t> clean_texture_ids;
+  DiffLayerTree(moved, tree, DlIRect(), 0, 0, true, false, &clean_texture_ids,
+                &scene_damaged);
+  EXPECT_TRUE(scene_damaged);
+}
+
 TEST_F(TextureLayerTest, OpacityInheritance) {
   const DlPoint layer_offset = DlPoint();
   const DlSize layer_size = DlSize(8.0f, 8.0f);

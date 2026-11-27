@@ -48,7 +48,8 @@ class DiffContextTest : public LayerTest {
       int vertical_alignment = 0,
       bool use_raster_cache = true,
       bool impeller_enabled = false,
-      const std::unordered_set<int64_t>* dirty_texture_ids = nullptr);
+      const std::unordered_set<int64_t>* dirty_texture_ids = nullptr,
+      bool* scene_damaged = nullptr);
 
   // Create display list consisting of filled rect with given color; Being able
   // to specify different color is useful to test deep comparison of pictures

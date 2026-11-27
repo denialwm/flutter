@@ -144,6 +144,8 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
                              [](const TexturePaintRegion& region, int64_t id) {
                                return region.texture_id < id;
                              });
+        // The same tree again: only texture content can have changed.
+        DiffContext::AutoTextureDamageScope texture_damage(&context, true);
         while (region != regions.end() && region->texture_id == texture_id) {
           context.AddTexturePaintRegionDamage(*region);
           ++region;
@@ -175,6 +177,7 @@ std::optional<DlRegion> FrameDamage::ComputeDamageRegion(
       layer_tree.set_has_diff_metadata(true);
     }
 
+    scene_damaged_ = context.scene_damaged();
     damage_ = context.ComputeDamage(
         existing_damage_, horizontal_clip_alignment_, vertical_clip_alignment_,
         impeller_enabled ? pin_backdrop : BackdropSnapshotPin{});

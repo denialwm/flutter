@@ -503,6 +503,9 @@ class Shell final : public PlatformView::Delegate,
   DartVMRef vm_;
   mutable std::mutex time_recorder_mutex_;
   std::optional<fml::TimePoint> latest_frame_target_time_;
+  // Denial: the latest scene rebuild, which retained output requests join
+  // until it reaches the rasterizer. Platform thread.
+  std::weak_ptr<DenialRenderJoin> denial_open_join_;
   std::unique_ptr<PlatformView> platform_view_;  // on platform task runner
   std::unique_ptr<Engine> engine_;               // on UI task runner
   std::unique_ptr<Rasterizer> rasterizer_;       // on raster task runner

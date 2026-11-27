@@ -389,6 +389,21 @@ bool EmbedderEngine::RenderOutputs(std::vector<int64_t> render_view_ids,
   return true;
 }
 
+bool EmbedderEngine::SetDenialSceneChangeCallback(
+    Rasterizer::DenialSceneChangeCallback callback) {
+  if (!IsValid()) {
+    return false;
+  }
+  auto rasterizer = shell_->GetRasterizer();
+  shell_->GetTaskRunners().GetRasterTaskRunner()->PostTask(
+      [rasterizer, callback = std::move(callback)]() mutable {
+        if (rasterizer) {
+          rasterizer->SetDenialSceneChangeCallback(std::move(callback));
+        }
+      });
+  return true;
+}
+
 bool EmbedderEngine::SetRenderOutputs(std::vector<DenialRenderOutput> outputs) {
   if (!IsValid()) {
     return false;

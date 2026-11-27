@@ -326,6 +326,11 @@ void Rasterizer::SetDenialRenderOutputs(
   }
 }
 
+void Rasterizer::SetDenialSceneChangeCallback(
+    DenialSceneChangeCallback callback) {
+  denial_scene_change_callback_ = std::move(callback);
+}
+
 void Rasterizer::PrepareDenialRenderOutputs(
     std::vector<int64_t> render_view_ids,
     std::vector<int64_t> texture_identifiers) {
@@ -684,6 +689,7 @@ DrawStatus Rasterizer::Draw(const std::shared_ptr<FramePipeline>& pipeline) {
   FramePipeline::Consumer consumer = [&draw_result,
                                       this](std::unique_ptr<FrameItem> item) {
     if (item->denial_transaction) {
+      item->denial_transaction->SealJoin();
       if (item->denial_transaction->on_begin) {
         item->denial_transaction->on_begin();
       }
@@ -1368,6 +1374,10 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
         );
     if (frame_status == RasterStatus::kSkipAndRetry) {
       return DrawSurfaceStatus::kRetry;
+    }
+    if (denial_output_task && damage && denial_scene_change_callback_ &&
+        frame_status != RasterStatus::kResubmit) {
+      denial_scene_change_callback_(view_id, damage->scene_damaged());
     }
 
     SurfaceFrame::SubmitInfo submit_info;

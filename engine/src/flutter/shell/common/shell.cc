@@ -1469,32 +1469,67 @@ void Shell::RenderOutputs(std::vector<int64_t> render_view_ids,
     });
   };
   if (!rebuild_scene) {
+    // A scene still being built is the latest one: wait for it rather than
+    // drawing the scene before it.
+    if (auto join = denial_open_join_.lock()) {
+      std::scoped_lock lock(join->mutex);
+      if (!join->sealed) {
+        join->requests.push_back(std::move(transaction));
+        return;
+      }
+    }
     draw_retained(std::move(transaction));
     return;
   }
 
   // A hover-only vsync or a framework frame with no new layer tree can
   // finish without ever reaching raster. Keep its texture work and output
-  // reservation together until the retained scene has actually been drawn.
+  // reservation together until the retained scene has actually been drawn,
+  // and draw the requests that joined it from the retained scene too.
+  auto join = std::make_shared<DenialRenderJoin>();
+  transaction->join = join;
+  denial_open_join_ = join;
+  // Take the callbacks out with std::exchange: moving a small std::function
+  // can leave the source holding a copy, and completion must run once.
+  fml::closure begin = std::exchange(transaction->on_begin, nullptr);
+  fml::closure complete = std::exchange(transaction->on_complete, nullptr);
+  std::shared_ptr<DenialRenderTransaction> texture_work;
   if (!transaction->texture_identifiers.empty()) {
-    auto texture_work = std::make_shared<DenialRenderTransaction>();
+    texture_work = std::make_shared<DenialRenderTransaction>();
     texture_work->render_view_ids = transaction->render_view_ids;
     texture_work->texture_identifiers = transaction->texture_identifiers;
-    texture_work->on_begin = std::move(transaction->on_begin);
-    texture_work->on_complete = std::move(transaction->on_complete);
-    auto began = std::make_shared<std::atomic_bool>(false);
-    transaction->on_begin = [began, texture_work] {
-      began->store(true);
-      if (texture_work->on_begin) {
-        texture_work->on_begin();
-      }
-    };
-    transaction->on_complete = [began, texture_work, draw_retained] {
-      if (!began->load()) {
+    texture_work->on_begin = std::exchange(begin, nullptr);
+    texture_work->on_complete = std::exchange(complete, nullptr);
+  }
+  auto began = std::make_shared<std::atomic_bool>(false);
+  transaction->on_begin = [began, texture_work, on_begin = std::move(begin)] {
+    began->store(true);
+    if (texture_work && texture_work->on_begin) {
+      texture_work->on_begin();
+    } else if (on_begin) {
+      on_begin();
+    }
+  };
+  transaction->on_complete = [began, texture_work, join, draw_retained,
+                              on_complete = std::move(complete)] {
+    std::vector<std::shared_ptr<DenialRenderTransaction>> joined;
+    {
+      std::scoped_lock lock(join->mutex);
+      join->sealed = true;
+      joined.swap(join->requests);
+    }
+    if (!began->load()) {
+      if (texture_work) {
         draw_retained(texture_work);
       }
-    };
-  }
+      for (auto& request : joined) {
+        draw_retained(std::move(request));
+      }
+    }
+    if (on_complete) {
+      on_complete();
+    }
+  };
   task_runners_.GetUITaskRunner()->PostTask(
       [engine = engine_->GetWeakPtr(),
        transaction = std::move(transaction)]() mutable {
